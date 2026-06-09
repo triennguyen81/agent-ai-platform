@@ -5,7 +5,10 @@ using Aiq.Gateway.Books;
 using Aiq.Gateway.Configuration;
 using Aiq.Gateway.Data;
 using Aiq.Gateway.Endpoints;
+using Aiq.Gateway.Jobs;
 using Aiq.Gateway.Security;
+using Hangfire;
+using Hangfire.PostgreSql;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.RateLimiting;
@@ -52,6 +55,17 @@ var agentOptions = builder.Configuration
     .Get<AgentOptions>()
     ?? new AgentOptions();
 
+builder.Services
+    .AddOptions<JobsOptions>()
+    .Bind(builder.Configuration.GetSection(JobsOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+var jobsOptions = builder.Configuration
+    .GetSection(JobsOptions.SectionName)
+    .Get<JobsOptions>()
+    ?? new JobsOptions();
+
 var jwtOptions = builder.Configuration
     .GetSection(JwtOptions.SectionName)
     .Get<JwtOptions>()
@@ -79,6 +93,26 @@ builder.Services
         client.BaseAddress = new Uri(agentOptions.BaseUrl);
         client.Timeout = TimeSpan.FromSeconds(agentOptions.TimeoutSeconds);
     });
+
+// ---- Hangfire (background jobs) -------------------------------------------
+builder.Services.AddHangfire(config =>
+{
+    config
+        .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+        .UseSimpleAssemblyNameTypeSerializer()
+        .UseRecommendedSerializerSettings()
+        .UsePostgreSqlStorage(options =>
+            options.UseNpgsqlConnection(connectionString));
+});
+
+builder.Services.AddHangfireServer(server =>
+{
+    server.WorkerCount = jobsOptions.WorkerCount;
+    server.Queues = ["default"];
+});
+
+builder.Services.AddScoped<OcrJobRunner>();
+builder.Services.AddScoped<IOcrJobScheduler, OcrJobScheduler>();
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -150,6 +184,18 @@ app.MapHealthEndpoints();
 app.MapAuthEndpoints();
 app.MapUploadEndpoints();
 app.MapBookEndpoints();
+
+if (!string.IsNullOrWhiteSpace(jobsOptions.DashboardPath))
+{
+    app.UseHangfireDashboard(jobsOptions.DashboardPath, new DashboardOptions
+    {
+        Authorization =
+        [
+            new JobsAuthorizationFilter(allowLoopback: app.Environment.IsDevelopment()),
+        ],
+        IgnoreAntiforgeryToken = false,
+    });
+}
 
 app.MapGet("/me", (HttpContext ctx) =>
 {

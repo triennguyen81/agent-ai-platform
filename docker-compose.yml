@@ -82,8 +82,12 @@ services:
       Jwt__AccessTokenMinutes: 60
       Agent__BaseUrl: ${AGENT_INTERNAL_BASE_URL:-http://agent:8000}
       Agent__TimeoutSeconds: ${AGENT_TIMEOUT_SECONDS:-300}
+      Jobs__UploadStagingDirectory: /var/aiq/uploads
+      Jobs__WorkerCount: ${HANGFIRE_WORKERS:-4}
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
+    volumes:
+      - gateway_uploads:/var/aiq/uploads
     networks:
       - aiq-net
 
@@ -131,6 +135,7 @@ volumes:
   redis_data:
   caddy_data:
   caddy_config:
+  gateway_uploads:
 
 networks:
   aiq-net:

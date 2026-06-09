@@ -39,7 +39,7 @@
 - [x] Service modules (business logic)
 - [x] Transaction handling
 - [x] State management
-- [ ] Hangfire job scheduling
+- [x] Hangfire job scheduling
 
 ### Agent sublayer
 - [x] LLM integration (Claude API)
@@ -55,7 +55,7 @@
 - [x] End-to-end test (PDF → corrected text)
 
 **Trạng thái Phase 2:** 🟡
-**Ghi chú:** Agent sublayer + OCR pipeline xong. Application sublayer (Books CRUD, Gateway→Agent delegation) xong. Còn Hangfire + Agent memory.
+**Ghi chú:** Application sublayer (Books CRUD + Hangfire async OCR) xong. Agent sublayer + OCR pipeline xong. Còn Agent memory/context.
 
 ---
 
@@ -128,3 +128,4 @@
 | 2026-06-09 | WAF file-upload rules in Gateway: FileUploadOptions (50 MiB cap, application/pdf allow-list, %PDF- magic bytes), FileUploadGuard (metadata + body validation + SHA-256), Kestrel + FormOptions body-size limits, upload rate-limit bucket (5/min), POST /uploads/pdf (uploader role, Problem+JSON rejections, path-traversal guard). dotnet build -warnaserror green | — | Phase 1 Gateway WAF rules done |
 | 2026-06-09 | TLS/SSL via Caddy reverse proxy: dev Caddyfile (local_certs internal CA), prod Caddyfile.prod template (ACME Let's Encrypt), security headers (HSTS in prod, no-sniff, frame-deny), routes / → gateway and /agent/* → agent with prefix strip, caddy_data + caddy_config volumes | — | Phase 1 closed (all infra items done) |
 | 2026-06-09 | Application sublayer in Gateway: Books domain (records + DTOs + BookRepository via Dapper with ILIKE search and ON CONFLICT page upsert), AgentClient typed HttpClient (multipart PDF → /ocr/pdf, AgentRequestException), endpoints POST /books (create), GET /books (paginated list with status+q filter), GET /books/{id} (details + pages), POST /books/{id}/pages (uploader role + upload bucket, FileUploadGuard metadata+body checks, forwards to Agent, persists pages, updates status='processed'). AgentOptions bound + validated. dotnet build -warnaserror green | — | Phase 2 Application sublayer 3/4 done (Hangfire deferred) |
+| 2026-06-09 | Hangfire async OCR jobs: Hangfire.AspNetCore + Hangfire.PostgreSql packages, OcrJobRunner [AutomaticRetry(2)] (status=processing→processed/failed, deletes staged PDF in finally), OcrJobScheduler (stages PDF to /var/aiq/uploads with fresh GUID filename then `Enqueue<OcrJobRunner>`), JobsAuthorizationFilter (admin role + dev loopback bypass), Hangfire dashboard at /jobs/dashboard. POST /books/{id}/pages now returns 202 with jobId, GET /books/{id}/jobs/{jobId} polls JobStorage. Compose adds gateway_uploads volume. dotnet build -warnaserror green | — | Phase 2 Application sublayer 4/4 done |

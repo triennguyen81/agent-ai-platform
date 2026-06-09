@@ -1,6 +1,9 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Books;
+using Aiq.Gateway.Jobs;
 using Aiq.Gateway.Security;
+using Hangfire;
+using Hangfire.Storage;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
@@ -25,6 +28,8 @@ public static class BookEndpoints
             .RequireAuthorization("uploader")
             .RequireRateLimiting("upload")
             .DisableAntiforgery();
+
+        group.MapGet("/{id:guid}/jobs/{jobId}", GetJobStatusAsync);
 
         return app;
     }
@@ -84,9 +89,8 @@ public static class BookEndpoints
         Guid id,
         IFormFile file,
         IBookRepository books,
-        IAgentClient agent,
+        IOcrJobScheduler scheduler,
         IFileUploadGuard guard,
-        ILogger<Program> logger,
         CancellationToken ct)
     {
         var book = await books.FindByIdAsync(id, ct);
@@ -112,39 +116,43 @@ public static class BookEndpoints
             }
         }
 
-        try
-        {
-            await using var uploadStream = file.OpenReadStream();
-            var ocr = await agent.RunOcrPipelineAsync(uploadStream, file.FileName, ct);
+        await books.UpdateStatusAndPageCountAsync(id, "queued", book.PageCount ?? 0, ct);
 
-            var upsertInputs = ocr.Pages
-                .Select(p => new UpsertPageInput(
-                    p.PageNumber,
-                    p.RawText,
-                    p.CorrectedText,
-                    (float)p.Confidence))
-                .ToArray();
+        await using var uploadStream = file.OpenReadStream();
+        var jobId = await scheduler.EnqueueAsync(id, uploadStream, file.FileName, ct);
 
-            await books.UpsertPagesAsync(id, upsertInputs, ct);
-            await books.UpdateStatusAndPageCountAsync(id, "processed", ocr.PageCount, ct);
-
-            return Results.Ok(new
+        return Results.Accepted(
+            uri: $"/books/{id}/jobs/{jobId}",
+            value: new
             {
                 bookId = id,
-                pageCount = ocr.PageCount,
-                averageConfidence = ocr.AverageConfidence,
-                stageDurationsMs = ocr.StageDurationsMs,
+                jobId,
+                status = "queued",
             });
-        }
-        catch (AgentRequestException ex)
+    }
+
+    private static IResult GetJobStatusAsync(
+        Guid id,
+        string jobId,
+        IBookRepository books,
+        CancellationToken ct)
+    {
+        using var connection = JobStorage.Current.GetConnection();
+        var data = connection.GetJobData(jobId);
+
+        if (data is null)
         {
-            logger.LogWarning(ex, "Agent OCR failed for book {BookId}", id);
-            return Results.Problem(
-                type: "https://aiq.local/problems/agent",
-                title: "Agent OCR failed",
-                statusCode: StatusCodes.Status502BadGateway,
-                detail: ex.Message);
+            return Results.NotFound(new { error = $"Unknown job {jobId}." });
         }
+
+        return Results.Ok(new
+        {
+            bookId = id,
+            jobId,
+            state = data.State,
+            createdAt = data.CreatedAt,
+            method = $"{data.Job?.Type.Name}.{data.Job?.Method.Name}",
+        });
     }
 
     private static async Task<int> ReadExactAsync(Stream stream, byte[] buffer, CancellationToken ct)
