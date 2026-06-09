@@ -1,0 +1,71 @@
+# AIQ Agentic AI — Caddy reverse proxy
+#
+# Routes:
+#   /agent/*  → aiq-agent:8000 (FastAPI)  — prefix stripped before forward
+#   else      → aiq-gateway:8080 (ASP.NET Core)
+#
+# Local development:
+#   Caddy auto-issues a locally-trusted cert via its `internal` issuer.
+#   The first run prints a CA cert path — install it to your OS trust store
+#   to remove browser warnings. Or just curl with -k.
+#
+# Production:
+#   See Caddyfile.prod for an ACME-backed example. Swap the file via the
+#   docker-compose volume mount.
+
+{
+    # Use internal CA for any *.localhost / IP sites.
+    local_certs
+
+    # Reasonable defaults for an API gateway in front of agents.
+    servers {
+        timeouts {
+            read_body 5m
+            read_header 30s
+            write 5m
+            idle 5m
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# HTTPS — :443
+# ---------------------------------------------------------------------------
+:443 {
+    encode zstd gzip
+
+    # Security headers (HSTS off in dev; enable in prod template).
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        -Server
+    }
+
+    # Health passthrough — keep these cheap and unauthenticated upstream.
+    handle /healthz/* {
+        reverse_proxy aiq-gateway:8080
+    }
+
+    # Agent service — strip /agent prefix so /agent/chat → /chat upstream.
+    handle_path /agent/* {
+        reverse_proxy aiq-agent:8000 {
+            header_up Host {upstream_hostport}
+        }
+    }
+
+    # Everything else → gateway.
+    handle {
+        reverse_proxy aiq-gateway:8080 {
+            header_up X-Forwarded-Proto https
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# HTTP — :80 (redirect to HTTPS)
+# ---------------------------------------------------------------------------
+:80 {
+    redir https://{host}{uri} permanent
+}

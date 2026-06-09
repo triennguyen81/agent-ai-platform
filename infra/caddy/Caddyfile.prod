@@ -1,0 +1,46 @@
+# AIQ Agentic AI — Caddy reverse proxy (PRODUCTION TEMPLATE)
+#
+# Copy to ./infra/caddy/Caddyfile and replace `aiq.example.com` with your
+# real domain. Caddy will obtain & renew certs via Let's Encrypt automatically
+# (HTTP-01 challenge on :80) — do NOT block port 80 at your firewall.
+
+{
+    email ops@aiq.example.com
+    servers {
+        timeouts {
+            read_body 5m
+            read_header 30s
+            write 5m
+            idle 5m
+        }
+    }
+}
+
+aiq.example.com {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        -Server
+    }
+
+    handle /healthz/* {
+        reverse_proxy aiq-gateway:8080
+    }
+
+    handle_path /agent/* {
+        reverse_proxy aiq-agent:8000 {
+            header_up Host {upstream_hostport}
+        }
+    }
+
+    handle {
+        reverse_proxy aiq-gateway:8080 {
+            header_up X-Forwarded-Proto https
+        }
+    }
+}

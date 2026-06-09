@@ -55,8 +55,10 @@ Sau khi container `aiq-postgres` `healthy`, schema khởi tạo trong `infra/pos
 
 | Service | URL / Port |
 |---------|------------|
-| Gateway | http://localhost:8080 |
-| Agent | http://localhost:8001 |
+| Caddy (HTTPS) | https://localhost (route `/` → gateway, `/agent/*` → agent) |
+| Caddy (HTTP redirect) | http://localhost (→ HTTPS) |
+| Gateway (direct) | http://localhost:8080 |
+| Agent (direct) | http://localhost:8001 |
 | PostgreSQL | `localhost:5432` (user/db trong `.env`) |
 | Qdrant HTTP | http://localhost:6333 |
 | Qdrant gRPC | `localhost:6334` |
@@ -137,6 +139,17 @@ docker exec -it aiq-redis redis-cli -a "$REDIS_PASSWORD" ping
 ```
 
 ---
+
+## TLS / HTTPS (Caddy reverse proxy)
+
+Local dev dùng Caddy với cert do `internal` CA tự sinh (lần đầu chạy sẽ in path tới root CA — cài vào trust store hoặc dùng `curl -k`).
+
+Production: copy `infra/caddy/Caddyfile.prod` → `infra/caddy/Caddyfile`, đổi `aiq.example.com` thành domain thật. Caddy auto ACME qua Let's Encrypt (HTTP-01 challenge — đừng chặn port 80 ở firewall).
+
+Routes:
+
+- `/healthz/*` và `/auth/*`, `/uploads/*`, `/me` → Gateway
+- `/agent/*` → Agent (prefix `/agent` được strip trước khi forward — `/agent/chat` → `/chat`)
 
 ## Reset hạ tầng
 

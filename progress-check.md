@@ -25,11 +25,11 @@
 ### Infrastructure
 - [x] Docker containerization
 - [x] Docker Compose (dev)
-- [ ] TLS/SSL certificates
+- [x] TLS/SSL certificates
 - [x] CI nền (build + test)
 
-**Trạng thái Phase 1:** 🟡
-**Ghi chú:** Gateway + Database + Infrastructure (Docker, Compose, CI, WAF) xong. Chỉ còn TLS/SSL.
+**Trạng thái Phase 1:** ✅
+**Ghi chú:** Toàn bộ Database, Infrastructure (Docker, Compose, CI, TLS qua Caddy), Gateway (JWT/RBAC/rate-limit/WAF) hoàn tất.
 
 ---
 
@@ -126,3 +126,4 @@
 | 2026-06-09 | OCR pipeline: OcrExtractor abstraction (PaddleOcr lazy + Stub), DiacriticCorrector (LLM-backed, empty-page guard), pgvector validator (PassthroughValidator default), pypdfium2 renderer, OcrPipeline orchestrator with stage timings, POST /ocr/pdf endpoint, pytest-asyncio end-to-end test (3 cases, runs without paddleocr) | — | Milestone Tuần 4 done; tests verified by py_compile only (host has 3.7, runtime 3.12 in Docker/CI) |
 | 2026-06-09 | GitHub Actions CI: gateway-build (dotnet 9 restore+build+test), agent-lint (ruff), agent-test (pytest), compose-validate (docker compose config). Triggers on push/PR to master with concurrency cancel-in-progress | — | Phase 1 Infrastructure CI nền done |
 | 2026-06-09 | WAF file-upload rules in Gateway: FileUploadOptions (50 MiB cap, application/pdf allow-list, %PDF- magic bytes), FileUploadGuard (metadata + body validation + SHA-256), Kestrel + FormOptions body-size limits, upload rate-limit bucket (5/min), POST /uploads/pdf (uploader role, Problem+JSON rejections, path-traversal guard). dotnet build -warnaserror green | — | Phase 1 Gateway WAF rules done |
+| 2026-06-09 | TLS/SSL via Caddy reverse proxy: dev Caddyfile (local_certs internal CA), prod Caddyfile.prod template (ACME Let's Encrypt), security headers (HSTS in prod, no-sniff, frame-deny), routes / → gateway and /agent/* → agent with prefix strip, caddy_data + caddy_config volumes | — | Phase 1 closed (all infra items done) |
