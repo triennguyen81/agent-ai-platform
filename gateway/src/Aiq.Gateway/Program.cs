@@ -1,6 +1,7 @@
 using System.Text;
 using System.Threading.RateLimiting;
 using Aiq.Gateway.Auth;
+using Aiq.Gateway.Books;
 using Aiq.Gateway.Configuration;
 using Aiq.Gateway.Data;
 using Aiq.Gateway.Endpoints;
@@ -40,6 +41,17 @@ builder.WebHost.ConfigureKestrel(options =>
     options.Limits.MaxRequestBodySize = fileUploadOptions.MaxBytes;
 });
 
+builder.Services
+    .AddOptions<AgentOptions>()
+    .Bind(builder.Configuration.GetSection(AgentOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+var agentOptions = builder.Configuration
+    .GetSection(AgentOptions.SectionName)
+    .Get<AgentOptions>()
+    ?? new AgentOptions();
+
 var jwtOptions = builder.Configuration
     .GetSection(JwtOptions.SectionName)
     .Get<JwtOptions>()
@@ -56,9 +68,17 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
 // ---- Services --------------------------------------------------------------
 builder.Services.AddSingleton(new NpgsqlConnectionFactory(connectionString));
 builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddScoped<IBookRepository, BookRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IFileUploadGuard, FileUploadGuard>();
+
+builder.Services
+    .AddHttpClient<IAgentClient, AgentClient>(client =>
+    {
+        client.BaseAddress = new Uri(agentOptions.BaseUrl);
+        client.Timeout = TimeSpan.FromSeconds(agentOptions.TimeoutSeconds);
+    });
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -129,6 +149,7 @@ if (app.Environment.IsDevelopment())
 app.MapHealthEndpoints();
 app.MapAuthEndpoints();
 app.MapUploadEndpoints();
+app.MapBookEndpoints();
 
 app.MapGet("/me", (HttpContext ctx) =>
 {

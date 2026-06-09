@@ -36,9 +36,9 @@
 ## Phase 2 — Runtime Layer
 
 ### Application sublayer
-- [ ] Service modules (business logic)
-- [ ] Transaction handling
-- [ ] State management
+- [x] Service modules (business logic)
+- [x] Transaction handling
+- [x] State management
 - [ ] Hangfire job scheduling
 
 ### Agent sublayer
@@ -55,7 +55,7 @@
 - [x] End-to-end test (PDF → corrected text)
 
 **Trạng thái Phase 2:** 🟡
-**Ghi chú:** Agent sublayer + OCR pipeline xong (Tuần 3-4). Application sublayer (Hangfire, transactions) pending.
+**Ghi chú:** Agent sublayer + OCR pipeline xong. Application sublayer (Books CRUD, Gateway→Agent delegation) xong. Còn Hangfire + Agent memory.
 
 ---
 
@@ -127,3 +127,4 @@
 | 2026-06-09 | GitHub Actions CI: gateway-build (dotnet 9 restore+build+test), agent-lint (ruff), agent-test (pytest), compose-validate (docker compose config). Triggers on push/PR to master with concurrency cancel-in-progress | — | Phase 1 Infrastructure CI nền done |
 | 2026-06-09 | WAF file-upload rules in Gateway: FileUploadOptions (50 MiB cap, application/pdf allow-list, %PDF- magic bytes), FileUploadGuard (metadata + body validation + SHA-256), Kestrel + FormOptions body-size limits, upload rate-limit bucket (5/min), POST /uploads/pdf (uploader role, Problem+JSON rejections, path-traversal guard). dotnet build -warnaserror green | — | Phase 1 Gateway WAF rules done |
 | 2026-06-09 | TLS/SSL via Caddy reverse proxy: dev Caddyfile (local_certs internal CA), prod Caddyfile.prod template (ACME Let's Encrypt), security headers (HSTS in prod, no-sniff, frame-deny), routes / → gateway and /agent/* → agent with prefix strip, caddy_data + caddy_config volumes | — | Phase 1 closed (all infra items done) |
+| 2026-06-09 | Application sublayer in Gateway: Books domain (records + DTOs + BookRepository via Dapper with ILIKE search and ON CONFLICT page upsert), AgentClient typed HttpClient (multipart PDF → /ocr/pdf, AgentRequestException), endpoints POST /books (create), GET /books (paginated list with status+q filter), GET /books/{id} (details + pages), POST /books/{id}/pages (uploader role + upload bucket, FileUploadGuard metadata+body checks, forwards to Agent, persists pages, updates status='processed'). AgentOptions bound + validated. dotnet build -warnaserror green | — | Phase 2 Application sublayer 3/4 done (Hangfire deferred) |

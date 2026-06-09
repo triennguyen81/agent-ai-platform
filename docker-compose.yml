@@ -80,6 +80,8 @@ services:
       Jwt__Audience: ${JWT_AUDIENCE:-aiq.client}
       Jwt__SigningKey: ${JWT_SIGNING_KEY}
       Jwt__AccessTokenMinutes: 60
+      Agent__BaseUrl: ${AGENT_INTERNAL_BASE_URL:-http://agent:8000}
+      Agent__TimeoutSeconds: ${AGENT_TIMEOUT_SECONDS:-300}
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     networks:
