@@ -63,6 +63,28 @@ services:
     networks:
       - aiq-net
 
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: src/Aiq.Gateway/Dockerfile
+    container_name: aiq-gateway
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-aiq};Username=${POSTGRES_USER:-aiq};Password=${POSTGRES_PASSWORD:-aiq};Pooling=true"
+      Jwt__Issuer: ${JWT_ISSUER:-aiq.local}
+      Jwt__Audience: ${JWT_AUDIENCE:-aiq.client}
+      Jwt__SigningKey: ${JWT_SIGNING_KEY}
+      Jwt__AccessTokenMinutes: 60
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    networks:
+      - aiq-net
+
 volumes:
   postgres_data:
   qdrant_data:

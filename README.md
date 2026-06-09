@@ -6,15 +6,16 @@ Nền tảng Agentic AI theo kiến trúc phân tầng (Presentation · Gateway 
 
 ---
 
-## Stack hiện tại (Phase 1 — Tuần 1)
+## Stack hiện tại (Phase 1 — Tuần 1–2)
 
-| Thành phần | Image | Vai trò |
-|------------|-------|---------|
+| Thành phần | Image / Stack | Vai trò |
+|------------|---------------|---------|
 | PostgreSQL + pgvector | `pgvector/pgvector:pg16` | Relational + backup vector index |
 | Qdrant | `qdrant/qdrant:v1.12.4` | Vector DB chính (embeddings) |
 | Redis | `redis:7-alpine` | Cache & queue backing |
+| API Gateway | ASP.NET Core 9 (`gateway/`) | JWT auth, RBAC, rate limiting, health |
 
-Gateway (ASP.NET Core), Application/Agent runtime, và Observability sẽ thêm ở các tuần kế tiếp.
+Application/Agent runtime và Observability sẽ thêm ở các tuần kế tiếp.
 
 ---
 
@@ -37,14 +38,15 @@ cd agent_claude_sdk
 cp .env.example .env
 # Sửa các giá trị changeme_* trong .env
 
-# 3. Khởi động hạ tầng
-docker compose up -d
+# 3. Khởi động hạ tầng + gateway
+docker compose up -d --build
 
 # 4. Kiểm tra health
 docker compose ps
+curl http://localhost:8080/healthz/ready
 ```
 
-Sau khi container `aiq-postgres` `healthy`, schema khởi tạo trong `infra/postgres/init/` sẽ được apply tự động (chỉ chạy lần đầu khi volume trống).
+Sau khi container `aiq-postgres` `healthy`, schema khởi tạo trong `infra/postgres/init/` sẽ được apply tự động (chỉ chạy lần đầu khi volume trống). Gateway sẽ khởi động sau khi Postgres healthy.
 
 ---
 
@@ -52,6 +54,7 @@ Sau khi container `aiq-postgres` `healthy`, schema khởi tạo trong `infra/pos
 
 | Service | URL / Port |
 |---------|------------|
+| Gateway | http://localhost:8080 |
 | PostgreSQL | `localhost:5432` (user/db trong `.env`) |
 | Qdrant HTTP | http://localhost:6333 |
 | Qdrant gRPC | `localhost:6334` |
@@ -60,6 +63,19 @@ Sau khi container `aiq-postgres` `healthy`, schema khởi tạo trong `infra/pos
 Smoke test:
 
 ```bash
+# Gateway
+curl http://localhost:8080/healthz/live
+curl http://localhost:8080/healthz/ready
+
+# Register + login flow
+curl -X POST http://localhost:8080/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"demo@aiq.local","password":"changeme123","displayName":"Demo"}'
+
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"demo@aiq.local","password":"changeme123"}'
+
 # Postgres
 docker exec -it aiq-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt"
 
@@ -83,6 +99,17 @@ docker exec -it aiq-redis redis-cli -a "$REDIS_PASSWORD" ping
 │       └── init/
 │           ├── 01_extensions.sql   # pgvector, pg_trgm, pgcrypto, uuid-ossp
 │           └── 02_schema.sql       # users, roles, books, corrections, audit
+├── gateway/                        # ASP.NET Core 9 API Gateway
+│   ├── Aiq.Gateway.sln
+│   ├── .dockerignore
+│   └── src/Aiq.Gateway/
+│       ├── Aiq.Gateway.csproj
+│       ├── Program.cs              # composition root, JWT, rate limiting
+│       ├── Configuration/JwtOptions.cs
+│       ├── Auth/                   # JWT, BCrypt hasher, DTOs
+│       ├── Data/                   # Npgsql + Dapper user repository
+│       ├── Endpoints/              # /auth, /healthz
+│       └── Dockerfile
 ├── plan (3).md
 ├── progress-check.md
 └── README.md
@@ -102,7 +129,7 @@ docker compose up -d
 ## Roadmap ngắn hạn
 
 - [x] **Tuần 1:** Repo + Docker Compose (PostgreSQL + Qdrant + Redis) + schema baseline
-- [ ] **Tuần 2:** API Gateway (ASP.NET Core + JWT)
+- [x] **Tuần 2:** API Gateway prototype (ASP.NET Core 9 + JWT + RBAC + rate limiting)
 - [ ] **Tuần 3:** Agent skeleton (Qwen3 qua Ollama/MLX)
 - [ ] **Tuần 4:** OCR pipeline test đầu tiên (PDF → extract → correct)
 

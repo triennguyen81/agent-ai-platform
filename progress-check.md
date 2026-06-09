@@ -10,10 +10,10 @@
 ## Phase 1 — Nền tảng
 
 ### Gateway
-- [ ] Khởi tạo project ASP.NET Core
-- [ ] JWT authentication
-- [ ] RBAC middleware
-- [ ] Rate limiting
+- [x] Khởi tạo project ASP.NET Core
+- [x] JWT authentication
+- [x] RBAC middleware
+- [x] Rate limiting
 - [ ] WAF rules (upload file)
 
 ### Database
@@ -28,8 +28,8 @@
 - [ ] TLS/SSL certificates
 - [ ] CI nền (build + test)
 
-**Trạng thái Phase 1:** ⬜
-**Ghi chú:** _(trống)_
+**Trạng thái Phase 1:** 🟡
+**Ghi chú:** Database xong (Tuần 1). Gateway prototype xong (Tuần 2) trừ WAF rules.
 
 ---
 
@@ -96,8 +96,8 @@
 
 | Tuần | Mục tiêu | Trạng thái |
 |------|----------|-----------|
-| 1 | Repo + Docker Compose (PostgreSQL + Qdrant) | ⬜ |
-| 2 | API Gateway prototype (ASP.NET Core + JWT) | ⬜ |
+| 1 | Repo + Docker Compose (PostgreSQL + Qdrant) | ✅ |
+| 2 | API Gateway prototype (ASP.NET Core + JWT) | ✅ |
 | 3 | Agent skeleton (Qwen3 qua Ollama/MLX) | ⬜ |
 | 4 | OCR pipeline test đầu tiên | ⬜ |
 
@@ -121,3 +121,4 @@
 |------|-------------|-------|---------|
 | 2026-06-09 | Tạo plan.md + progress-check.md | — | Khởi tạo |
 | 2026-06-09 | Scaffold repo + Docker Compose (Postgres pgvector + Qdrant + Redis) + schema baseline | — | Milestone Tuần 1 done |
+| 2026-06-09 | API Gateway prototype: ASP.NET Core 9, JWT auth, RBAC policies, fixed-window rate limiting, /auth/register, /auth/login, /me, /healthz | — | Milestone Tuần 2 done (WAF rules pending) |
