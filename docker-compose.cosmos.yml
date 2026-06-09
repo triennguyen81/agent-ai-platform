@@ -4,58 +4,48 @@
 #   cd /opt/apps/aiq
 #   docker compose -f docker-compose.yml -f docker-compose.cosmos.yml up -d --build
 #
-# Differences from the base file:
-#   - Caddy is profile-gated so it stays out of the cosmos stack — agentic-npm
-#     already terminates TLS on this box.
-#   - Gateway + Agent join the existing external `agentic-net` network so the
-#     NPM proxy host can reach them by container name (aiq-gateway, aiq-agent).
-#   - All host port bindings on services that clash with the agentic stack
-#     are remapped to free ports.
+# Strategy:
+#   - Caddy stays disabled (profile `edge`) — agentic-npm already owns 80/443.
+#   - Gateway + Agent join the existing external `agentic-net` network so
+#     NPM can reach them by container name (aiq-gateway, aiq-agent) and we
+#     keep ZERO host port exposure for them.
+#   - Internal services (postgres, redis, qdrant, prometheus, loki, grafana)
+#     drop ALL host port bindings. The AIQ stack reaches them by container
+#     name inside the private aiq-net. Admin access uses `docker compose
+#     exec`. This avoids the Docker daemon's confused port allocator on
+#     this host AND closes attack surface.
 
 services:
+  # Override base compose's host port lists with empty lists (compose v2.20+
+  # merge semantics replace lists). The container ports stay open inside
+  # the docker network for service-to-service traffic.
   postgres:
-    ports:
-      - "127.0.0.1:25432:5432"
-
+    ports: []
   qdrant:
-    ports:
-      - "127.0.0.1:6333:6333"
-      - "127.0.0.1:6334:6334"
-
+    ports: []
   redis:
-    ports:
-      - "127.0.0.1:26379:6379"
+    ports: []
+  prometheus:
+    ports: []
+  loki:
+    ports: []
+  grafana:
+    ports: []
 
   gateway:
-    ports:
-      - "127.0.0.1:8080:8080"
+    ports: []
     networks:
       - aiq-net
       - agentic-net
 
   agent:
-    ports:
-      - "127.0.0.1:8001:8000"
+    ports: []
     networks:
       - aiq-net
       - agentic-net
 
   caddy:
-    # Profile-gated → not started unless `COMPOSE_PROFILES=edge` is set.
-    # agentic-npm already owns 80/443 on this host.
     profiles: ["edge"]
-
-  prometheus:
-    ports:
-      - "127.0.0.1:9093:9090"
-
-  loki:
-    ports:
-      - "127.0.0.1:3110:3100"
-
-  grafana:
-    ports:
-      - "127.0.0.1:3002:3000"
 
 networks:
   agentic-net:
