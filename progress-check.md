@@ -42,10 +42,10 @@
 - [ ] Hangfire job scheduling
 
 ### Agent sublayer
-- [ ] LLM integration (Claude API)
-- [ ] LLM integration (Qwen3 local — Ollama/MLX)
-- [ ] Tool / function calling framework
-- [ ] Agent orchestration (Planner–Executor–Critic)
+- [x] LLM integration (Claude API)
+- [x] LLM integration (Qwen3 local — Ollama/MLX)
+- [x] Tool / function calling framework
+- [x] Agent orchestration (Planner–Executor–Critic)
 - [ ] Memory / context management
 
 ### OCR Pipeline (project cụ thể)
@@ -54,8 +54,8 @@
 - [ ] pgvector validation
 - [ ] End-to-end test (PDF → corrected text)
 
-**Trạng thái Phase 2:** ⬜
-**Ghi chú:** _(trống)_
+**Trạng thái Phase 2:** 🟡
+**Ghi chú:** Agent sublayer skeleton xong (Tuần 3). Application sublayer và OCR pipeline pending.
 
 ---
 
@@ -98,7 +98,7 @@
 |------|----------|-----------|
 | 1 | Repo + Docker Compose (PostgreSQL + Qdrant) | ✅ |
 | 2 | API Gateway prototype (ASP.NET Core + JWT) | ✅ |
-| 3 | Agent skeleton (Qwen3 qua Ollama/MLX) | ⬜ |
+| 3 | Agent skeleton (Qwen3 qua Ollama/MLX) | ✅ |
 | 4 | OCR pipeline test đầu tiên | ⬜ |
 
 ---
@@ -122,3 +122,4 @@
 | 2026-06-09 | Tạo plan.md + progress-check.md | — | Khởi tạo |
 | 2026-06-09 | Scaffold repo + Docker Compose (Postgres pgvector + Qdrant + Redis) + schema baseline | — | Milestone Tuần 1 done |
 | 2026-06-09 | API Gateway prototype: ASP.NET Core 9, JWT auth, RBAC policies, fixed-window rate limiting, /auth/register, /auth/login, /me, /healthz | — | Milestone Tuần 2 done (WAF rules pending) |
+| 2026-06-09 | Agent skeleton: Python 3.12 + FastAPI, LlmService abstraction (Ollama + Anthropic), tool registry (echo stub), Planner-Executor-Critic orchestrator, /chat /tools /healthz endpoints, docker-compose wired with host.docker.internal | — | Milestone Tuần 3 done (memory/context pending) |

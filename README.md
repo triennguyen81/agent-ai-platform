@@ -6,7 +6,7 @@ Nền tảng Agentic AI theo kiến trúc phân tầng (Presentation · Gateway 
 
 ---
 
-## Stack hiện tại (Phase 1 — Tuần 1–2)
+## Stack hiện tại (Phase 1 — Tuần 1–2, Phase 2 — Tuần 3 partial)
 
 | Thành phần | Image / Stack | Vai trò |
 |------------|---------------|---------|
@@ -14,8 +14,9 @@ Nền tảng Agentic AI theo kiến trúc phân tầng (Presentation · Gateway 
 | Qdrant | `qdrant/qdrant:v1.12.4` | Vector DB chính (embeddings) |
 | Redis | `redis:7-alpine` | Cache & queue backing |
 | API Gateway | ASP.NET Core 9 (`gateway/`) | JWT auth, RBAC, rate limiting, health |
+| Agent runtime | Python 3.12 + FastAPI (`agent/`) | LLM (Qwen3/Claude), tools, Planner-Executor-Critic |
 
-Application/Agent runtime và Observability sẽ thêm ở các tuần kế tiếp.
+OCR pipeline cụ thể và Observability sẽ thêm ở các tuần kế tiếp.
 
 ---
 
@@ -55,6 +56,7 @@ Sau khi container `aiq-postgres` `healthy`, schema khởi tạo trong `infra/pos
 | Service | URL / Port |
 |---------|------------|
 | Gateway | http://localhost:8080 |
+| Agent | http://localhost:8001 |
 | PostgreSQL | `localhost:5432` (user/db trong `.env`) |
 | Qdrant HTTP | http://localhost:6333 |
 | Qdrant gRPC | `localhost:6334` |
@@ -75,6 +77,13 @@ curl -X POST http://localhost:8080/auth/register \
 curl -X POST http://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"demo@aiq.local","password":"changeme123"}'
+
+# Agent (Planner-Executor-Critic, default tool=echo)
+curl http://localhost:8001/healthz/ready
+curl http://localhost:8001/tools
+curl -X POST http://localhost:8001/chat \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Echo hello to confirm tools work","tool":"echo","tool_arguments":{"message":"hi"}}'
 
 # Postgres
 docker exec -it aiq-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt"
@@ -110,6 +119,16 @@ docker exec -it aiq-redis redis-cli -a "$REDIS_PASSWORD" ping
 │       ├── Data/                   # Npgsql + Dapper user repository
 │       ├── Endpoints/              # /auth, /healthz
 │       └── Dockerfile
+├── agent/                          # Python 3.12 + FastAPI Agent runtime
+│   ├── pyproject.toml
+│   ├── Dockerfile
+│   └── src/aiq_agent/
+│       ├── main.py                 # FastAPI app + lifespan
+│       ├── config.py               # pydantic-settings
+│       ├── llm/                    # base + Ollama + Anthropic + factory
+│       ├── tools/                  # function-calling registry
+│       ├── orchestration/          # Planner-Executor-Critic
+│       └── api/                    # /healthz, /chat, /tools
 ├── plan (3).md
 ├── progress-check.md
 └── README.md
@@ -130,7 +149,7 @@ docker compose up -d
 
 - [x] **Tuần 1:** Repo + Docker Compose (PostgreSQL + Qdrant + Redis) + schema baseline
 - [x] **Tuần 2:** API Gateway prototype (ASP.NET Core 9 + JWT + RBAC + rate limiting)
-- [ ] **Tuần 3:** Agent skeleton (Qwen3 qua Ollama/MLX)
+- [x] **Tuần 3:** Agent skeleton (FastAPI + LLM abstraction + Planner-Executor-Critic + tool registry)
 - [ ] **Tuần 4:** OCR pipeline test đầu tiên (PDF → extract → correct)
 
 ---
