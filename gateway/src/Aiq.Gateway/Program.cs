@@ -221,14 +221,35 @@ builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
 
+// ---- Performance: response compression + output caching --------------------
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
+});
+
+builder.Services.AddOutputCache(options =>
+{
+    // Books listing is hit hard and read-mostly. 10s TTL keeps the cache
+    // useful without making a freshly uploaded book invisible for long.
+    options.AddPolicy("books-list", policy =>
+        policy
+            .Expire(TimeSpan.FromSeconds(10))
+            .SetVaryByQuery("status", "q", "limit", "offset")
+            .Tag("books"));
+});
+
 // ---- Pipeline --------------------------------------------------------------
 var app = builder.Build();
 
 app.UseExceptionHandler();
 app.UseStatusCodePages();
+app.UseResponseCompression();
 app.UseRouting();
 app.UseHttpMetrics();           // /metrics request histograms + counters per endpoint
 app.UseRateLimiter();
+app.UseOutputCache();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseMiddleware<AuditMiddleware>();

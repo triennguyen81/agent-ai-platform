@@ -21,7 +21,7 @@ public static class BookEndpoints
         group.MapPost("/", CreateAsync)
             .RequireAuthorization("uploader");
 
-        group.MapGet("/", ListAsync);
+        group.MapGet("/", ListAsync).CacheOutput("books-list");
         group.MapGet("/{id:guid}", GetAsync);
 
         group.MapPost("/{id:guid}/pages", UploadPagesAsync)
