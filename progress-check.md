@@ -17,10 +17,10 @@
 - [ ] WAF rules (upload file)
 
 ### Database
-- [ ] PostgreSQL setup
-- [ ] Qdrant / pgvector setup
-- [ ] Redis cache
-- [ ] Schema design (books, users, corrections, audit)
+- [x] PostgreSQL setup
+- [x] Qdrant / pgvector setup
+- [x] Redis cache
+- [x] Schema design (books, users, corrections, audit)
 
 ### Infrastructure
 - [ ] Docker containerization
@@ -120,3 +120,4 @@
 | Ngày | Việc đã làm | Người | Ghi chú |
 |------|-------------|-------|---------|
 | 2026-06-09 | Tạo plan.md + progress-check.md | — | Khởi tạo |
+| 2026-06-09 | Scaffold repo + Docker Compose (Postgres pgvector + Qdrant + Redis) + schema baseline | — | Milestone Tuần 1 done |
