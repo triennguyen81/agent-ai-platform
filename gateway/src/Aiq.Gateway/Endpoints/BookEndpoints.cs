@@ -91,12 +91,23 @@ public static class BookEndpoints
         IBookRepository books,
         IOcrJobScheduler scheduler,
         IFileUploadGuard guard,
+        IBookAccessControl acl,
+        HttpContext ctx,
         CancellationToken ct)
     {
         var book = await books.FindByIdAsync(id, ct);
         if (book is null)
         {
             return Results.NotFound();
+        }
+
+        if (!acl.CanMutate(ctx.User, book))
+        {
+            return Results.Problem(
+                type: "https://aiq.local/problems/forbidden",
+                title: "Forbidden",
+                statusCode: StatusCodes.Status403Forbidden,
+                detail: "Only the original uploader or an admin can attach pages to this book.");
         }
 
         var metadataCheck = guard.ValidateMetadata(file.FileName, file.ContentType, file.Length);

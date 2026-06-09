@@ -103,6 +103,7 @@ builder.Services.AddScoped<IBookRepository, BookRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IFileUploadGuard, FileUploadGuard>();
+builder.Services.AddSingleton<IBookAccessControl, BookAccessControl>();
 
 builder.Services
     .AddHttpClient<IAgentClient, AgentClient>(client =>
@@ -173,25 +174,48 @@ builder.Services.AddAuthorization(options =>
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // Auth endpoints stay GLOBAL — we cannot key by user until after login.
     options.AddFixedWindowLimiter("auth", limiter =>
     {
         limiter.PermitLimit = 10;
         limiter.Window = TimeSpan.FromMinutes(1);
         limiter.QueueLimit = 0;
     });
-    options.AddFixedWindowLimiter("default", limiter =>
-    {
-        limiter.PermitLimit = 100;
-        limiter.Window = TimeSpan.FromMinutes(1);
-        limiter.QueueLimit = 0;
-    });
-    options.AddFixedWindowLimiter("upload", limiter =>
-    {
-        limiter.PermitLimit = 5;
-        limiter.Window = TimeSpan.FromMinutes(1);
-        limiter.QueueLimit = 0;
-    });
+
+    // Default + upload are per-user (sub claim) with IP fallback for unauthenticated
+    // edge cases. This prevents a single noisy user/key from starving everyone else.
+    options.AddPolicy("default", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: PartitionKeyFor(httpContext),
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+            }));
+
+    options.AddPolicy("upload", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: PartitionKeyFor(httpContext),
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+            }));
 });
+
+static string PartitionKeyFor(HttpContext httpContext)
+{
+    var sub = httpContext.User.FindFirst("sub")?.Value;
+    if (!string.IsNullOrWhiteSpace(sub))
+    {
+        return $"user:{sub}";
+    }
+    var ip = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    return $"ip:{ip}";
+}
 
 builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
