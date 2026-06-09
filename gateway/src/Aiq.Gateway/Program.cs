@@ -4,7 +4,9 @@ using Aiq.Gateway.Auth;
 using Aiq.Gateway.Configuration;
 using Aiq.Gateway.Data;
 using Aiq.Gateway.Endpoints;
+using Aiq.Gateway.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
 
@@ -16,6 +18,27 @@ builder.Services
     .Bind(builder.Configuration.GetSection(JwtOptions.SectionName))
     .ValidateDataAnnotations()
     .ValidateOnStart();
+
+builder.Services
+    .AddOptions<FileUploadOptions>()
+    .Bind(builder.Configuration.GetSection(FileUploadOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+var fileUploadOptions = builder.Configuration
+    .GetSection(FileUploadOptions.SectionName)
+    .Get<FileUploadOptions>()
+    ?? new FileUploadOptions();
+
+builder.Services.Configure<FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = fileUploadOptions.MaxBytes;
+});
+
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = fileUploadOptions.MaxBytes;
+});
 
 var jwtOptions = builder.Configuration
     .GetSection(JwtOptions.SectionName)
@@ -35,6 +58,7 @@ builder.Services.AddSingleton(new NpgsqlConnectionFactory(connectionString));
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
+builder.Services.AddSingleton<IFileUploadGuard, FileUploadGuard>();
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -76,6 +100,12 @@ builder.Services.AddRateLimiter(options =>
         limiter.Window = TimeSpan.FromMinutes(1);
         limiter.QueueLimit = 0;
     });
+    options.AddFixedWindowLimiter("upload", limiter =>
+    {
+        limiter.PermitLimit = 5;
+        limiter.Window = TimeSpan.FromMinutes(1);
+        limiter.QueueLimit = 0;
+    });
 });
 
 builder.Services.AddProblemDetails();
@@ -98,6 +128,7 @@ if (app.Environment.IsDevelopment())
 
 app.MapHealthEndpoints();
 app.MapAuthEndpoints();
+app.MapUploadEndpoints();
 
 app.MapGet("/me", (HttpContext ctx) =>
 {
