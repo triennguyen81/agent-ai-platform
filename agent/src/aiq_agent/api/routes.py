@@ -5,7 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from aiq_agent.api.schemas import ChatRequest, ChatResponse, HealthResponse, StepResponse
-from aiq_agent.llm.base import LlmService
+from aiq_agent.llm.base import ChatMessage, LlmService
+from aiq_agent.memory.base import MemoryStore
 from aiq_agent.orchestration import PlannerExecutorCritic
 from aiq_agent.tools.registry import ToolExecutionError, ToolRegistry
 
@@ -18,6 +19,10 @@ def _llm(request: Request) -> LlmService:
 
 def _tools(request: Request) -> ToolRegistry:
     return request.app.state.tools
+
+
+def _memory(request: Request) -> MemoryStore:
+    return request.app.state.memory
 
 
 @router.get("/healthz/live", response_model=HealthResponse)
@@ -36,6 +41,7 @@ async def chat(
     body: ChatRequest,
     llm: LlmService = Depends(_llm),
     tools: ToolRegistry = Depends(_tools),
+    memory: MemoryStore = Depends(_memory),
 ) -> ChatResponse:
     if body.tool and tools.get(body.tool) is None:
         raise HTTPException(
@@ -43,12 +49,17 @@ async def chat(
             detail=f"Unknown tool: {body.tool!r}",
         )
 
+    prior_history: list[ChatMessage] = []
+    if body.thread_id:
+        prior_history = await memory.get(body.thread_id, limit=body.memory_limit)
+
     orchestrator = PlannerExecutorCritic(llm=llm, tools=tools)
     try:
         run = await orchestrator.run(
             body.prompt,
             tool_name=body.tool,
             tool_arguments=body.tool_arguments,
+            prior_history=prior_history,
         )
     except ToolExecutionError as exc:
         raise HTTPException(
@@ -56,10 +67,23 @@ async def chat(
             detail=str(exc),
         ) from exc
 
+    history_length = len(prior_history)
+    if body.thread_id:
+        await memory.append(
+            body.thread_id,
+            [
+                ChatMessage("user", body.prompt),
+                ChatMessage("assistant", run.final_answer),
+            ],
+        )
+        history_length += 2
+
     return ChatResponse(
         final_answer=run.final_answer,
         provider=llm.provider,
         model=llm.model,
+        thread_id=body.thread_id,
+        history_length=history_length,
         steps=[
             StepResponse(
                 role=step.role,
@@ -71,6 +95,11 @@ async def chat(
             for step in run.steps
         ],
     )
+
+
+@router.delete("/chat/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_thread(thread_id: str, memory: MemoryStore = Depends(_memory)) -> None:
+    await memory.clear(thread_id)
 
 
 @router.get("/tools", response_model=list[dict])

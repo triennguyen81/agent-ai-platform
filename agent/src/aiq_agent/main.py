@@ -11,6 +11,7 @@ from aiq_agent.api.ocr_routes import router as ocr_router
 from aiq_agent.api.routes import router
 from aiq_agent.config import get_settings
 from aiq_agent.llm import build_llm_service
+from aiq_agent.memory import build_memory_store
 from aiq_agent.ocr import (
     DiacriticCorrector,
     OcrPipeline,
@@ -24,6 +25,7 @@ from aiq_agent.tools import default_registry
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     llm = build_llm_service(settings)
+    memory = build_memory_store(settings)
 
     extractor = PaddleOcrExtractor(lang="vi")
     corrector = DiacriticCorrector(llm)
@@ -32,11 +34,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.llm = llm
     app.state.tools = default_registry
+    app.state.memory = memory
     app.state.ocr_pipeline = pipeline
 
     try:
         yield
     finally:
+        await memory.aclose()
         await validator.aclose()
         await llm.aclose()
 

@@ -7,6 +7,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LlmProvider = Literal["ollama", "anthropic"]
+MemoryBackend = Literal["in_memory", "redis"]
 
 
 class Settings(BaseSettings):
@@ -33,6 +34,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = Field(default=None)
     anthropic_model: str = Field(default="claude-sonnet-4-6")
     anthropic_max_tokens: int = Field(default=2048, gt=0)
+
+    # ---- Memory ----
+    memory_backend: MemoryBackend = Field(default="in_memory")
+    memory_ttl_seconds: int = Field(default=86_400, gt=0)
+    memory_max_messages: int = Field(default=200, gt=0)
+    redis_url: str | None = Field(default=None)
+    redis_password: str | None = Field(default=None)
 
 
 @lru_cache(maxsize=1)

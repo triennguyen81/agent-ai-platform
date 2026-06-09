@@ -46,7 +46,7 @@
 - [x] LLM integration (Qwen3 local — Ollama/MLX)
 - [x] Tool / function calling framework
 - [x] Agent orchestration (Planner–Executor–Critic)
-- [ ] Memory / context management
+- [x] Memory / context management
 
 ### OCR Pipeline (project cụ thể)
 - [x] PaddleOCR extraction
@@ -54,8 +54,8 @@
 - [x] pgvector validation
 - [x] End-to-end test (PDF → corrected text)
 
-**Trạng thái Phase 2:** 🟡
-**Ghi chú:** Application sublayer (Books CRUD + Hangfire async OCR) xong. Agent sublayer + OCR pipeline xong. Còn Agent memory/context.
+**Trạng thái Phase 2:** ✅
+**Ghi chú:** Toàn bộ Application sublayer, Agent sublayer (memory/context xong), OCR pipeline đều hoàn tất.
 
 ---
 
@@ -129,3 +129,4 @@
 | 2026-06-09 | TLS/SSL via Caddy reverse proxy: dev Caddyfile (local_certs internal CA), prod Caddyfile.prod template (ACME Let's Encrypt), security headers (HSTS in prod, no-sniff, frame-deny), routes / → gateway and /agent/* → agent with prefix strip, caddy_data + caddy_config volumes | — | Phase 1 closed (all infra items done) |
 | 2026-06-09 | Application sublayer in Gateway: Books domain (records + DTOs + BookRepository via Dapper with ILIKE search and ON CONFLICT page upsert), AgentClient typed HttpClient (multipart PDF → /ocr/pdf, AgentRequestException), endpoints POST /books (create), GET /books (paginated list with status+q filter), GET /books/{id} (details + pages), POST /books/{id}/pages (uploader role + upload bucket, FileUploadGuard metadata+body checks, forwards to Agent, persists pages, updates status='processed'). AgentOptions bound + validated. dotnet build -warnaserror green | — | Phase 2 Application sublayer 3/4 done (Hangfire deferred) |
 | 2026-06-09 | Hangfire async OCR jobs: Hangfire.AspNetCore + Hangfire.PostgreSql packages, OcrJobRunner [AutomaticRetry(2)] (status=processing→processed/failed, deletes staged PDF in finally), OcrJobScheduler (stages PDF to /var/aiq/uploads with fresh GUID filename then `Enqueue<OcrJobRunner>`), JobsAuthorizationFilter (admin role + dev loopback bypass), Hangfire dashboard at /jobs/dashboard. POST /books/{id}/pages now returns 202 with jobId, GET /books/{id}/jobs/{jobId} polls JobStorage. Compose adds gateway_uploads volume. dotnet build -warnaserror green | — | Phase 2 Application sublayer 4/4 done |
+| 2026-06-09 | Agent memory/context: MemoryStore ABC, InMemoryMemoryStore (asyncio.Lock + defaultdict), RedisMemoryStore (redis-py async, LIST per thread keyed `aiq:mem:{tid}`, JSON payloads, sliding TTL 24h, LTRIM cap 200 msgs). build_memory_store factory selects via Settings.memory_backend. PEC accepts prior_history. /chat loads history before run + appends user/assistant after, DELETE /chat/threads/{tid} clears. 6 pytest-asyncio cases (insertion order, limit, thread isolation, clear, empty noop). Compose wires REDIS_URL + depends_on redis healthy | — | Phase 2 Agent sublayer 5/5 done — Phase 2 closed |

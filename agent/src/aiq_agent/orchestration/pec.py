@@ -1,13 +1,13 @@
 """Planner-Executor-Critic skeleton.
 
-This is intentionally a thin scaffold for Week 3. The Planner asks the LLM for
-a short plan, the Executor runs at most one tool from the registry, and the
-Critic asks the LLM to judge the result. Later milestones will add proper
-tool-call parsing (JSON / structured output), retries, and memory.
+The Planner asks the LLM for a short plan, the Executor runs at most one tool
+from the registry, and the Critic asks the LLM to judge the result. Callers
+may pass `prior_history` so multi-turn conversations carry context forward.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -55,20 +55,22 @@ class PlannerExecutorCritic:
         *,
         tool_name: str | None = None,
         tool_arguments: dict[str, Any] | None = None,
+        prior_history: Sequence[ChatMessage] = (),
     ) -> AgentRun:
         steps: list[AgentStep] = []
+        history = list(prior_history)
 
-        # 1. Plan
-        plan = await self._llm.chat(
-            [
-                ChatMessage("system", _PLANNER_SYSTEM),
-                ChatMessage(
-                    "user",
-                    f"User request: {user_prompt}\n\n"
-                    f"Available tools: {[t['name'] for t in self._tools.describe()]}",
-                ),
-            ]
+        # 1. Plan — prior turns help the planner pick up where the user left off.
+        plan_messages: list[ChatMessage] = [ChatMessage("system", _PLANNER_SYSTEM)]
+        plan_messages.extend(history)
+        plan_messages.append(
+            ChatMessage(
+                "user",
+                f"User request: {user_prompt}\n\n"
+                f"Available tools: {[t['name'] for t in self._tools.describe()]}",
+            )
         )
+        plan = await self._llm.chat(plan_messages)
         steps.append(AgentStep(role="planner", content=plan.content))
 
         # 2. Execute — caller picks the tool for this skeleton pass.

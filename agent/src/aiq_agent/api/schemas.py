@@ -12,6 +12,12 @@ class ChatRequest(BaseModel):
     tool: str | None = Field(default=None, description="Optional tool to invoke in Executor step.")
     tool_arguments: dict[str, Any] = Field(default_factory=dict)
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    thread_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Conversation id. When provided, prior turns are loaded from memory and the new exchange is appended.",
+    )
+    memory_limit: int = Field(default=20, ge=0, le=200)
 
 
 class StepResponse(BaseModel):
@@ -27,6 +33,8 @@ class ChatResponse(BaseModel):
     provider: str
     model: str
     steps: list[StepResponse]
+    thread_id: str | None = None
+    history_length: int = 0
 
 
 class HealthResponse(BaseModel):
