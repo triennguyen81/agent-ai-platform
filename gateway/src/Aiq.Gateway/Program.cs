@@ -1,5 +1,6 @@
 using System.Text;
 using System.Threading.RateLimiting;
+using Aiq.Gateway.Audit;
 using Aiq.Gateway.Auth;
 using Aiq.Gateway.Books;
 using Aiq.Gateway.Configuration;
@@ -12,9 +13,23 @@ using Hangfire.PostgreSql;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Logging.Console;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ---- Structured logging ----------------------------------------------------
+builder.Logging.ClearProviders();
+builder.Logging.AddJsonConsole(options =>
+{
+    options.IncludeScopes = true;
+    options.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ";
+    options.UseUtcTimestamp = true;
+    options.JsonWriterOptions = new System.Text.Json.JsonWriterOptions
+    {
+        Indented = false,
+    };
+});
 
 // ---- Options ---------------------------------------------------------------
 builder.Services
@@ -114,6 +129,8 @@ builder.Services.AddHangfireServer(server =>
 builder.Services.AddScoped<OcrJobRunner>();
 builder.Services.AddScoped<IOcrJobScheduler, OcrJobScheduler>();
 
+builder.Services.AddScoped<IAuditLogger, PostgresAuditLogger>();
+
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -174,6 +191,7 @@ app.UseStatusCodePages();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseMiddleware<AuditMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {

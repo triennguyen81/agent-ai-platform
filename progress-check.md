@@ -63,7 +63,7 @@
 
 ### Security
 - [ ] ACL cấp ứng dụng
-- [ ] Audit logging (PostgreSQL)
+- [x] Audit logging (PostgreSQL)
 - [ ] Encryption at-rest
 - [ ] Rate limiting per user/org
 
@@ -73,8 +73,8 @@
 - [ ] Cost tracking (token + compute)
 - [ ] Metrics & alerting (Prometheus + Grafana)
 
-**Trạng thái Phase 3:** ⬜
-**Ghi chú:** _(trống)_
+**Trạng thái Phase 3:** 🟡
+**Ghi chú:** Audit logging Postgres + structured JSON logs xong. ACL, encryption at-rest, per-user rate-limit pending.
 
 ---
 
@@ -130,3 +130,4 @@
 | 2026-06-09 | Application sublayer in Gateway: Books domain (records + DTOs + BookRepository via Dapper with ILIKE search and ON CONFLICT page upsert), AgentClient typed HttpClient (multipart PDF → /ocr/pdf, AgentRequestException), endpoints POST /books (create), GET /books (paginated list with status+q filter), GET /books/{id} (details + pages), POST /books/{id}/pages (uploader role + upload bucket, FileUploadGuard metadata+body checks, forwards to Agent, persists pages, updates status='processed'). AgentOptions bound + validated. dotnet build -warnaserror green | — | Phase 2 Application sublayer 3/4 done (Hangfire deferred) |
 | 2026-06-09 | Hangfire async OCR jobs: Hangfire.AspNetCore + Hangfire.PostgreSql packages, OcrJobRunner [AutomaticRetry(2)] (status=processing→processed/failed, deletes staged PDF in finally), OcrJobScheduler (stages PDF to /var/aiq/uploads with fresh GUID filename then `Enqueue<OcrJobRunner>`), JobsAuthorizationFilter (admin role + dev loopback bypass), Hangfire dashboard at /jobs/dashboard. POST /books/{id}/pages now returns 202 with jobId, GET /books/{id}/jobs/{jobId} polls JobStorage. Compose adds gateway_uploads volume. dotnet build -warnaserror green | — | Phase 2 Application sublayer 4/4 done |
 | 2026-06-09 | Agent memory/context: MemoryStore ABC, InMemoryMemoryStore (asyncio.Lock + defaultdict), RedisMemoryStore (redis-py async, LIST per thread keyed `aiq:mem:{tid}`, JSON payloads, sliding TTL 24h, LTRIM cap 200 msgs). build_memory_store factory selects via Settings.memory_backend. PEC accepts prior_history. /chat loads history before run + appends user/assistant after, DELETE /chat/threads/{tid} clears. 6 pytest-asyncio cases (insertion order, limit, thread isolation, clear, empty noop). Compose wires REDIS_URL + depends_on redis healthy | — | Phase 2 Agent sublayer 5/5 done — Phase 2 closed |
+| 2026-06-09 | Phase 3 Audit + structured logs in Gateway: IAuditLogger + PostgresAuditLogger (writes to audit_log table, JSONB payload, swallows errors and logs loudly — audit failures must not fault requests), AuditMiddleware (state-changing methods only, skips /healthz /jobs/dashboard /openapi, captures actor_id from sub claim, IP, user-agent, status code, fire-and-forget with 10s timeout detached from RequestAborted), AddJsonConsole structured logging (UTC ISO-8601, includeScopes, single-line). Wired after auth in pipeline. dotnet build -warnaserror green | — | Phase 3 Security 1/4 done (audit logging Postgres) |
