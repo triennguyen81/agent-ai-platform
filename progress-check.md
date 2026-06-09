@@ -82,13 +82,13 @@
 
 - [x] Load testing
 - [x] Performance optimization
-- [ ] CI/CD pipeline đầy đủ
+- [x] CI/CD pipeline đầy đủ
 - [ ] Disaster recovery & backup (Btrfs snapshot, WAL archiving)
 - [ ] Documentation
 - [ ] SLA định nghĩa
 
 **Trạng thái Phase 4:** 🟡
-**Ghi chú:** Load testing + perf optimization xong. CI/CD pipeline đầy đủ, DR, docs, SLA pending.
+**Ghi chú:** Load testing + perf + CI/CD đầy đủ xong. DR, docs, SLA pending.
 
 ---
 
@@ -139,3 +139,4 @@
 | 2026-06-10 | Phase 3 Encryption-at-rest deployment guide: docs/security/encryption-at-rest.md — threat model (lost disks / snapshot exfil / cold provider access — explicitly NOT live process compromise), per-store requirements (Postgres LUKS/RDS-CMEK, Qdrant filesystem-only, Redis LUKS + TLS-in-transit, MinIO/S3 SSE-KMS with bucket-policy deny on missing header), backup encryption matrix (WAL-G libsodium, borg repokey-blake2, restic KMS password-command), KMS guidance (Vault Transit / cloud KMS, annual rotation, break-glass), pre-prod verification checklist. Phase 3 closed | — | Phase 3 closed — Security 4/4 (encryption at-rest doc-driven) |
 | 2026-06-10 | Phase 4 Load testing: k6 scripts under tests/load/ — auth.js (ramping-vus 0→20, register→login→/me, tolerates 429 from auth bucket), books.js (constant 25 VUs 2min, paginated list with ILIKE search + random detail read, thresholds p95<400ms list / <300ms read / <5% errors), agent_chat.js (4 VUs 3min, exercises PEC + memory store with thread_id per-VU, generous p95<30s for LLM chains), README explains thresholds + reading | — | Phase 4 Load testing 1/6 done |
 | 2026-06-10 | Phase 4 Performance optimization: AddResponseCompression (Brotli + Gzip, EnableForHttps), AddOutputCache "books-list" policy (10s TTL, VaryByQuery on status/q/limit/offset, Tag="books" for future invalidation), GET /books uses .CacheOutput("books-list"). Npgsql connection string tuned (Min=4, Max=100, Timeout=15s, CommandTimeout=30s, Keepalive=30s, TcpKeepalive=true) in both appsettings + compose env. infra/postgres/init/03_indexes.sql: idx_books_uploaded_by (partial WHERE NOT NULL), idx_books_status_created_at, idx_corrections_page_id, idx_embeddings_vector_cosine (IVFFlat lists=100). dotnet build -warnaserror green | — | Phase 4 Perf 2/6 done |
+| 2026-06-10 | Phase 4 CI/CD pipeline: .github/workflows/docker.yml (push to master triggers buildx of gateway + agent images, push to ghcr.io/{owner}/aiq-{gateway,agent} tagged sha-short + latest, gha buildx cache scoped per service), .github/workflows/release.yml (v*.*.* tag triggers matrix build with version + stable tags, provenance + sbom enabled, softprops/action-gh-release publishes GitHub Release with auto-generated changelog from git log between tags, concurrency cancel-in-progress=false to protect partial releases). Both use ghcr.io with GITHUB_TOKEN packages:write permission | — | Phase 4 CI/CD 3/6 done |

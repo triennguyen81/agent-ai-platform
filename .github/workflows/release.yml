@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semver tag without leading v (e.g. 0.1.0)"
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false      # Never cancel a release once it started.
+
+permissions:
+  contents: write   # Required to create the GitHub Release
+  packages: write   # ghcr.io push
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: ${{ github.repository_owner }}
+
+jobs:
+  versioned-images:
+    name: Build + push versioned images
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    strategy:
+      matrix:
+        include:
+          - service: aiq-gateway
+            context: ./gateway
+            dockerfile: ./gateway/src/Aiq.Gateway/Dockerfile
+          - service: aiq-agent
+            context: ./agent
+            dockerfile: ./agent/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            tag="${GITHUB_REF#refs/tags/v}"
+            echo "value=${tag}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.service }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.value }}
+            type=raw,value=stable
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+  github-release:
+    name: Create GitHub Release
+    needs: versioned-images
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compose release body
+        id: body
+        run: |
+          previous=$(git tag --sort=-v:refname | sed -n '2p' || true)
+          {
+            echo "## Images"
+            echo
+            echo "- \`ghcr.io/${{ env.OWNER }}/aiq-gateway:${{ needs.versioned-images.outputs.version }}\`"
+            echo "- \`ghcr.io/${{ env.OWNER }}/aiq-agent:${{ needs.versioned-images.outputs.version }}\`"
+            echo
+            echo "## Changes since ${previous:-initial commit}"
+            echo
+            if [ -n "$previous" ]; then
+              git log --pretty=format:'- %s (%h)' "${previous}..HEAD"
+            else
+              git log --pretty=format:'- %s (%h)'
+            fi
+          } > release-notes.md
+          echo "path=release-notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: ${{ steps.body.outputs.path }}
+          draft: false
+          prerelease: false
