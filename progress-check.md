@@ -83,12 +83,12 @@
 - [x] Load testing
 - [x] Performance optimization
 - [x] CI/CD pipeline đầy đủ
-- [ ] Disaster recovery & backup (Btrfs snapshot, WAL archiving)
+- [x] Disaster recovery & backup (Btrfs snapshot, WAL archiving)
 - [ ] Documentation
 - [ ] SLA định nghĩa
 
 **Trạng thái Phase 4:** 🟡
-**Ghi chú:** Load testing + perf + CI/CD đầy đủ xong. DR, docs, SLA pending.
+**Ghi chú:** Load testing + perf + CI/CD + DR/backup xong. Documentation + SLA pending.
 
 ---
 
@@ -140,3 +140,4 @@
 | 2026-06-10 | Phase 4 Load testing: k6 scripts under tests/load/ — auth.js (ramping-vus 0→20, register→login→/me, tolerates 429 from auth bucket), books.js (constant 25 VUs 2min, paginated list with ILIKE search + random detail read, thresholds p95<400ms list / <300ms read / <5% errors), agent_chat.js (4 VUs 3min, exercises PEC + memory store with thread_id per-VU, generous p95<30s for LLM chains), README explains thresholds + reading | — | Phase 4 Load testing 1/6 done |
 | 2026-06-10 | Phase 4 Performance optimization: AddResponseCompression (Brotli + Gzip, EnableForHttps), AddOutputCache "books-list" policy (10s TTL, VaryByQuery on status/q/limit/offset, Tag="books" for future invalidation), GET /books uses .CacheOutput("books-list"). Npgsql connection string tuned (Min=4, Max=100, Timeout=15s, CommandTimeout=30s, Keepalive=30s, TcpKeepalive=true) in both appsettings + compose env. infra/postgres/init/03_indexes.sql: idx_books_uploaded_by (partial WHERE NOT NULL), idx_books_status_created_at, idx_corrections_page_id, idx_embeddings_vector_cosine (IVFFlat lists=100). dotnet build -warnaserror green | — | Phase 4 Perf 2/6 done |
 | 2026-06-10 | Phase 4 CI/CD pipeline: .github/workflows/docker.yml (push to master triggers buildx of gateway + agent images, push to ghcr.io/{owner}/aiq-{gateway,agent} tagged sha-short + latest, gha buildx cache scoped per service), .github/workflows/release.yml (v*.*.* tag triggers matrix build with version + stable tags, provenance + sbom enabled, softprops/action-gh-release publishes GitHub Release with auto-generated changelog from git log between tags, concurrency cancel-in-progress=false to protect partial releases). Both use ghcr.io with GITHUB_TOKEN packages:write permission | — | Phase 4 CI/CD 3/6 done |
+| 2026-06-10 | Phase 4 Disaster recovery & backup: infra/backup/postgres-backup.sh (pg_dump custom format compress=9, pg_restore --list verification, SHA-256 sidecar, mtime-based retention, exit codes for missing config / dump failure / verification failure), infra/backup/qdrant-backup.sh (Snapshot API per collection, download with auth, SHA-256 sidecar, best-effort in-cluster snapshot cleanup, retention pass), docs/operations/disaster-recovery.md (RPO/RTO targets table, what-is-backed-up matrix with Redis explicitly excluded, run instructions with Vault password fetch, full restore procedure, PITR walkthrough, Qdrant collection restore, Btrfs PDF restore, quarterly drill log scaffold, explicit non-goals). References encryption-at-rest doc for storage-side encryption | — | Phase 4 DR 4/6 done |
