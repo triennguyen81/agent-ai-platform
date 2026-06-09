@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Logging.Console;
 using Microsoft.IdentityModel.Tokens;
+using Prometheus;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -201,6 +202,8 @@ var app = builder.Build();
 
 app.UseExceptionHandler();
 app.UseStatusCodePages();
+app.UseRouting();
+app.UseHttpMetrics();           // /metrics request histograms + counters per endpoint
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
@@ -215,6 +218,7 @@ app.MapHealthEndpoints();
 app.MapAuthEndpoints();
 app.MapUploadEndpoints();
 app.MapBookEndpoints();
+app.MapMetrics();              // Prometheus scrape endpoint at /metrics
 
 if (!string.IsNullOrWhiteSpace(jobsOptions.DashboardPath))
 {

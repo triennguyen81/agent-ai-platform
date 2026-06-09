@@ -1,0 +1,30 @@
+# Prometheus scrape configuration for AIQ Agentic AI Platform.
+# Targets are reachable via the docker compose network.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: aiq-local
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: aiq-gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["gateway:8080"]
+        labels:
+          service: aiq-gateway
+
+  - job_name: aiq-agent
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["agent:8000"]
+        labels:
+          service: aiq-agent

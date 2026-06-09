@@ -1,0 +1,41 @@
+# Baseline alert rules. Wire to Alertmanager + Slack/email later.
+
+groups:
+  - name: aiq.availability
+    interval: 30s
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"aiq-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.service }} is down"
+          description: "Prometheus has not been able to scrape {{ $labels.service }} for 2 minutes."
+
+      - alert: GatewayHighErrorRate
+        # > 5% 5xx for 5 minutes on the gateway
+        expr: |
+          (
+            sum(rate(http_requests_received_total{code=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_received_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: aiq-gateway
+        annotations:
+          summary: "Gateway 5xx rate over 5%"
+          description: "More than 5% of gateway responses have been 5xx for 5 minutes."
+
+      - alert: AgentHighLatency
+        # p95 > 5s on agent for 10 minutes
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="aiq-agent"}[5m])) by (le)) > 5
+        for: 10m
+        labels:
+          severity: warning
+          service: aiq-agent
+        annotations:
+          summary: "Agent p95 latency over 5s"
+          description: "The agent's p95 request latency has exceeded 5 seconds for 10 minutes."

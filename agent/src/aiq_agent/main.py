@@ -58,3 +58,15 @@ app.include_router(router)
 app.include_router(ocr_router)
 
 instrument_fastapi(app)
+
+
+def _install_prometheus() -> None:
+    """Expose /metrics with request latency, count, in-progress histograms."""
+    from prometheus_fastapi_instrumentator import Instrumentator
+
+    Instrumentator(
+        excluded_handlers=["/healthz/live", "/healthz/ready", "/metrics"],
+    ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+
+
+_install_prometheus()

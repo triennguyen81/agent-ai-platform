@@ -143,6 +143,24 @@ services:
     networks:
       - aiq-net
 
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: aiq-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - aiq-net
+
 volumes:
   postgres_data:
   qdrant_data:
@@ -150,6 +168,7 @@ volumes:
   caddy_data:
   caddy_config:
   gateway_uploads:
+  prometheus_data:
 
 networks:
   aiq-net:
