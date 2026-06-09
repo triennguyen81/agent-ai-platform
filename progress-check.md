@@ -64,7 +64,7 @@
 ### Security
 - [x] ACL cấp ứng dụng
 - [x] Audit logging (PostgreSQL)
-- [ ] Encryption at-rest
+- [x] Encryption at-rest
 - [x] Rate limiting per user/org
 
 ### Observability
@@ -73,8 +73,8 @@
 - [x] Cost tracking (token + compute)
 - [x] Metrics & alerting (Prometheus + Grafana)
 
-**Trạng thái Phase 3:** 🟡
-**Ghi chú:** Security 3/4 (ACL + audit + per-user rate-limit); Observability 2/4 (tracing + metrics). Còn encryption at-rest, centralized logging, cost tracking.
+**Trạng thái Phase 3:** ✅
+**Ghi chú:** Security 4/4 + Observability 4/4. Encryption at-rest doc-driven (deployment-side); ACL, audit, rate-limit per-user, tracing, metrics, Loki logs, cost tracking all wired.
 
 ---
 
@@ -136,3 +136,4 @@
 | 2026-06-09 | Phase 3 Per-user rate-limit + Book ACL: convert "default" + "upload" buckets from global FixedWindow to PartitionedRateLimiter keyed by sub claim (user:GUID) with IP fallback (ip:address) — one noisy user/key no longer starves everyone. Auth bucket stays global by necessity (pre-login). Books/BookAccessControl.CanMutate(ClaimsPrincipal, BookRecord): admins always pass, otherwise sub must equal book.uploaded_by; orphan books (uploaded_by null) admin-only. POST /books/{id}/pages calls acl.CanMutate after lookup, returns 403 Problem+JSON on deny. dotnet build -warnaserror green | — | Phase 3 Security 3/4 done (ACL + per-user rate-limit; encryption at-rest pending — deployment-side concern) |
 | 2026-06-09 | Phase 3 Centralized logging stack: Loki 3.3.2 (single-binary, tsdb v13, 14d retention, filesystem storage with compactor), Promtail 3.3.2 (Docker SD via /var/run/docker.sock, labels compose service+container, JSON pipeline_stage parses gateway logs into level+category labels, drops own logs), Grafana 11.4.0 (auto-provisions Prometheus + Loki datasources, AIQ Overview dashboard with req/sec stat, agent p95 latency, gateway 5xx timeseries, gateway logs panel). Compose adds 3 services + loki_data/grafana_data volumes. .env.example: LOKI_PORT, GRAFANA_PORT, GRAFANA_ADMIN_PASSWORD | — | Phase 3 Observability 3/4 done (centralized logging) |
 | 2026-06-10 | Phase 3 LLM cost tracking: observability/cost.py with RecordedLlmService LlmService decorator + Prometheus metrics aiq_llm_tokens_total{provider,model,direction in:out}, aiq_llm_calls_total{provider,model,outcome ok:error}, aiq_llm_call_duration_seconds histogram (0.1s→5min buckets). main.py wraps build_llm_service result in RecordedLlmService inside lifespan so PEC orchestrator (planner + critic) and DiacriticCorrector all flow through one measurement point. 2 pytest-asyncio cases: success path increments input/output tokens + ok counter; ExplodingLlm subclass verifies error outcome is recorded even when inner raises | — | Phase 3 Observability 4/4 done — Observability column closed |
+| 2026-06-10 | Phase 3 Encryption-at-rest deployment guide: docs/security/encryption-at-rest.md — threat model (lost disks / snapshot exfil / cold provider access — explicitly NOT live process compromise), per-store requirements (Postgres LUKS/RDS-CMEK, Qdrant filesystem-only, Redis LUKS + TLS-in-transit, MinIO/S3 SSE-KMS with bucket-policy deny on missing header), backup encryption matrix (WAL-G libsodium, borg repokey-blake2, restic KMS password-command), KMS guidance (Vault Transit / cloud KMS, annual rotation, break-glass), pre-prod verification checklist. Phase 3 closed | — | Phase 3 closed — Security 4/4 (encryption at-rest doc-driven) |
