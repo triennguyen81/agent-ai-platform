@@ -1,0 +1,63 @@
+# Cosmos VPS overlay — composed on top of docker-compose.yml.
+#
+# Usage on the VPS:
+#   cd /opt/apps/aiq
+#   docker compose -f docker-compose.yml -f docker-compose.cosmos.yml up -d --build
+#
+# Differences from the base file:
+#   - Caddy is profile-gated so it stays out of the cosmos stack — agentic-npm
+#     already terminates TLS on this box.
+#   - Gateway + Agent join the existing external `agentic-net` network so the
+#     NPM proxy host can reach them by container name (aiq-gateway, aiq-agent).
+#   - All host port bindings on services that clash with the agentic stack
+#     are remapped to free ports.
+
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:25432:5432"
+
+  qdrant:
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+
+  redis:
+    ports:
+      - "127.0.0.1:26379:6379"
+
+  gateway:
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - aiq-net
+      - agentic-net
+
+  agent:
+    ports:
+      - "127.0.0.1:8001:8000"
+    networks:
+      - aiq-net
+      - agentic-net
+
+  caddy:
+    # Profile-gated → not started unless `COMPOSE_PROFILES=edge` is set.
+    # agentic-npm already owns 80/443 on this host.
+    profiles: ["edge"]
+
+  prometheus:
+    ports:
+      - "127.0.0.1:9093:9090"
+
+  loki:
+    ports:
+      - "127.0.0.1:3110:3100"
+
+  grafana:
+    ports:
+      - "127.0.0.1:3002:3000"
+
+networks:
+  agentic-net:
+    external: true
+    name: agentic-net
