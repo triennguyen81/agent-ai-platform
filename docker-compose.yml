@@ -161,6 +161,54 @@ services:
     networks:
       - aiq-net
 
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: aiq-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yaml
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./infra/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    networks:
+      - aiq-net
+
+  promtail:
+    image: grafana/promtail:3.3.2
+    container_name: aiq-promtail
+    restart: unless-stopped
+    depends_on:
+      - loki
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    volumes:
+      - ./infra/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      # Read-only access to the host Docker socket so Promtail can discover and
+      # tail every container's stdout/stderr via the Docker logs API.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - aiq-net
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: aiq-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - loki
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-aiq}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    networks:
+      - aiq-net
+
 volumes:
   postgres_data:
   qdrant_data:
@@ -169,6 +217,8 @@ volumes:
   caddy_config:
   gateway_uploads:
   prometheus_data:
+  loki_data:
+  grafana_data:
 
 networks:
   aiq-net:
