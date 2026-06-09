@@ -13,6 +13,12 @@ dependencies = [
   "pydantic-settings>=2.6",
   "anthropic>=0.40",
   "redis>=5.2",
+  "opentelemetry-api>=1.28",
+  "opentelemetry-sdk>=1.28",
+  "opentelemetry-instrumentation-fastapi>=0.49b2",
+  "opentelemetry-instrumentation-httpx>=0.49b2",
+  "opentelemetry-instrumentation-redis>=0.49b2",
+  "opentelemetry-exporter-otlp-proto-grpc>=1.28",
 ]
 
 [project.optional-dependencies]

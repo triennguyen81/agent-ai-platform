@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     redis_url: str | None = Field(default=None)
     redis_password: str | None = Field(default=None)
 
+    # ---- Observability ----
+    otel_service_name: str = Field(default="aiq-agent")
+    otel_exporter_otlp_endpoint: str | None = Field(default=None)
+    otel_deployment_environment: str = Field(default="production")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

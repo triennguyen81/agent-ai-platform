@@ -84,6 +84,9 @@ services:
       Agent__TimeoutSeconds: ${AGENT_TIMEOUT_SECONDS:-300}
       Jobs__UploadStagingDirectory: /var/aiq/uploads
       Jobs__WorkerCount: ${HANGFIRE_WORKERS:-4}
+      Observability__ServiceName: aiq-gateway
+      Observability__Environment: ${DEPLOY_ENV:-production}
+      Observability__OtlpEndpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     volumes:
@@ -110,6 +113,9 @@ services:
       MEMORY_MAX_MESSAGES: ${MEMORY_MAX_MESSAGES:-200}
       REDIS_URL: ${REDIS_INTERNAL_URL:-redis://redis:6379/0}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-aiq}
+      OTEL_SERVICE_NAME: aiq-agent
+      OTEL_DEPLOYMENT_ENVIRONMENT: ${DEPLOY_ENV:-production}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       redis:
         condition: service_healthy

@@ -7,6 +7,7 @@ using Aiq.Gateway.Configuration;
 using Aiq.Gateway.Data;
 using Aiq.Gateway.Endpoints;
 using Aiq.Gateway.Jobs;
+using Aiq.Gateway.Observability;
 using Aiq.Gateway.Security;
 using Hangfire;
 using Hangfire.PostgreSql;
@@ -130,6 +131,18 @@ builder.Services.AddScoped<OcrJobRunner>();
 builder.Services.AddScoped<IOcrJobScheduler, OcrJobScheduler>();
 
 builder.Services.AddScoped<IAuditLogger, PostgresAuditLogger>();
+
+// ---- Observability (OpenTelemetry tracing) --------------------------------
+builder.Services
+    .AddOptions<ObservabilityOptions>()
+    .Bind(builder.Configuration.GetSection(ObservabilityOptions.SectionName));
+
+var observabilityOptions = builder.Configuration
+    .GetSection(ObservabilityOptions.SectionName)
+    .Get<ObservabilityOptions>()
+    ?? new ObservabilityOptions();
+
+builder.Services.AddAiqOpenTelemetry(observabilityOptions);
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
