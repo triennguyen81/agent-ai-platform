@@ -120,15 +120,17 @@ docker exec -it aiq-redis redis-cli -a "$REDIS_PASSWORD" ping
 │       ├── Endpoints/              # /auth, /healthz
 │       └── Dockerfile
 ├── agent/                          # Python 3.12 + FastAPI Agent runtime
-│   ├── pyproject.toml
+│   ├── pyproject.toml              # base + [ocr] + [pgvector] + [dev] extras
 │   ├── Dockerfile
-│   └── src/aiq_agent/
-│       ├── main.py                 # FastAPI app + lifespan
-│       ├── config.py               # pydantic-settings
-│       ├── llm/                    # base + Ollama + Anthropic + factory
-│       ├── tools/                  # function-calling registry
-│       ├── orchestration/          # Planner-Executor-Critic
-│       └── api/                    # /healthz, /chat, /tools
+│   ├── src/aiq_agent/
+│   │   ├── main.py                 # FastAPI app + lifespan
+│   │   ├── config.py               # pydantic-settings
+│   │   ├── llm/                    # base + Ollama + Anthropic + factory
+│   │   ├── tools/                  # function-calling registry
+│   │   ├── orchestration/          # Planner-Executor-Critic
+│   │   ├── ocr/                    # PDF → PaddleOCR → diacritic → pgvector
+│   │   └── api/                    # /healthz, /chat, /tools, /ocr/pdf
+│   └── tests/                      # pytest-asyncio unit tests
 ├── plan (3).md
 ├── progress-check.md
 └── README.md
@@ -150,7 +152,7 @@ docker compose up -d
 - [x] **Tuần 1:** Repo + Docker Compose (PostgreSQL + Qdrant + Redis) + schema baseline
 - [x] **Tuần 2:** API Gateway prototype (ASP.NET Core 9 + JWT + RBAC + rate limiting)
 - [x] **Tuần 3:** Agent skeleton (FastAPI + LLM abstraction + Planner-Executor-Critic + tool registry)
-- [ ] **Tuần 4:** OCR pipeline test đầu tiên (PDF → extract → correct)
+- [x] **Tuần 4:** OCR pipeline (PaddleOCR → diacritic correction → pgvector validate, end-to-end unit test)
 
 ---
 

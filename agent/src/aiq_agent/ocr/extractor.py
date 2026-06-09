@@ -1,0 +1,109 @@
+"""OCR extractor contract + PaddleOCR adapter + deterministic stub for tests."""
+
+from __future__ import annotations
+
+import asyncio
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class OcrPage:
+    page_number: int
+    text: str
+    confidence: float
+
+
+class OcrExtractor(ABC):
+    """Extract text from image bytes (one entry per page)."""
+
+    @abstractmethod
+    async def extract(self, pages: Sequence[bytes]) -> list[OcrPage]:
+        ...
+
+
+class StubOcrExtractor(OcrExtractor):
+    """Deterministic extractor for unit tests and smoke runs without paddleocr."""
+
+    def __init__(self, texts: Sequence[str], confidence: float = 0.95) -> None:
+        self._texts = list(texts)
+        self._confidence = confidence
+
+    async def extract(self, pages: Sequence[bytes]) -> list[OcrPage]:
+        return [
+            OcrPage(
+                page_number=index + 1,
+                text=self._texts[index] if index < len(self._texts) else "",
+                confidence=self._confidence,
+            )
+            for index in range(len(pages))
+        ]
+
+
+class PaddleOcrExtractor(OcrExtractor):
+    """PaddleOCR adapter — lazy-imports paddleocr so the base image stays slim.
+
+    Install the optional dependency group first:
+        pip install '.[ocr]'
+    """
+
+    def __init__(self, *, lang: str = "vi", use_gpu: bool = False) -> None:
+        self._lang = lang
+        self._use_gpu = use_gpu
+        self._engine = None
+
+    def _ensure_engine(self) -> object:
+        if self._engine is not None:
+            return self._engine
+        try:
+            from paddleocr import PaddleOCR  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "paddleocr is not installed. Install the ocr extras: "
+                "`pip install '.[ocr]'`"
+            ) from exc
+
+        self._engine = PaddleOCR(use_angle_cls=True, lang=self._lang, use_gpu=self._use_gpu)
+        return self._engine
+
+    async def extract(self, pages: Sequence[bytes]) -> list[OcrPage]:
+        engine = self._ensure_engine()
+        return await asyncio.to_thread(_run_paddle, engine, list(pages))
+
+
+def _run_paddle(engine: object, pages: list[bytes]) -> list[OcrPage]:
+    import io
+
+    from PIL import Image  # type: ignore[import-not-found]
+
+    results: list[OcrPage] = []
+    for index, png_bytes in enumerate(pages):
+        image = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+        raw = engine.ocr(_pil_to_array(image), cls=True)  # type: ignore[attr-defined]
+
+        lines: list[str] = []
+        confidences: list[float] = []
+        for page_result in raw or []:
+            for line in page_result or []:
+                if not line or len(line) < 2:
+                    continue
+                text, score = line[1][0], float(line[1][1])
+                lines.append(text)
+                confidences.append(score)
+
+        avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
+        results.append(
+            OcrPage(
+                page_number=index + 1,
+                text="\n".join(lines),
+                confidence=avg_conf,
+            )
+        )
+    return results
+
+
+def _pil_to_array(image: object) -> object:
+    import numpy as np  # type: ignore[import-not-found]
+
+    return np.array(image)

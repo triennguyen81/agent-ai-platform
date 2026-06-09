@@ -49,13 +49,13 @@
 - [ ] Memory / context management
 
 ### OCR Pipeline (project cụ thể)
-- [ ] PaddleOCR extraction
-- [ ] Qwen3 correction (diacritic-aware)
-- [ ] pgvector validation
-- [ ] End-to-end test (PDF → corrected text)
+- [x] PaddleOCR extraction
+- [x] Qwen3 correction (diacritic-aware)
+- [x] pgvector validation
+- [x] End-to-end test (PDF → corrected text)
 
 **Trạng thái Phase 2:** 🟡
-**Ghi chú:** Agent sublayer skeleton xong (Tuần 3). Application sublayer và OCR pipeline pending.
+**Ghi chú:** Agent sublayer + OCR pipeline xong (Tuần 3-4). Application sublayer (Hangfire, transactions) pending.
 
 ---
 
@@ -99,7 +99,7 @@
 | 1 | Repo + Docker Compose (PostgreSQL + Qdrant) | ✅ |
 | 2 | API Gateway prototype (ASP.NET Core + JWT) | ✅ |
 | 3 | Agent skeleton (Qwen3 qua Ollama/MLX) | ✅ |
-| 4 | OCR pipeline test đầu tiên | ⬜ |
+| 4 | OCR pipeline test đầu tiên | ✅ |
 
 ---
 
@@ -123,3 +123,4 @@
 | 2026-06-09 | Scaffold repo + Docker Compose (Postgres pgvector + Qdrant + Redis) + schema baseline | — | Milestone Tuần 1 done |
 | 2026-06-09 | API Gateway prototype: ASP.NET Core 9, JWT auth, RBAC policies, fixed-window rate limiting, /auth/register, /auth/login, /me, /healthz | — | Milestone Tuần 2 done (WAF rules pending) |
 | 2026-06-09 | Agent skeleton: Python 3.12 + FastAPI, LlmService abstraction (Ollama + Anthropic), tool registry (echo stub), Planner-Executor-Critic orchestrator, /chat /tools /healthz endpoints, docker-compose wired with host.docker.internal | — | Milestone Tuần 3 done (memory/context pending) |
+| 2026-06-09 | OCR pipeline: OcrExtractor abstraction (PaddleOcr lazy + Stub), DiacriticCorrector (LLM-backed, empty-page guard), pgvector validator (PassthroughValidator default), pypdfium2 renderer, OcrPipeline orchestrator with stage timings, POST /ocr/pdf endpoint, pytest-asyncio end-to-end test (3 cases, runs without paddleocr) | — | Milestone Tuần 4 done; tests verified by py_compile only (host has 3.7, runtime 3.12 in Docker/CI) |

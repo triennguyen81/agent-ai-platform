@@ -20,6 +20,19 @@ dev = [
   "pytest-asyncio>=0.24",
   "ruff>=0.7",
 ]
+# OCR pipeline — heavy ML deps. Install explicitly: pip install '.[ocr]'.
+ocr = [
+  "pypdfium2>=4.30",
+  "Pillow>=10.4",
+  "paddleocr>=2.8",
+  "paddlepaddle>=2.6",
+]
+# pgvector validation — small enough to ship in base would be fine, kept
+# separate so unit tests don't require a live Postgres.
+pgvector = [
+  "asyncpg>=0.30",
+  "pgvector>=0.3",
+]
 
 [build-system]
 requires = ["hatchling"]
