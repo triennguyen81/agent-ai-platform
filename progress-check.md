@@ -23,13 +23,13 @@
 - [x] Schema design (books, users, corrections, audit)
 
 ### Infrastructure
-- [ ] Docker containerization
-- [ ] Docker Compose (dev)
+- [x] Docker containerization
+- [x] Docker Compose (dev)
 - [ ] TLS/SSL certificates
-- [ ] CI nền (build + test)
+- [x] CI nền (build + test)
 
 **Trạng thái Phase 1:** 🟡
-**Ghi chú:** Database xong (Tuần 1). Gateway prototype xong (Tuần 2) trừ WAF rules.
+**Ghi chú:** Database + Infrastructure (Docker, Compose, CI) xong. Gateway prototype xong trừ WAF rules. TLS/SSL pending.
 
 ---
 
@@ -124,3 +124,4 @@
 | 2026-06-09 | API Gateway prototype: ASP.NET Core 9, JWT auth, RBAC policies, fixed-window rate limiting, /auth/register, /auth/login, /me, /healthz | — | Milestone Tuần 2 done (WAF rules pending) |
 | 2026-06-09 | Agent skeleton: Python 3.12 + FastAPI, LlmService abstraction (Ollama + Anthropic), tool registry (echo stub), Planner-Executor-Critic orchestrator, /chat /tools /healthz endpoints, docker-compose wired with host.docker.internal | — | Milestone Tuần 3 done (memory/context pending) |
 | 2026-06-09 | OCR pipeline: OcrExtractor abstraction (PaddleOcr lazy + Stub), DiacriticCorrector (LLM-backed, empty-page guard), pgvector validator (PassthroughValidator default), pypdfium2 renderer, OcrPipeline orchestrator with stage timings, POST /ocr/pdf endpoint, pytest-asyncio end-to-end test (3 cases, runs without paddleocr) | — | Milestone Tuần 4 done; tests verified by py_compile only (host has 3.7, runtime 3.12 in Docker/CI) |
+| 2026-06-09 | GitHub Actions CI: gateway-build (dotnet 9 restore+build+test), agent-lint (ruff), agent-test (pytest), compose-validate (docker compose config). Triggers on push/PR to master with concurrency cancel-in-progress | — | Phase 1 Infrastructure CI nền done |

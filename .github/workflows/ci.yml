@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gateway-build:
+    name: Gateway · build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Restore
+        run: dotnet restore
+      - name: Build
+        run: dotnet build --configuration Release --no-restore -warnaserror
+      - name: Test
+        run: |
+          if ls tests/*.csproj 2>/dev/null | grep -q .; then
+            dotnet test --configuration Release --no-build --logger "trx"
+          else
+            echo "No gateway test project yet — skipping."
+          fi
+
+  agent-lint:
+    name: Agent · lint (ruff)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dev extras
+        run: pip install '.[dev]'
+      - name: Ruff check
+        run: ruff check src tests
+
+  agent-test:
+    name: Agent · pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package + dev extras
+        run: pip install '.[dev]'
+      - name: Pytest
+        run: pytest -q
+
+  compose-validate:
+    name: Compose · validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose.yml
+        env:
+          POSTGRES_USER: aiq
+          POSTGRES_PASSWORD: aiq-test-password
+          POSTGRES_DB: aiq
+          QDRANT_API_KEY: test
+          REDIS_PASSWORD: aiq-test-redis
+          JWT_SIGNING_KEY: test_test_test_test_test_test_test_test_32
+        run: docker compose config -q
