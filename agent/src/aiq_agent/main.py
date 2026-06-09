@@ -12,7 +12,7 @@ from aiq_agent.api.routes import router
 from aiq_agent.config import get_settings
 from aiq_agent.llm import build_llm_service
 from aiq_agent.memory import build_memory_store
-from aiq_agent.observability import configure_tracing, instrument_fastapi
+from aiq_agent.observability import RecordedLlmService, configure_tracing, instrument_fastapi
 from aiq_agent.ocr import (
     DiacriticCorrector,
     OcrPipeline,
@@ -26,7 +26,7 @@ from aiq_agent.tools import default_registry
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_tracing(settings)
-    llm = build_llm_service(settings)
+    llm = RecordedLlmService(build_llm_service(settings))
     memory = build_memory_store(settings)
 
     extractor = PaddleOcrExtractor(lang="vi")
