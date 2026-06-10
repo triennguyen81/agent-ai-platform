@@ -13,6 +13,7 @@ dependencies = [
   "pydantic-settings>=2.6",
   "anthropic>=0.40",
   "redis>=5.2",
+  "python-multipart>=0.0.18",
   "opentelemetry-api>=1.28",
   "opentelemetry-sdk>=1.28",
   "opentelemetry-instrumentation-fastapi>=0.49b2",
