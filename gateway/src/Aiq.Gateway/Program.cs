@@ -18,6 +18,11 @@ using Microsoft.Extensions.Logging.Console;
 using Microsoft.IdentityModel.Tokens;
 using Prometheus;
 
+// Npgsql 8 returns `DateTime` (kind=Utc) for `timestamptz` columns. Our records
+// historically declared `DateTimeOffset` for those fields; flipping this switch
+// lets Npgsql write/read DateTimeOffset against timestamptz transparently.
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+
 var builder = WebApplication.CreateBuilder(args);
 
 // ---- Structured logging ----------------------------------------------------
