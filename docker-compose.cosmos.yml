@@ -34,6 +34,13 @@ services:
 
   gateway:
     ports: []
+    environment:
+      # Simpler conn string — Hangfire.PostgreSql 1.20 parses Npgsql 8 pool
+      # keys (Minimum Pool Size, Tcp Keepalive, etc.) inconsistently and the
+      # auth handshake fails with 28P01 on this combo. The base file's pool
+      # tuning stays for the rest of the app via Dapper which uses Npgsql 8
+      # directly.
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-aiq};Username=${POSTGRES_USER:-aiq};Password=${POSTGRES_PASSWORD:-aiq};Pooling=true"
     networks:
       - aiq-net
       - agentic-net
