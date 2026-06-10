@@ -35,12 +35,15 @@ services:
   gateway:
     ports: []
     environment:
-      # Simpler conn string — Hangfire.PostgreSql 1.20 parses Npgsql 8 pool
-      # keys (Minimum Pool Size, Tcp Keepalive, etc.) inconsistently and the
-      # auth handshake fails with 28P01 on this combo. The base file's pool
-      # tuning stays for the rest of the app via Dapper which uses Npgsql 8
-      # directly.
-      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-aiq};Username=${POSTGRES_USER:-aiq};Password=${POSTGRES_PASSWORD:-aiq};Pooling=true"
+      # Use the container_name `aiq-postgres` instead of the compose service
+      # alias `postgres`. Gateway joins BOTH aiq-net and agentic-net so it
+      # can be reached by NPM, but that puts the agentic stack's `postgres`
+      # alias in the same DNS namespace — Docker resolved `postgres` to the
+      # AGENTIC postgres (172.19.0.x) and the wrong password rejected us.
+      ConnectionStrings__Postgres: "Host=aiq-postgres;Port=5432;Database=${POSTGRES_DB:-aiq};Username=${POSTGRES_USER:-aiq};Password=${POSTGRES_PASSWORD:-aiq};Pooling=true"
+      # Also override the agent base URL for the same reason — `agent` could
+      # collide with anything else on agentic-net in the future.
+      Agent__BaseUrl: "http://aiq-agent:8000"
     networks:
       - aiq-net
       - agentic-net
