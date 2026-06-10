@@ -11,8 +11,8 @@ public sealed record BookRecord(
     Guid? UploadedBy,
     int? PageCount,
     string Status,
-    DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTime CreatedAt,
+    DateTime UpdatedAt);
 
 public sealed record BookPageRecord(
     Guid Id,
@@ -21,7 +21,7 @@ public sealed record BookPageRecord(
     string? RawText,
     string? CorrectedText,
     float? Confidence,
-    DateTimeOffset CreatedAt);
+    DateTime CreatedAt);
 
 public sealed record CreateBookRequest(
     [Required, StringLength(500, MinimumLength = 1)] string Title,
@@ -35,7 +35,7 @@ public sealed record BookListItem(
     string Language,
     string Status,
     int? PageCount,
-    DateTimeOffset CreatedAt);
+    DateTime CreatedAt);
 
 public sealed record BookDetailsResponse(
     BookRecord Book,

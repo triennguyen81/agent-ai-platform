@@ -6,4 +6,4 @@ public sealed record UserRecord(
     string PasswordHash,
     string? DisplayName,
     bool IsActive,
-    DateTimeOffset CreatedAt);
+    DateTime CreatedAt);

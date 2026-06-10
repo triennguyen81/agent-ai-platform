@@ -135,7 +135,7 @@ public sealed class BookRepository : IBookRepository
         await using var conn = await _factory.OpenAsync(ct);
 
         var rows = (await conn.QueryAsync<(int Total, Guid Id, string Title, string? Author,
-            string Language, string Status, int? PageCount, DateTimeOffset CreatedAt)>(
+            string Language, string Status, int? PageCount, DateTime CreatedAt)>(
                 new CommandDefinition(
                     sql,
                     new { status, query, limit, offset },
