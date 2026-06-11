@@ -1,6 +1,11 @@
-// Clerk auth middleware — only runs when NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
-// is set. When Clerk is not configured (dev mode), this middleware is a
-// no-op so the legacy /login + /signup flow keeps working.
+// Clerk middleware — wraps Clerk's runtime so its <SignIn />, <SignUp />,
+// and useUser() hooks work, but does NOT gate access. Our (app) routes
+// authenticate via the aiq.session httpOnly cookie which is set after EITHER
+// the Clerk flow (via /api/auth/sync) OR the legacy /login email/password
+// flow. Layout components enforce the cookie check directly.
+//
+// When NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is missing, fall back to a no-op so
+// dev environments without Clerk dashboard setup keep working.
 
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
@@ -12,25 +17,13 @@ async function noopMiddleware(_req: NextRequest): Promise<NextResponse> {
 }
 
 function buildClerkMiddleware() {
-  // Lazy-load so the import does not break dev builds without a Clerk key.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { clerkMiddleware, createRouteMatcher } =
+  const { clerkMiddleware } =
     require("@clerk/nextjs/server") as typeof import("@clerk/nextjs/server");
 
-  const isPublicRoute = createRouteMatcher([
-    "/",
-    "/sign-in(.*)",
-    "/sign-up(.*)",
-    "/login(.*)",          // legacy email login stays available
-    "/signup(.*)",
-    "/api/auth/sync",      // post-Clerk sync to Gateway
-  ]);
-
-  return clerkMiddleware(async (auth, req) => {
-    if (!isPublicRoute(req)) {
-      await auth.protect();
-    }
-  });
+  // No auth.protect() — Clerk wraps every request to populate currentUser()
+  // and useUser() correctly, but route protection lives in our (app) layout.
+  return clerkMiddleware();
 }
 
 export default isClerkConfigured ? buildClerkMiddleware() : noopMiddleware;
