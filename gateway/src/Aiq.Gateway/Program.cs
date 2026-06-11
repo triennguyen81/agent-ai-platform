@@ -271,6 +271,7 @@ app.MapAuthEndpoints();
 app.MapUploadEndpoints();
 app.MapBookEndpoints();
 app.MapNoteEndpoints();
+app.MapUserEndpoints();
 app.MapMetrics();              // Prometheus scrape endpoint at /metrics
 
 if (!string.IsNullOrWhiteSpace(jobsOptions.DashboardPath))

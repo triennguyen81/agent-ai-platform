@@ -12,6 +12,7 @@
     "next": "15.1.4",
     "react": "19.0.0",
     "react-dom": "19.0.0",
+    "@clerk/nextjs": "^6.10.0",
     "@tanstack/react-query": "^5.62.11",
     "lucide-react": "^0.469.0",
     "clsx": "^2.1.1",

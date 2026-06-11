@@ -17,3 +17,10 @@ public sealed record AuthResponse(
     Guid UserId,
     string Email,
     IReadOnlyCollection<string> Roles);
+
+public sealed record ExternalLinkRequest(
+    [Required] string Provider,
+    [Required] string ExternalId,
+    [Required, EmailAddress] string Email,
+    string? DisplayName,
+    string[]? AdditionalRoles = null);

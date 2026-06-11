@@ -12,8 +12,89 @@ public static class AuthEndpoints
 
         group.MapPost("/register", RegisterAsync);
         group.MapPost("/login",    LoginAsync);
+        group.MapPost("/external-link", ExternalLinkAsync);
 
         return app;
+    }
+
+    /// <summary>
+    /// Exchange a verified external-provider identity (e.g. Clerk) for a
+    /// Gateway JWT. Auth is shared-secret in the X-Gateway-Secret header —
+    /// only the web tier knows it, so the browser can never call this
+    /// endpoint directly. If the user does not exist we provision one with
+    /// the provider's email + a random unusable password hash.
+    /// </summary>
+    private static async Task<IResult> ExternalLinkAsync(
+        ExternalLinkRequest request,
+        IUserRepository users,
+        IJwtTokenService jwt,
+        Microsoft.Extensions.Configuration.IConfiguration config,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        var expected = config["ExternalAuth:SharedSecret"];
+        if (string.IsNullOrWhiteSpace(expected))
+        {
+            return Results.Problem(
+                title: "External auth not configured",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        var supplied = ctx.Request.Headers["X-Gateway-Secret"].ToString();
+        if (!CryptographicEquals(expected, supplied))
+        {
+            return Results.Unauthorized();
+        }
+
+        if (!TryValidate(request, out var errors))
+        {
+            return Results.ValidationProblem(errors);
+        }
+
+        var provider = request.Provider.ToLowerInvariant();
+        var existing = await users.FindByExternalAsync(provider, request.ExternalId, ct);
+        var user = existing
+            ?? await users.FindByEmailAsync(request.Email, ct)
+            ?? await users.CreateExternalAsync(
+                request.Email,
+                request.DisplayName,
+                provider,
+                request.ExternalId,
+                ct);
+
+        if (existing is null)
+        {
+            await users.AssignRoleAsync(user.Id, "viewer", ct);
+        }
+
+        // Caller (web tier, authenticated via shared secret) may request extra
+        // roles for the user — used for bootstrapping the INITIAL_ADMIN_EMAIL.
+        if (request.AdditionalRoles is { Length: > 0 })
+        {
+            var allowed = new HashSet<string>(
+                new[] { "admin", "reviewer", "uploader", "viewer" },
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var role in request.AdditionalRoles)
+            {
+                if (allowed.Contains(role))
+                {
+                    await users.AssignRoleAsync(user.Id, role.ToLowerInvariant(), ct);
+                }
+            }
+        }
+
+        var roles = await users.GetRolesAsync(user.Id, ct);
+        var token = jwt.Issue(user, roles);
+
+        return Results.Ok(new AuthResponse(
+            token.Token, token.ExpiresAt, user.Id, user.Email, roles));
+    }
+
+    private static bool CryptographicEquals(string a, string b)
+    {
+        var aBytes = System.Text.Encoding.UTF8.GetBytes(a);
+        var bBytes = System.Text.Encoding.UTF8.GetBytes(b);
+        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(aBytes, bBytes);
     }
 
     private static async Task<IResult> RegisterAsync(

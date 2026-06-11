@@ -2,12 +2,22 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { gateway } from "@/lib/api";
 import { clearSession, getSession } from "@/lib/auth";
+import { isClerkConfigured } from "@/lib/env";
 import { Button } from "@/components/ui/button";
+
+interface MeResponse {
+  sub?: string | null;
+  email?: string | null;
+  roles?: string[];
+}
 
 async function logoutAction() {
   "use server";
   await clearSession();
-  redirect("/login");
+  // When Clerk is on, we'd also want to call signOut() but the user can
+  // click Clerk's own UserButton for that. Cookie clear is sufficient to
+  // kick the user out of our app.
+  redirect(isClerkConfigured ? "/sign-in" : "/login");
 }
 
 export default async function AppLayout({
@@ -17,7 +27,7 @@ export default async function AppLayout({
 }) {
   const token = await getSession();
   if (!token) {
-    redirect("/login");
+    redirect(isClerkConfigured ? "/sign-in" : "/login");
   }
 
   // Hit /me to discover the email/roles for the top nav. If the token is
@@ -25,9 +35,10 @@ export default async function AppLayout({
   const meRes = await gateway.me(token);
   if (!meRes.ok) {
     await clearSession();
-    redirect("/login?error=session-expired");
+    redirect((isClerkConfigured ? "/sign-in" : "/login") + "?error=session-expired");
   }
-  const me = (await meRes.json()) as { email?: string | null };
+  const me = (await meRes.json()) as MeResponse;
+  const isAdmin = (me.roles ?? []).includes("admin");
 
   return (
     <div className="min-h-dvh">
@@ -43,6 +54,11 @@ export default async function AppLayout({
             <Button variant="ghost" size="sm" asChild>
               <Link href="/knowledge">Knowledge</Link>
             </Button>
+            {isAdmin && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/admin/users">Admin</Link>
+              </Button>
+            )}
             <span className="ml-3 text-sm text-[var(--color-muted-fg)]">
               {me.email ?? "you"}
             </span>

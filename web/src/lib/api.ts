@@ -68,6 +68,11 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  listUsers(token: string) {
+    return call(GATEWAY_BASE, "/users", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
 };
 
 export const agent = {

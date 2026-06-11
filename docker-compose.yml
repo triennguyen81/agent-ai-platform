@@ -82,6 +82,7 @@ services:
       Jwt__AccessTokenMinutes: 60
       Agent__BaseUrl: ${AGENT_INTERNAL_BASE_URL:-http://agent:8000}
       Agent__TimeoutSeconds: ${AGENT_TIMEOUT_SECONDS:-300}
+      ExternalAuth__SharedSecret: ${EXTERNAL_AUTH_SHARED_SECRET:-}
       Jobs__UploadStagingDirectory: /var/aiq/uploads
       Jobs__WorkerCount: ${HANGFIRE_WORKERS:-4}
       Observability__ServiceName: aiq-gateway
@@ -138,6 +139,10 @@ services:
     environment:
       GATEWAY_BASE_URL: ${WEB_GATEWAY_BASE_URL:-http://gateway:8080}
       AGENT_BASE_URL: ${WEB_AGENT_BASE_URL:-http://agent:8000}
+      GATEWAY_SHARED_SECRET: ${GATEWAY_SHARED_SECRET:-}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-}
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
     ports:
       - "${WEB_PORT:-3030}:3000"
     networks:

@@ -6,4 +6,6 @@ public sealed record UserRecord(
     string PasswordHash,
     string? DisplayName,
     bool IsActive,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    string? ExternalProvider = null,
+    string? ExternalId = null);
