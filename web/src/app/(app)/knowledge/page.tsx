@@ -4,6 +4,7 @@ import { gateway } from "@/lib/api";
 import { clearSession, requireSession } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
+import { BulkMarkdownUpload } from "@/components/bulk-md-upload";
 
 type NoteRecord = {
   id: string;
@@ -116,6 +117,8 @@ export default async function KnowledgePage() {
       </section>
 
       <aside className="space-y-4">
+        <BulkMarkdownUpload />
+
         <h2 className="font-serif text-xl">Add a note</h2>
         <form action={createNoteAction} className="space-y-3">
           <div className="space-y-1.5">

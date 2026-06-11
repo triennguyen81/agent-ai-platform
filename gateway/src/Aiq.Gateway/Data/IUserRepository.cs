@@ -9,6 +9,7 @@ public interface IUserRepository
     Task<UserRecord>  CreateAsync(string email, string passwordHash, string? displayName, CancellationToken ct);
     Task<UserRecord>  CreateExternalAsync(string email, string? displayName, string provider, string externalId, CancellationToken ct);
     Task              AssignRoleAsync(Guid userId, string roleName, CancellationToken ct);
+    Task<bool>        RemoveRoleAsync(Guid userId, string roleName, CancellationToken ct);
     Task<IReadOnlyCollection<string>> GetRolesAsync(Guid userId, CancellationToken ct);
     Task<IReadOnlyList<UserWithRoles>> ListWithRolesAsync(CancellationToken ct);
 }
@@ -114,6 +115,20 @@ public sealed class UserRepository : IUserRepository
         await using var conn = await _factory.OpenAsync(ct);
         await conn.ExecuteAsync(
             new CommandDefinition(sql, new { userId, roleName }, cancellationToken: ct));
+    }
+
+    public async Task<bool> RemoveRoleAsync(Guid userId, string roleName, CancellationToken ct)
+    {
+        const string sql = """
+            DELETE FROM user_roles
+            WHERE user_id = @userId
+              AND role_id = (SELECT id FROM roles WHERE name = @roleName);
+            """;
+
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.ExecuteAsync(
+            new CommandDefinition(sql, new { userId, roleName }, cancellationToken: ct));
+        return rows > 0;
     }
 
     public async Task<IReadOnlyCollection<string>> GetRolesAsync(Guid userId, CancellationToken ct)

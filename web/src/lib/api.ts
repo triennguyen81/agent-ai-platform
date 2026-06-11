@@ -73,6 +73,19 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  assignRole(token: string, userId: string, role: string) {
+    return call(GATEWAY_BASE, `/users/${userId}/roles`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ role }),
+    });
+  },
+  removeRole(token: string, userId: string, role: string) {
+    return call(GATEWAY_BASE, `/users/${userId}/roles/${role}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
 };
 
 export const agent = {

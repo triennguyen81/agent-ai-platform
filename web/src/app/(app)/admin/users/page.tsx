@@ -56,6 +56,32 @@ async function adminInviteForm(formData: FormData): Promise<void> {
   redirect("/admin/users?ok=1");
 }
 
+async function changeRoleAction(formData: FormData): Promise<void> {
+  "use server";
+
+  const userId = String(formData.get("userId") ?? "").trim();
+  const role = String(formData.get("role") ?? "").trim();
+  const action = String(formData.get("action") ?? "").trim(); // "grant" | "revoke"
+
+  if (!userId || !role || (action !== "grant" && action !== "revoke")) {
+    redirect("/admin/users?error=invalid-role-request");
+  }
+
+  const token = await requireSession();
+  const res =
+    action === "grant"
+      ? await gateway.assignRole(token, userId, role)
+      : await gateway.removeRole(token, userId, role);
+
+  if (!res.ok) {
+    const body = await res.text();
+    redirect(`/admin/users?error=${encodeURIComponent(body || "role-update-failed")}`);
+  }
+
+  revalidatePath("/admin/users");
+  redirect(`/admin/users?ok=${action === "grant" ? "granted" : "revoked"}`);
+}
+
 function formatDate(s: string): string {
   try {
     return new Date(s).toLocaleString("vi-VN", {
@@ -120,7 +146,7 @@ export default async function AdminUsersPage({
                 <th className="px-4 py-2 text-left">Tên</th>
                 <th className="px-4 py-2 text-left">Vai trò</th>
                 <th className="px-4 py-2 text-left">Nguồn</th>
-                <th className="px-4 py-2 text-left">Tạo lúc</th>
+                <th className="px-4 py-2 text-left">Hành động</th>
               </tr>
             </thead>
             <tbody>
@@ -131,36 +157,59 @@ export default async function AdminUsersPage({
                   </td>
                 </tr>
               ) : (
-                body.items.map((u) => (
-                  <tr key={u.id} className="border-t">
-                    <td className="px-4 py-3">{u.email}</td>
-                    <td className="px-4 py-3 text-[var(--color-muted-fg)]">
-                      {u.displayName ?? "—"}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-wrap gap-1">
-                        {u.roles.length === 0 ? (
-                          <span className="text-xs text-[var(--color-muted-fg)]">no role</span>
-                        ) : (
-                          u.roles.map((r) => (
-                            <span
-                              key={r}
-                              className={`rounded-full px-2 py-0.5 text-xs ${badge(r)}`}
-                            >
-                              {r}
-                            </span>
-                          ))
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-[var(--color-muted-fg)]">
-                      {u.externalProvider ?? "email"}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-[var(--color-muted-fg)]">
-                      {formatDate(u.createdAt)}
-                    </td>
-                  </tr>
-                ))
+                body.items.map((u) => {
+                  const isAdmin = u.roles.includes("admin");
+                  return (
+                    <tr key={u.id} className="border-t">
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{u.email}</div>
+                        <div className="text-[10px] text-[var(--color-muted-fg)]">
+                          {formatDate(u.createdAt)}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-[var(--color-muted-fg)]">
+                        {u.displayName ?? "—"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap gap-1">
+                          {u.roles.length === 0 ? (
+                            <span className="text-xs text-[var(--color-muted-fg)]">no role</span>
+                          ) : (
+                            u.roles.map((r) => (
+                              <span
+                                key={r}
+                                className={`rounded-full px-2 py-0.5 text-xs ${badge(r)}`}
+                              >
+                                {r}
+                              </span>
+                            ))
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-[var(--color-muted-fg)]">
+                        {u.externalProvider ?? "email"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <form action={changeRoleAction} className="flex items-center gap-1">
+                          <input type="hidden" name="userId" value={u.id} />
+                          <input type="hidden" name="role" value="admin" />
+                          <input
+                            type="hidden"
+                            name="action"
+                            value={isAdmin ? "revoke" : "grant"}
+                          />
+                          <Button
+                            type="submit"
+                            size="sm"
+                            variant={isAdmin ? "ghost" : "default"}
+                          >
+                            {isAdmin ? "Gỡ admin" : "Cấp admin"}
+                          </Button>
+                        </form>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
