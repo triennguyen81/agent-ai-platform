@@ -54,6 +54,17 @@ services:
       - aiq-net
       - agentic-net
 
+  web:
+    ports: []
+    environment:
+      # Container-name hostnames — same reason as gateway above (cross-net
+      # DNS collision risk on the shared agentic-net).
+      GATEWAY_BASE_URL: "http://aiq-gateway:8080"
+      AGENT_BASE_URL: "http://aiq-agent:8000"
+    networks:
+      - aiq-net
+      - agentic-net
+
   caddy:
     profiles: ["edge"]
 

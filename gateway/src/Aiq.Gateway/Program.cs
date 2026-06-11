@@ -7,6 +7,7 @@ using Aiq.Gateway.Configuration;
 using Aiq.Gateway.Data;
 using Aiq.Gateway.Endpoints;
 using Aiq.Gateway.Jobs;
+using Aiq.Gateway.Notes;
 using Aiq.Gateway.Observability;
 using Aiq.Gateway.Security;
 using Hangfire;
@@ -105,6 +106,7 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
 builder.Services.AddSingleton(new NpgsqlConnectionFactory(connectionString));
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IBookRepository, BookRepository>();
+builder.Services.AddScoped<INoteRepository, NoteRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IFileUploadGuard, FileUploadGuard>();
@@ -268,6 +270,7 @@ app.MapHealthEndpoints();
 app.MapAuthEndpoints();
 app.MapUploadEndpoints();
 app.MapBookEndpoints();
+app.MapNoteEndpoints();
 app.MapMetrics();              // Prometheus scrape endpoint at /metrics
 
 if (!string.IsNullOrWhiteSpace(jobsOptions.DashboardPath))

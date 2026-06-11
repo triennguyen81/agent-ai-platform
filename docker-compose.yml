@@ -126,6 +126,23 @@ services:
     networks:
       - aiq-net
 
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: aiq-web
+    restart: unless-stopped
+    depends_on:
+      - gateway
+      - agent
+    environment:
+      GATEWAY_BASE_URL: ${WEB_GATEWAY_BASE_URL:-http://gateway:8080}
+      AGENT_BASE_URL: ${WEB_AGENT_BASE_URL:-http://agent:8000}
+    ports:
+      - "${WEB_PORT:-3030}:3000"
+    networks:
+      - aiq-net
+
   caddy:
     image: caddy:2-alpine
     container_name: aiq-caddy
