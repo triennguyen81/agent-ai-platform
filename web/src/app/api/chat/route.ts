@@ -1,6 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { agent, gateway } from "@/lib/api";
-import { getSession } from "@/lib/auth";
+import { decodeUserId, getSession } from "@/lib/auth";
+
+function namespacedThreadId(token: string, raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const userId = decodeUserId(token);
+  if (!userId) return raw;
+  return raw.startsWith(`${userId}:`) ? raw : `${userId}:${raw}`;
+}
 
 interface NoteRecord {
   id: string;
@@ -78,7 +85,7 @@ export async function POST(request: NextRequest) {
 
   const res = await agent.chat({
     prompt: augmentedPrompt,
-    thread_id: body.thread_id,
+    thread_id: namespacedThreadId(token, body.thread_id),
     temperature: body.temperature ?? 0.2,
   });
 

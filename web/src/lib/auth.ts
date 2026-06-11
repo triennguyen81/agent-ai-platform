@@ -31,3 +31,17 @@ export async function clearSession(): Promise<void> {
   const jar = await cookies();
   jar.delete(COOKIE_NAME);
 }
+
+export function decodeUserId(token: string): string | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return null;
+    const padded = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const json = Buffer.from(padded, "base64").toString("utf8");
+    const claims = JSON.parse(json) as Record<string, unknown>;
+    const sub = claims["sub"];
+    return typeof sub === "string" ? sub : null;
+  } catch {
+    return null;
+  }
+}

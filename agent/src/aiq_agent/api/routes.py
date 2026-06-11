@@ -6,7 +6,15 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from aiq_agent.api.schemas import ChatRequest, ChatResponse, HealthResponse, StepResponse
+from aiq_agent.api.schemas import (
+    ChatRequest,
+    ChatResponse,
+    HealthResponse,
+    StepResponse,
+    ThreadHistoryMessage,
+    ThreadHistoryResponse,
+    ThreadSummaryResponse,
+)
 from aiq_agent.llm.base import ChatMessage, LlmService
 from aiq_agent.memory.base import MemoryStore
 from aiq_agent.orchestration import PlannerExecutorCritic
@@ -144,6 +152,40 @@ async def chat(
         history_length=history_length,
         thinking=thinking,
         steps=steps,
+    )
+
+
+@router.get("/chat/threads", response_model=list[ThreadSummaryResponse])
+async def list_threads(
+    memory: MemoryStore = Depends(_memory),
+    prefix: str | None = None,
+    limit: int = 50,
+) -> list[ThreadSummaryResponse]:
+    summaries = await memory.list_threads(prefix=prefix, limit=limit)
+    return [
+        ThreadSummaryResponse(
+            thread_id=s.thread_id,
+            title=s.title,
+            message_count=s.message_count,
+            updated_at=s.updated_at,
+        )
+        for s in summaries
+    ]
+
+
+@router.get("/chat/threads/{thread_id}", response_model=ThreadHistoryResponse)
+async def get_thread(
+    thread_id: str,
+    memory: MemoryStore = Depends(_memory),
+) -> ThreadHistoryResponse:
+    history = await memory.get(thread_id)
+    return ThreadHistoryResponse(
+        thread_id=thread_id,
+        messages=[
+            ThreadHistoryMessage(role=m.role, content=m.content)
+            for m in history
+            if m.role in ("user", "assistant")
+        ],
     )
 
 

@@ -201,7 +201,7 @@ export default async function AdminUsersPage({
                           <Button
                             type="submit"
                             size="sm"
-                            variant={isAdmin ? "ghost" : "default"}
+                            variant={isAdmin ? "ghost" : "primary"}
                           >
                             {isAdmin ? "Gỡ admin" : "Cấp admin"}
                           </Button>

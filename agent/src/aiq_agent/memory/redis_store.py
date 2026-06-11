@@ -11,11 +11,12 @@ Lazy-imports redis-py so unit tests can run without a live Redis.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Sequence
 from typing import Any
 
 from aiq_agent.llm.base import ChatMessage
-from aiq_agent.memory.base import MemoryStore
+from aiq_agent.memory.base import MemoryStore, ThreadSummary
 
 
 class RedisMemoryStore(MemoryStore):
@@ -54,24 +55,82 @@ class RedisMemoryStore(MemoryStore):
             return decoded
         return decoded[-limit:]
 
+    def _meta_key(self, thread_id: str) -> str:
+        return f"{self._key_prefix}meta:{thread_id}"
+
     async def append(self, thread_id: str, messages: Sequence[ChatMessage]) -> None:
         if not messages:
             return
 
         key = self._key(thread_id)
+        meta_key = self._meta_key(thread_id)
         payloads = [
             json.dumps({"role": m.role, "content": m.content, "name": m.name})
             for m in messages
         ]
+        now = time.time()
+        first_user = next(
+            (m.content for m in messages if m.role == "user"),
+            None,
+        )
 
         pipe = self._redis.pipeline()
         pipe.rpush(key, *payloads)
         pipe.ltrim(key, -self._max_messages, -1)  # cap memory growth
         pipe.expire(key, self._ttl_seconds)
+
+        meta_updates: dict[str, str] = {"updated_at": f"{now:.3f}"}
+        if first_user:
+            # Only set the title on the first user message of the thread.
+            pipe.hsetnx(meta_key, "title", first_user[:120])
+        pipe.hset(meta_key, mapping=meta_updates)
+        pipe.expire(meta_key, self._ttl_seconds)
         await pipe.execute()
 
     async def clear(self, thread_id: str) -> None:
-        await self._redis.delete(self._key(thread_id))
+        pipe = self._redis.pipeline()
+        pipe.delete(self._key(thread_id))
+        pipe.delete(self._meta_key(thread_id))
+        await pipe.execute()
+
+    async def list_threads(
+        self, *, prefix: str | None = None, limit: int = 50
+    ) -> list[ThreadSummary]:
+        # SCAN over message-list keys; meta entries live under a separate
+        # prefix so the pattern below doesn't collect them twice.
+        scan_match = f"{self._key_prefix}{prefix or ''}*"
+        meta_marker = f"{self._key_prefix}meta:"
+
+        summaries: list[ThreadSummary] = []
+        cursor = 0
+        while True:
+            cursor, keys = await self._redis.scan(cursor=cursor, match=scan_match, count=200)
+            for key in keys:
+                if key.startswith(meta_marker):
+                    continue
+                thread_id = key[len(self._key_prefix):]
+                length = await self._redis.llen(key)
+                if length == 0:
+                    continue
+                meta = await self._redis.hgetall(self._meta_key(thread_id))
+                title = (meta.get("title") or "Cuộc trò chuyện")[:120]
+                try:
+                    updated_at = float(meta.get("updated_at", "0"))
+                except ValueError:
+                    updated_at = 0.0
+                summaries.append(
+                    ThreadSummary(
+                        thread_id=thread_id,
+                        title=title,
+                        message_count=length,
+                        updated_at=updated_at,
+                    )
+                )
+            if cursor == 0:
+                break
+
+        summaries.sort(key=lambda s: s.updated_at, reverse=True)
+        return summaries[:limit]
 
     async def aclose(self) -> None:
         await self._redis.aclose()

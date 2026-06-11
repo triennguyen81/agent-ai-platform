@@ -40,6 +40,23 @@ class ChatResponse(BaseModel):
     thinking: str | None = None
 
 
+class ThreadSummaryResponse(BaseModel):
+    thread_id: str
+    title: str
+    message_count: int
+    updated_at: float
+
+
+class ThreadHistoryMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ThreadHistoryResponse(BaseModel):
+    thread_id: str
+    messages: list[ThreadHistoryMessage]
+
+
 class HealthResponse(BaseModel):
     status: str
     provider: str

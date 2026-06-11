@@ -3,7 +3,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { BookmarkPlus, Brain, Check, Copy, Loader2, Send, Sparkles, User as UserIcon, X } from "lucide-react";
+import {
+  BookmarkPlus,
+  Brain,
+  Check,
+  Copy,
+  Loader2,
+  MessageSquare,
+  Plus,
+  Send,
+  Sparkles,
+  Trash2,
+  User as UserIcon,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
 
@@ -50,23 +63,83 @@ const SUGGESTIONS = [
   "Bảng giá niềng răng mắc cài kim loại vs sứ?",
 ];
 
+interface ThreadSummary {
+  thread_id: string;
+  title: string;
+  message_count: number;
+  updated_at: number;
+}
+
+interface HistoryMessage {
+  role: string;
+  content: string;
+}
+
+function makeThreadId(): string {
+  return `t-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
 export function ChatRoom() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
   const [threadId, setThreadId] = useState<string | null>(null);
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [loadingThread, setLoadingThread] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const refreshThreads = useCallback(async () => {
+    try {
+      const res = await fetch("/api/chat/threads");
+      if (!res.ok) return;
+      const body = (await res.json()) as { items: ThreadSummary[] };
+      setThreads(body.items ?? []);
+    } catch {
+      // silent
+    }
+  }, []);
+
+  const loadThread = useCallback(async (tid: string) => {
+    setLoadingThread(true);
+    try {
+      const res = await fetch(`/api/chat/threads/${encodeURIComponent(tid)}`);
+      if (!res.ok) {
+        setMessages([]);
+        return;
+      }
+      const body = (await res.json()) as { messages: HistoryMessage[] };
+      const restored: Message[] = (body.messages ?? []).map((m, i) => {
+        const isAssistant = m.role === "assistant";
+        const { thinking, answer } = isAssistant
+          ? extractThinking(m.content)
+          : { thinking: null, answer: m.content };
+        return {
+          id: `h-${i}-${tid}`,
+          role: isAssistant ? "assistant" : "user",
+          content: answer,
+          thinking,
+        };
+      });
+      setMessages(restored);
+    } catch {
+      setMessages([]);
+    } finally {
+      setLoadingThread(false);
+    }
+  }, []);
 
   useEffect(() => {
     const stored = window.localStorage.getItem(THREAD_KEY);
-    if (stored) {
-      setThreadId(stored);
-    } else {
-      const fresh = `t-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      window.localStorage.setItem(THREAD_KEY, fresh);
-      setThreadId(fresh);
+    const tid = stored ?? makeThreadId();
+    if (!stored) {
+      window.localStorage.setItem(THREAD_KEY, tid);
     }
-  }, []);
+    setThreadId(tid);
+    void refreshThreads();
+    if (stored) {
+      void loadThread(stored);
+    }
+  }, [refreshThreads, loadThread]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -138,6 +211,7 @@ export function ChatRoom() {
             meta: { provider: body.provider, model: body.model },
           },
         ]);
+        void refreshThreads();
       } catch (err) {
         const message = err instanceof Error ? err.message : "Network error";
         setMessages((m) => [
@@ -148,7 +222,7 @@ export function ChatRoom() {
         setPending(false);
       }
     },
-    [pending, threadId],
+    [pending, threadId, refreshThreads],
   );
 
   const send = useCallback(() => {
@@ -156,59 +230,174 @@ export function ChatRoom() {
   }, [input, sendPrompt]);
 
   function newThread() {
-    const fresh = `t-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const fresh = makeThreadId();
     window.localStorage.setItem(THREAD_KEY, fresh);
     setThreadId(fresh);
     setMessages([]);
+    setInput("");
+  }
+
+  function switchThread(tid: string) {
+    if (tid === threadId) return;
+    window.localStorage.setItem(THREAD_KEY, tid);
+    setThreadId(tid);
+    setMessages([]);
+    setInput("");
+    void loadThread(tid);
+  }
+
+  async function deleteThread(tid: string) {
+    try {
+      await fetch(`/api/chat/threads/${encodeURIComponent(tid)}`, { method: "DELETE" });
+    } catch {
+      // silent
+    }
+    if (tid === threadId) {
+      newThread();
+    }
+    void refreshThreads();
   }
 
   return (
-    <div className="flex h-[calc(100dvh-120px)] flex-col">
-      <header className="flex items-center justify-between pb-4">
-        <div>
-          <h1 className="font-serif text-2xl">Chat</h1>
-          <p className="text-xs text-[var(--color-muted-fg)]">
-            Thread: {threadId ?? "…"}
-          </p>
+    <div className="grid h-[calc(100dvh-120px)] gap-4 lg:grid-cols-[280px_1fr]">
+      <ThreadSidebar
+        threads={threads}
+        activeId={threadId}
+        onNew={newThread}
+        onSelect={switchThread}
+        onDelete={(id) => void deleteThread(id)}
+      />
+
+      <div className="flex min-h-0 flex-col">
+        <header className="flex items-center justify-between pb-3">
+          <div className="min-w-0">
+            <h1 className="font-serif text-2xl">Chat</h1>
+            <p className="truncate text-xs text-[var(--color-muted-fg)]">
+              {messages.length > 0 && messages[0].role === "user"
+                ? messages[0].content.slice(0, 80)
+                : "Cuộc trò chuyện mới"}
+            </p>
+          </div>
+          <Button variant="ghost" size="sm" onClick={newThread}>
+            <Plus className="size-4" /> New
+          </Button>
+        </header>
+
+        <div
+          ref={scrollRef}
+          className="min-h-0 flex-1 space-y-6 overflow-y-auto rounded-[var(--radius)] border bg-[var(--color-bg)] p-6"
+        >
+          {loadingThread ? (
+            <div className="flex items-center justify-center gap-2 py-10 text-sm text-[var(--color-muted-fg)]">
+              <Loader2 className="size-4 animate-spin" /> Đang tải lịch sử…
+            </div>
+          ) : (
+            <>
+              {messages.length === 0 && (
+                <EmptyState onPick={(s) => void sendPrompt(s)} />
+              )}
+              {messages.map((m) => (
+                <MessageBubble key={m.id} message={m} />
+              ))}
+              {pending && <TypingIndicator />}
+            </>
+          )}
         </div>
-        <Button variant="ghost" size="sm" onClick={newThread}>
-          New thread
-        </Button>
-      </header>
 
-      <div
-        ref={scrollRef}
-        className="flex-1 space-y-6 overflow-y-auto rounded-[var(--radius)] border bg-[var(--color-bg)] p-6"
-      >
-        {messages.length === 0 && (
-          <EmptyState onPick={(s) => void sendPrompt(s)} />
-        )}
-        {messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
-        ))}
-        {pending && <TypingIndicator />}
+        <form
+          className="mt-3 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            send();
+          }}
+        >
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Hỏi gì đó về kiến thức của bạn…"
+            className="h-12 flex-1 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-4 text-sm focus:border-[var(--color-primary)] focus:outline-none"
+            disabled={pending}
+          />
+          <Button type="submit" size="lg" disabled={pending || !input.trim()}>
+            <Send className="size-4" />
+            Send
+          </Button>
+        </form>
       </div>
-
-      <form
-        className="mt-4 flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          send();
-        }}
-      >
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Hỏi gì đó về kiến thức của bạn…"
-          className="h-12 flex-1 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-4 text-sm focus:border-[var(--color-primary)] focus:outline-none"
-          disabled={pending}
-        />
-        <Button type="submit" size="lg" disabled={pending || !input.trim()}>
-          <Send className="size-4" />
-          Send
-        </Button>
-      </form>
     </div>
+  );
+}
+
+function ThreadSidebar({
+  threads,
+  activeId,
+  onNew,
+  onSelect,
+  onDelete,
+}: {
+  threads: ThreadSummary[];
+  activeId: string | null;
+  onNew: () => void;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <aside className="hidden min-h-0 flex-col rounded-[var(--radius)] border bg-[var(--color-bg)] lg:flex">
+      <div className="flex items-center justify-between border-b px-3 py-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted-fg)]">
+          Lịch sử
+        </span>
+        <Button size="sm" variant="ghost" onClick={onNew}>
+          <Plus className="size-3.5" /> Mới
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        {threads.length === 0 ? (
+          <p className="px-2 py-3 text-xs text-[var(--color-muted-fg)]">
+            Chưa có cuộc trò chuyện nào. Hỏi câu đầu tiên để bắt đầu.
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {threads.map((t) => {
+              const isActive = t.thread_id === activeId;
+              return (
+                <li key={t.thread_id}>
+                  <div
+                    className={`group flex items-center gap-1 rounded-[var(--radius)] px-2 py-1.5 text-sm transition ${
+                      isActive
+                        ? "bg-[var(--color-primary)]/10 text-[var(--color-fg)]"
+                        : "text-[var(--color-fg)] hover:bg-[var(--color-muted)]"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onSelect(t.thread_id)}
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    >
+                      <MessageSquare className="size-3.5 shrink-0 text-[var(--color-muted-fg)]" />
+                      <span className="truncate text-xs">{t.title || "Cuộc trò chuyện"}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (window.confirm("Xoá cuộc trò chuyện này?")) {
+                          onDelete(t.thread_id);
+                        }
+                      }}
+                      className="shrink-0 rounded p-1 text-[var(--color-muted-fg)] opacity-0 transition group-hover:opacity-100 hover:bg-red-50 hover:text-red-600"
+                      aria-label="Delete thread"
+                    >
+                      <Trash2 className="size-3" />
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </aside>
   );
 }
 

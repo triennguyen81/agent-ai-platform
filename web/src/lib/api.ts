@@ -101,7 +101,16 @@ export const agent = {
       body: JSON.stringify(payload),
     });
   },
+  listThreads(prefix: string, limit = 50) {
+    const params = new URLSearchParams({ prefix, limit: String(limit) });
+    return call(AGENT_BASE, `/chat/threads?${params.toString()}`);
+  },
+  getThread(threadId: string) {
+    return call(AGENT_BASE, `/chat/threads/${encodeURIComponent(threadId)}`);
+  },
   clearThread(threadId: string) {
-    return call(AGENT_BASE, `/chat/threads/${threadId}`, { method: "DELETE" });
+    return call(AGENT_BASE, `/chat/threads/${encodeURIComponent(threadId)}`, {
+      method: "DELETE",
+    });
   },
 };

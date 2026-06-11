@@ -4,8 +4,19 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from aiq_agent.llm.base import ChatMessage
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadSummary:
+    """Light metadata for the thread-history sidebar."""
+
+    thread_id: str
+    title: str
+    message_count: int
+    updated_at: float  # unix seconds; 0 if unknown
 
 
 class MemoryStore(ABC):
@@ -26,6 +37,10 @@ class MemoryStore(ABC):
     @abstractmethod
     async def clear(self, thread_id: str) -> None:
         """Drop all messages for a thread."""
+
+    @abstractmethod
+    async def list_threads(self, *, prefix: str | None = None, limit: int = 50) -> list[ThreadSummary]:
+        """List threads, optionally filtered by an id prefix (e.g. per-user)."""
 
     async def aclose(self) -> None:
         """Release any underlying resources."""
