@@ -65,12 +65,30 @@ export function ChatRoom() {
 
       if (!res.ok) {
         const errText = await res.text();
+        // Best-effort: pull the FastAPI detail message out of the JSON.
+        let message = errText || "request failed";
+        try {
+          const parsed = JSON.parse(errText) as {
+            detail?: unknown;
+            error?: string;
+          };
+          if (typeof parsed.error === "string") {
+            message = parsed.error;
+          } else if (Array.isArray(parsed.detail) && parsed.detail.length > 0) {
+            const first = parsed.detail[0] as { msg?: string };
+            message = first.msg ?? message;
+          } else if (typeof parsed.detail === "string") {
+            message = parsed.detail;
+          }
+        } catch {
+          // fall back to raw text
+        }
         setMessages((m) => [
           ...m,
           {
             id: `e-${Date.now()}`,
             role: "system",
-            content: `Error ${res.status}: ${errText || "request failed"}`,
+            content: `Error ${res.status}: ${message}`,
           },
         ]);
         return;

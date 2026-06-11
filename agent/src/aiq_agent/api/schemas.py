@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
-    prompt: str = Field(min_length=1, max_length=8_000)
+    # 200K chars leaves headroom for the web tier to prepend a knowledge
+    # block. Still well inside Claude Haiku 4.5's 200K-token context.
+    prompt: str = Field(min_length=1, max_length=200_000)
     tool: str | None = Field(default=None, description="Optional tool to invoke in Executor step.")
     tool_arguments: dict[str, Any] = Field(default_factory=dict)
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
