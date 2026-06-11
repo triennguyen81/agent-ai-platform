@@ -6,6 +6,14 @@ RUN npm install --omit=dev=false --no-audit --no-fund
 
 FROM node:22-alpine AS build
 WORKDIR /app
+
+# NEXT_PUBLIC_* env vars must be set at BUILD time — Next.js inlines them
+# into the client bundle. Runtime-only secrets (CLERK_SECRET_KEY,
+# GATEWAY_SHARED_SECRET) stay out of the build and arrive via env on the
+# runtime container.
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=""
+ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
