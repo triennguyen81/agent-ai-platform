@@ -2,9 +2,11 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json ./
-# --legacy-peer-deps because parts of the React 18 ecosystem still pin
-# React 18 in peerDependencies even when they support React 19.
-RUN npm install --no-audit --no-fund --legacy-peer-deps
+# Overrides in package.json pin react/react-dom to 19 across the tree,
+# collapsing the duplicate Clerk peer installs that --legacy-peer-deps
+# would otherwise leave behind. Run dedupe to be explicit.
+RUN npm install --no-audit --no-fund --legacy-peer-deps \
+ && npm dedupe --legacy-peer-deps
 
 FROM node:22-alpine AS build
 WORKDIR /app
