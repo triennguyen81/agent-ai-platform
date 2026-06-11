@@ -1,3 +1,4 @@
+import { ClerkProvider } from "@clerk/nextjs";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { isClerkConfigured } from "@/lib/env";
@@ -9,24 +10,13 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
-  // ClerkProvider goes INSIDE <body> per Clerk v6+ guidance — keeps the
-  // server-rendered <html> stable across auth state transitions.
-  if (isClerkConfigured) {
-    // Dynamic require so dev builds with no Clerk key skip the import.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { ClerkProvider } = require("@clerk/nextjs") as typeof import("@clerk/nextjs");
-    return (
-      <html lang="vi" suppressHydrationWarning>
-        <body>
-          <ClerkProvider>{children}</ClerkProvider>
-        </body>
-      </html>
-    );
-  }
-
+  // Static import so Next.js standalone tracing bundles @clerk/nextjs into
+  // the runtime image. ClerkProvider mounts only when a publishable key
+  // is configured — without it, ClerkProvider throws at render time.
+  const body = isClerkConfigured ? <ClerkProvider>{children}</ClerkProvider> : children;
   return (
     <html lang="vi" suppressHydrationWarning>
-      <body>{children}</body>
+      <body>{body}</body>
     </html>
   );
 }
