@@ -37,6 +37,7 @@ class ChatResponse(BaseModel):
     steps: list[StepResponse]
     thread_id: str | None = None
     history_length: int = 0
+    thinking: str | None = None
 
 
 class HealthResponse(BaseModel):

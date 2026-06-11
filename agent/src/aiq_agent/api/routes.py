@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from aiq_agent.api.schemas import ChatRequest, ChatResponse, HealthResponse, StepResponse
@@ -11,6 +13,37 @@ from aiq_agent.orchestration import PlannerExecutorCritic
 from aiq_agent.tools.registry import ToolExecutionError, ToolRegistry
 
 router = APIRouter()
+
+_DEFAULT_SYSTEM = """Bạn là trợ lý AI cá nhân thông minh, trả lời người dùng bằng tiếng Việt tự nhiên.
+
+PHẢI tuân thủ format trả lời:
+1. Bắt đầu bằng <thinking>...</thinking> ngắn (2-4 câu) tóm tắt cách bạn suy luận.
+2. Tiếp theo là câu trả lời chính bằng Markdown (heading, bullet, bảng nếu phù hợp).
+
+Nếu prompt có chứa USER KNOWLEDGE BASE thì luôn ưu tiên trích dẫn thông tin từ đó và ghi rõ tên Note đã tham chiếu (vd "theo Note 3"). Nếu câu hỏi không liên quan knowledge thì trả lời chung như AI thông thường.
+"""
+
+
+_THINK_RE = re.compile(r"<thinking>(.*?)</thinking>", flags=re.DOTALL | re.IGNORECASE)
+# Catch dangling open tags the model sometimes leaves without a close tag.
+_ORPHAN_OPEN_RE = re.compile(r"<thinking>", flags=re.IGNORECASE)
+_ORPHAN_CLOSE_RE = re.compile(r"</thinking>", flags=re.IGNORECASE)
+
+
+def _split_thinking(raw: str) -> tuple[str | None, str]:
+    """Extract all <thinking>…</thinking> blocks and return (thinking, answer).
+
+    The answer is the original text with every thinking block removed so the
+    UI never accidentally renders reasoning as the final response.
+    """
+    matches = _THINK_RE.findall(raw)
+    answer = _THINK_RE.sub("", raw)
+    # Strip any orphan open/close tags so the answer is fully clean.
+    answer = _ORPHAN_OPEN_RE.sub("", answer)
+    answer = _ORPHAN_CLOSE_RE.sub("", answer)
+    answer = answer.strip()
+    thinking = "\n\n".join(m.strip() for m in matches if m.strip()) or None
+    return thinking, answer
 
 
 def _llm(request: Request) -> LlmService:
@@ -53,38 +86,27 @@ async def chat(
     if body.thread_id:
         prior_history = await memory.get(body.thread_id, limit=body.memory_limit)
 
-    orchestrator = PlannerExecutorCritic(llm=llm, tools=tools)
-    try:
-        run = await orchestrator.run(
-            body.prompt,
-            tool_name=body.tool,
-            tool_arguments=body.tool_arguments,
-            prior_history=prior_history,
-        )
-    except ToolExecutionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
+    thinking: str | None = None
+    steps: list[StepResponse] = []
 
-    history_length = len(prior_history)
-    if body.thread_id:
-        await memory.append(
-            body.thread_id,
-            [
-                ChatMessage("user", body.prompt),
-                ChatMessage("assistant", run.final_answer),
-            ],
-        )
-        history_length += 2
+    if body.tool:
+        # Tool-augmented path keeps the Planner-Executor-Critic loop.
+        orchestrator = PlannerExecutorCritic(llm=llm, tools=tools)
+        try:
+            run = await orchestrator.run(
+                body.prompt,
+                tool_name=body.tool,
+                tool_arguments=body.tool_arguments,
+                prior_history=prior_history,
+            )
+        except ToolExecutionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=str(exc),
+            ) from exc
 
-    return ChatResponse(
-        final_answer=run.final_answer,
-        provider=llm.provider,
-        model=llm.model,
-        thread_id=body.thread_id,
-        history_length=history_length,
-        steps=[
+        thinking, final_answer = _split_thinking(run.final_answer)
+        steps = [
             StepResponse(
                 role=step.role,
                 content=step.content,
@@ -93,7 +115,35 @@ async def chat(
                 tool_output=step.tool_result.output if step.tool_result else None,
             )
             for step in run.steps
-        ],
+        ]
+    else:
+        # Plain chat: single LLM call with the thinking-style system prompt.
+        messages: list[ChatMessage] = [ChatMessage("system", _DEFAULT_SYSTEM)]
+        messages.extend(prior_history)
+        messages.append(ChatMessage("user", body.prompt))
+
+        result = await llm.chat(messages, temperature=body.temperature)
+        thinking, final_answer = _split_thinking(result.content)
+
+    history_length = len(prior_history)
+    if body.thread_id:
+        await memory.append(
+            body.thread_id,
+            [
+                ChatMessage("user", body.prompt),
+                ChatMessage("assistant", final_answer),
+            ],
+        )
+        history_length += 2
+
+    return ChatResponse(
+        final_answer=final_answer,
+        provider=llm.provider,
+        model=llm.model,
+        thread_id=body.thread_id,
+        history_length=history_length,
+        thinking=thinking,
+        steps=steps,
     )
 
 
