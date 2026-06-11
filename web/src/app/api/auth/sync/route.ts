@@ -7,6 +7,19 @@ import {
   isClerkConfigured,
 } from "@/lib/env";
 
+// Behind Cloudflare + NPM the request's URL host is the container internal
+// 0.0.0.0:3000. Use the forwarded headers to rebuild the public URL.
+function publicUrl(request: NextRequest, path: string): URL {
+  const forwardedHost = request.headers.get("x-forwarded-host");
+  const forwardedProto = request.headers.get("x-forwarded-proto");
+  const host = forwardedHost ?? request.headers.get("host");
+  const proto = forwardedProto ?? "https";
+  if (host) {
+    return new URL(path, `${proto}://${host}`);
+  }
+  return new URL(path, request.url);
+}
+
 // GET /api/auth/sync?to=/chat
 // Called after a successful Clerk sign-in. Reads the Clerk user, exchanges
 // their identity for a Gateway JWT via /auth/external-link, sets the
@@ -15,7 +28,7 @@ export async function GET(request: NextRequest) {
   const to = request.nextUrl.searchParams.get("to") ?? "/chat";
 
   if (!isClerkConfigured) {
-    return NextResponse.redirect(new URL(to, request.url));
+    return NextResponse.redirect(publicUrl(request, to));
   }
 
   if (!gatewaySharedSecret) {
@@ -29,7 +42,7 @@ export async function GET(request: NextRequest) {
   const { currentUser } = (await import("@clerk/nextjs/server")) as typeof import("@clerk/nextjs/server");
   const user = await currentUser();
   if (!user) {
-    return NextResponse.redirect(new URL("/sign-in", request.url));
+    return NextResponse.redirect(publicUrl(request, "/sign-in"));
   }
 
   const email =
@@ -77,5 +90,5 @@ export async function GET(request: NextRequest) {
   const body = (await res.json()) as { token: string; expiresAt: string };
   await setSession(body.token, new Date(body.expiresAt));
 
-  return NextResponse.redirect(new URL(to, request.url));
+  return NextResponse.redirect(publicUrl(request, to));
 }

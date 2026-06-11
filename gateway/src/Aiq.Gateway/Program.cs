@@ -24,6 +24,11 @@ using Prometheus;
 // lets Npgsql write/read DateTimeOffset against timestamptz transparently.
 AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
+// Dapper needs a hint to materialize Postgres TEXT[] columns into
+// `string[]` record fields — without this the notes/users LIST queries
+// throw InvalidOperationException at runtime.
+Dapper.SqlMapper.AddTypeHandler(new Aiq.Gateway.Data.StringArrayTypeHandler());
+
 var builder = WebApplication.CreateBuilder(args);
 
 // ---- Structured logging ----------------------------------------------------
