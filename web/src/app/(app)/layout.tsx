@@ -38,7 +38,10 @@ export default async function AppLayout({
     redirect((isClerkConfigured ? "/sign-in" : "/login") + "?error=session-expired");
   }
   const me = (await meRes.json()) as MeResponse;
-  const isAdmin = (me.roles ?? []).includes("admin");
+  const roles = me.roles ?? [];
+  const isSuperAdmin = roles.includes("super_admin");
+  // KB contributors: admin OR super_admin.
+  const canEditKnowledge = isSuperAdmin || roles.includes("admin");
 
   return (
     <div className="min-h-dvh">
@@ -51,10 +54,12 @@ export default async function AppLayout({
             <Button variant="ghost" size="sm" asChild>
               <Link href="/chat">Chat</Link>
             </Button>
-            <Button variant="ghost" size="sm" asChild>
-              <Link href="/knowledge">Knowledge</Link>
-            </Button>
-            {isAdmin && (
+            {canEditKnowledge && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/knowledge">Knowledge</Link>
+              </Button>
+            )}
+            {isSuperAdmin && (
               <Button variant="ghost" size="sm" asChild>
                 <Link href="/admin/users">Admin</Link>
               </Button>

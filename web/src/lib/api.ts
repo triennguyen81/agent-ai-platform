@@ -91,6 +91,7 @@ export const gateway = {
 export const agent = {
   chat(payload: {
     prompt: string;
+    knowledge_context?: string;
     thread_id?: string;
     tool?: string | null;
     tool_arguments?: Record<string, unknown>;

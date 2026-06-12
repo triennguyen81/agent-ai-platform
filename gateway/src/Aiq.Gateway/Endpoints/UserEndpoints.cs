@@ -8,14 +8,18 @@ public static class UserEndpoints
 {
     private static readonly HashSet<string> AllowedRoles = new(StringComparer.OrdinalIgnoreCase)
     {
-        "admin", "reviewer", "uploader",
+        // Active role tiers (UI-surfaced):
+        "super_admin", "admin", "user",
+        // Legacy roles still accepted for backward compatibility:
+        "reviewer", "uploader", "viewer",
     };
 
     public static IEndpointRouteBuilder MapUserEndpoints(this IEndpointRouteBuilder app)
     {
+        // Only super_admin can list users or change roles.
         var group = app
             .MapGroup("/users")
-            .RequireAuthorization("admin")
+            .RequireAuthorization("super_admin")
             .RequireRateLimiting("default");
 
         group.MapGet("/", ListAsync);

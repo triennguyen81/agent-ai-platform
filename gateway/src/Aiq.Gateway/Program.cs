@@ -178,9 +178,13 @@ builder.Services
 
 builder.Services.AddAuthorization(options =>
 {
-    options.AddPolicy("admin",    p => p.RequireRole("admin"));
-    options.AddPolicy("reviewer", p => p.RequireRole("admin", "reviewer"));
-    options.AddPolicy("uploader", p => p.RequireRole("admin", "uploader"));
+    // 3-tier role model: super_admin (manages users) ⊃ admin (KB contributors) ⊃ user (consumers).
+    options.AddPolicy("super_admin", p => p.RequireRole("super_admin"));
+    options.AddPolicy("admin",       p => p.RequireRole("super_admin", "admin"));
+    options.AddPolicy("user",        p => p.RequireRole("super_admin", "admin", "user"));
+    // Legacy policies kept for backward compatibility with older endpoints / data.
+    options.AddPolicy("reviewer",    p => p.RequireRole("super_admin", "admin", "reviewer"));
+    options.AddPolicy("uploader",    p => p.RequireRole("super_admin", "admin", "uploader"));
 });
 
 builder.Services.AddRateLimiter(options =>

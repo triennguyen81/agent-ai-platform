@@ -28,10 +28,13 @@ CREATE TABLE IF NOT EXISTS user_roles (
 );
 
 INSERT INTO roles (name, description) VALUES
-    ('admin',     'Full system access'),
-    ('reviewer',  'Can review and approve OCR corrections'),
-    ('uploader',  'Can upload source documents'),
-    ('viewer',    'Read-only access')
+    ('super_admin', 'Top-level administrator: manages users and roles, full system access'),
+    ('admin',       'Knowledge contributor: can add and edit notes / KB content'),
+    ('user',        'Knowledge consumer: can chat using the KB'),
+    -- Legacy roles preserved for backward-compatibility — not surfaced in UI:
+    ('reviewer',    'Legacy: review and approve OCR corrections'),
+    ('uploader',    'Legacy: upload source documents'),
+    ('viewer',      'Legacy: read-only access')
 ON CONFLICT (name) DO NOTHING;
 
 -- ----------------------------------------------------------------------------

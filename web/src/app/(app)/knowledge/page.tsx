@@ -51,6 +51,19 @@ function formatDate(s: string): string {
 
 export default async function KnowledgePage() {
   const token = await requireSession();
+
+  // 3-tier gate: only admin or super_admin can manage knowledge.
+  // Plain `user` accounts get redirected to /chat (they can still consume
+  // KB via chat, just not edit it).
+  const meRes = await gateway.me(token);
+  if (meRes.ok) {
+    const me = (await meRes.json()) as { roles?: string[] };
+    const roles = me.roles ?? [];
+    if (!roles.includes("super_admin") && !roles.includes("admin")) {
+      redirect("/chat");
+    }
+  }
+
   const res = await gateway.listNotes(token);
   if (res.status === 401) {
     await clearSession();

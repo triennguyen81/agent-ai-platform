@@ -66,25 +66,13 @@ export async function POST(request: NextRequest) {
     // swallow — RAG is optional, never fail the chat over a notes outage
   }
 
-  // Prepend the knowledge as a framing instruction so the PEC orchestrator
-  // sees it in every stage (planner, executor, critic).
-  const augmentedPrompt = knowledgeBlock
-    ? [
-        "Bạn là trợ lý AI cá nhân. Dưới đây là toàn bộ ghi chú (knowledge base) mà người dùng đã lưu — luôn ưu tiên thông tin từ đây khi câu hỏi liên quan.",
-        "",
-        "===== USER KNOWLEDGE BASE =====",
-        knowledgeBlock,
-        "===== END KNOWLEDGE BASE =====",
-        "",
-        "Câu hỏi của người dùng:",
-        prompt,
-        "",
-        "Trả lời ngắn gọn, trực tiếp, trích dẫn tên Note nếu dùng thông tin từ đó. Nếu câu hỏi không liên quan đến knowledge, trả lời bình thường.",
-      ].join("\n")
-    : prompt;
-
+  // Send the user's original question as `prompt` so the agent stores it
+  // unchanged in memory (used for the sidebar thread title). The knowledge
+  // block goes via the side-channel `knowledge_context` field — the agent
+  // merges it into its system prompt only.
   const res = await agent.chat({
-    prompt: augmentedPrompt,
+    prompt,
+    knowledge_context: knowledgeBlock || undefined,
     thread_id: namespacedThreadId(token, body.thread_id),
     temperature: body.temperature ?? 0.2,
   });

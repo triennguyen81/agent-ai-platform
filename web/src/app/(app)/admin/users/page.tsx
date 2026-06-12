@@ -95,14 +95,29 @@ function formatDate(s: string): string {
 
 function badge(role: string): string {
   switch (role) {
+    case "super_admin":
+      return "bg-red-600 text-white";
     case "admin":
       return "bg-[var(--color-primary)] text-[var(--color-primary-fg)]";
-    case "reviewer":
-      return "bg-[var(--color-accent)] text-[var(--color-fg)]";
-    case "uploader":
+    case "user":
       return "bg-[var(--color-muted)] text-[var(--color-fg)]";
     default:
-      return "border text-[var(--color-muted-fg)]";
+      return "border text-[var(--color-muted-fg)]"; // legacy roles (reviewer/uploader/viewer)
+  }
+}
+
+const VISIBLE_ROLES = ["super_admin", "admin", "user"] as const;
+
+function roleLabel(role: string): string {
+  switch (role) {
+    case "super_admin":
+      return "Super admin";
+    case "admin":
+      return "Admin";
+    case "user":
+      return "User";
+    default:
+      return role;
   }
 }
 
@@ -158,9 +173,13 @@ export default async function AdminUsersPage({
                 </tr>
               ) : (
                 body.items.map((u) => {
-                  const isAdmin = u.roles.includes("admin");
+                  // Show only the active 3-tier badges, plus any legacy badges
+                  // the user still has (rendered with the default "ghost" look).
+                  const activeRoles = u.roles.filter((r) =>
+                    (VISIBLE_ROLES as readonly string[]).includes(r),
+                  );
                   return (
-                    <tr key={u.id} className="border-t">
+                    <tr key={u.id} className="border-t align-top">
                       <td className="px-4 py-3">
                         <div className="font-medium">{u.email}</div>
                         <div className="text-[10px] text-[var(--color-muted-fg)]">
@@ -172,15 +191,15 @@ export default async function AdminUsersPage({
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
-                          {u.roles.length === 0 ? (
+                          {activeRoles.length === 0 ? (
                             <span className="text-xs text-[var(--color-muted-fg)]">no role</span>
                           ) : (
-                            u.roles.map((r) => (
+                            activeRoles.map((r) => (
                               <span
                                 key={r}
                                 className={`rounded-full px-2 py-0.5 text-xs ${badge(r)}`}
                               >
-                                {r}
+                                {roleLabel(r)}
                               </span>
                             ))
                           )}
@@ -190,22 +209,39 @@ export default async function AdminUsersPage({
                         {u.externalProvider ?? "email"}
                       </td>
                       <td className="px-4 py-3">
-                        <form action={changeRoleAction} className="flex items-center gap-1">
-                          <input type="hidden" name="userId" value={u.id} />
-                          <input type="hidden" name="role" value="admin" />
-                          <input
-                            type="hidden"
-                            name="action"
-                            value={isAdmin ? "revoke" : "grant"}
-                          />
-                          <Button
-                            type="submit"
-                            size="sm"
-                            variant={isAdmin ? "ghost" : "primary"}
-                          >
-                            {isAdmin ? "Gỡ admin" : "Cấp admin"}
-                          </Button>
-                        </form>
+                        <div className="flex flex-wrap gap-1">
+                          {VISIBLE_ROLES.map((role) => {
+                            const has = u.roles.includes(role);
+                            return (
+                              <form
+                                key={role}
+                                action={changeRoleAction}
+                                className="contents"
+                              >
+                                <input type="hidden" name="userId" value={u.id} />
+                                <input type="hidden" name="role" value={role} />
+                                <input
+                                  type="hidden"
+                                  name="action"
+                                  value={has ? "revoke" : "grant"}
+                                />
+                                <Button
+                                  type="submit"
+                                  size="sm"
+                                  variant={has ? "outline" : "ghost"}
+                                  title={
+                                    has
+                                      ? `Gỡ ${roleLabel(role)}`
+                                      : `Cấp ${roleLabel(role)}`
+                                  }
+                                >
+                                  {has ? "✓ " : "+ "}
+                                  {roleLabel(role)}
+                                </Button>
+                              </form>
+                            );
+                          })}
+                        </div>
                       </td>
                     </tr>
                   );

@@ -11,6 +11,10 @@ class ChatRequest(BaseModel):
     # 200K chars leaves headroom for the web tier to prepend a knowledge
     # block. Still well inside Claude Haiku 4.5's 200K-token context.
     prompt: str = Field(min_length=1, max_length=200_000)
+    # Side-channel context that the agent injects into the system prompt
+    # (e.g. user notes for RAG) but never stores in memory. Keeps thread
+    # titles equal to the actual user question.
+    knowledge_context: str | None = Field(default=None, max_length=200_000)
     tool: str | None = Field(default=None, description="Optional tool to invoke in Executor step.")
     tool_arguments: dict[str, Any] = Field(default_factory=dict)
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)

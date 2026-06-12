@@ -58,9 +58,10 @@ export async function GET(request: NextRequest) {
   const displayName =
     [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username || null;
 
-  // Auto-grant admin to bootstrap emails.
+  // Bootstrap: emails in INITIAL_ADMIN_EMAIL get super_admin so the founder
+  // account regains full access after the 3-tier role refactor.
   const additionalRoles = initialAdminEmails.includes(email.toLowerCase())
-    ? ["admin"]
+    ? ["super_admin"]
     : undefined;
 
   const res = await fetch(`${gatewayBaseUrl}/auth/external-link`, {

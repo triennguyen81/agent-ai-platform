@@ -64,15 +64,20 @@ public static class AuthEndpoints
 
         if (existing is null)
         {
-            await users.AssignRoleAsync(user.Id, "viewer", ct);
+            // 3-tier model default: new external users start as plain `user`
+            // (can chat). `admin` / `super_admin` granted only via AdditionalRoles
+            // (bootstrap path) or later by a super_admin through /users.
+            await users.AssignRoleAsync(user.Id, "user", ct);
         }
 
         // Caller (web tier, authenticated via shared secret) may request extra
-        // roles for the user — used for bootstrapping the INITIAL_ADMIN_EMAIL.
+        // roles for the user — used for bootstrapping INITIAL_ADMIN_EMAIL as
+        // super_admin so the founder account regains full access after roles
+        // refactor.
         if (request.AdditionalRoles is { Length: > 0 })
         {
             var allowed = new HashSet<string>(
-                new[] { "admin", "reviewer", "uploader", "viewer" },
+                new[] { "super_admin", "admin", "user", "reviewer", "uploader", "viewer" },
                 StringComparer.OrdinalIgnoreCase);
             foreach (var role in request.AdditionalRoles)
             {
@@ -117,7 +122,7 @@ public static class AuthEndpoints
 
         var hash = hasher.Hash(request.Password);
         var user = await users.CreateAsync(request.Email, hash, request.DisplayName, ct);
-        await users.AssignRoleAsync(user.Id, "viewer", ct);
+        await users.AssignRoleAsync(user.Id, "user", ct);
 
         var roles = await users.GetRolesAsync(user.Id, ct);
         var token = jwt.Issue(user, roles);

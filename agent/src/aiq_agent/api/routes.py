@@ -126,7 +126,18 @@ async def chat(
         ]
     else:
         # Plain chat: single LLM call with the thinking-style system prompt.
-        messages: list[ChatMessage] = [ChatMessage("system", _DEFAULT_SYSTEM)]
+        # knowledge_context is fed via system, NOT user prompt — that keeps
+        # the memory store's user message equal to the actual question, so
+        # thread titles in the sidebar stay readable.
+        system_content = _DEFAULT_SYSTEM
+        if body.knowledge_context:
+            system_content = (
+                f"{_DEFAULT_SYSTEM}\n\n"
+                "===== USER KNOWLEDGE BASE =====\n"
+                f"{body.knowledge_context}\n"
+                "===== END KNOWLEDGE BASE ====="
+            )
+        messages: list[ChatMessage] = [ChatMessage("system", system_content)]
         messages.extend(prior_history)
         messages.append(ChatMessage("user", body.prompt))
 
