@@ -40,13 +40,14 @@ Live tại **`cattuong.ai`** với MVP đầy đủ:
 
 | # | Task | Size | ROI rationale |
 |---|---|---|---|
-| 1 | Fix thread title showing KB prefix | S | Sidebar không dùng được ngay, blocking UX |
-| 2 | Roles refactor (super_admin / admin / user) | M | Cần trước khi mời nhiều user thật |
-| 3 | Qdrant embeddings + top-K | L | RAG scale từ ~50 notes → unlimited |
-| 4 | URL crawler ingestion | M | "Quickly transfer info" use case |
-| 5 | CSV import for catalogs | S | Sales-team workflow |
-| 6 | Per-user analytics | M | Biết user hỏi gì, lỗ hổng KB ở đâu |
-| 7 | CI/CD GitHub Actions | M | Replace manual SSH, enable rollback |
+| 1 | Voice input STT tiếng Việt — Option A Web Speech API | S | Chuyên gia bận, gõ chậm; voice tăng tốc nhập tri thức. Chi tiết: [stt_voice_input_decision.md](stt_voice_input_decision.md) |
+| 2 | Qdrant embeddings + top-K | L | RAG scale từ ~50 notes → unlimited |
+| 3 | URL crawler ingestion | M | "Quickly transfer info" use case |
+| 4 | CSV import for catalogs | S | Sales-team workflow |
+| 5 | Per-user analytics | M | Biết user hỏi gì, lỗ hổng KB ở đâu |
+| 6 | CI/CD GitHub Actions | M | Replace manual SSH, enable rollback |
+| 7 | Voice input — Option B (Whisper API) | M | Upgrade nếu A không đủ |
+| 8 | Voice input — Option C (PhoWhisper self-host) | L | Privacy + fine-tune cho thuật ngữ chuyên ngành |
 
 S = ≤1 day · M = 2–5 days · L = 1+ week
 

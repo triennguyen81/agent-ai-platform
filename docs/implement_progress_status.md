@@ -28,14 +28,15 @@
 | 17 | Per-user thread namespacing | ✅ live | 3fc6ce6 | `<userId>:<threadId>` prefix |
 | 18 | Thread title fix (skip KB augmentation in stored prompt) | ✅ live | this PR | Separate `knowledge_context` side-channel field |
 | 19 | Roles: `super_admin` / `admin` / `user` (3 tiers) | ✅ live | this PR | super_admin manages roles · admin contributes KB · user consumes |
-| 20 | Qdrant top-K embeddings (replace full-context RAG) | 🔜 backlog | — | M6 milestone |
-| 21 | URL crawler ingestion (paste list of URLs → notes) | 🔜 backlog | — | M7 milestone |
-| 22 | CSV import for product catalogs / FAQs | 🔜 backlog | — | M7 |
-| 23 | Notion / Confluence sync | 🔜 backlog | — | M7 |
-| 24 | Per-user analytics dashboard (top questions, KB gaps) | 🔜 backlog | — | M10 |
-| 25 | Mobile responsive + PWA | 🔜 backlog | — | M11 |
-| 26 | Multi-tenant workspace (org boundary) | 🔜 backlog | — | M8 |
-| 27 | CI/CD via GitHub Actions (build + deploy on tag) | 🔜 backlog | — | currently manual SSH |
+| 20 | Voice input (Speech-to-Text tiếng Việt) | ⏳ planned | next | Option A — Web Speech API first; see [stt_voice_input_decision.md](stt_voice_input_decision.md) |
+| 21 | Qdrant top-K embeddings (replace full-context RAG) | 🔜 backlog | — | M6 milestone |
+| 22 | URL crawler ingestion (paste list of URLs → notes) | 🔜 backlog | — | M7 milestone |
+| 23 | CSV import for product catalogs / FAQs | 🔜 backlog | — | M7 |
+| 24 | Notion / Confluence sync | 🔜 backlog | — | M7 |
+| 25 | Per-user analytics dashboard (top questions, KB gaps) | 🔜 backlog | — | M10 |
+| 26 | Mobile responsive + PWA | 🔜 backlog | — | M11 |
+| 27 | Multi-tenant workspace (org boundary) | 🔜 backlog | — | M8 |
+| 28 | CI/CD via GitHub Actions (build + deploy on tag) | 🔜 backlog | — | currently manual SSH |
 
 ---
 
