@@ -78,7 +78,13 @@ instrument_fastapi(app)
 
 
 def _install_prometheus() -> None:
-    """Expose /metrics with request latency, count, in-progress histograms."""
+    """Expose /metrics with request latency, count, in-progress histograms.
+
+    TEMPORARILY DISABLED: prometheus-fastapi-instrumentator 8.0.0 + FastAPI
+    0.137 hit `_IncludedRouter has no attribute path` because newer FastAPI
+    wraps included routers. Crashes every request middleware. Re-enable
+    after pinning the dep (see pyproject.toml) or after upstream fix.
+    """
     from prometheus_fastapi_instrumentator import Instrumentator
 
     Instrumentator(
@@ -86,4 +92,4 @@ def _install_prometheus() -> None:
     ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 
-_install_prometheus()
+# _install_prometheus()  # noqa: ERA001 — see docstring above

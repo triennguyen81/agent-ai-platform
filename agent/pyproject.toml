@@ -20,7 +20,9 @@ dependencies = [
   "opentelemetry-instrumentation-httpx>=0.49b2",
   "opentelemetry-instrumentation-redis>=0.49b2",
   "opentelemetry-exporter-otlp-proto-grpc>=1.28",
-  "prometheus-fastapi-instrumentator>=7.0",
+  # 8.0.0 crashes on FastAPI 0.115+ (route.path AttributeError on
+  # _IncludedRouter). Pin to 7.x until upstream ships a fix.
+  "prometheus-fastapi-instrumentator>=7.0,<8.0",
 ]
 
 [project.optional-dependencies]
