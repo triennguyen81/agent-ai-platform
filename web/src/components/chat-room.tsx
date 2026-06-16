@@ -87,6 +87,7 @@ export function ChatRoom() {
   const [threadId, setThreadId] = useState<string | null>(null);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [loadingThread, setLoadingThread] = useState(false);
+  const [chatInterim, setChatInterim] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const refreshThreads = useCallback(async () => {
@@ -305,38 +306,49 @@ export function ChatRoom() {
           )}
         </div>
 
-        <form
-          className="mt-3 flex items-center gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            send();
-          }}
-        >
-          <div className="relative flex-1">
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Hỏi gì đó về kiến thức của bạn…"
-              className="h-12 w-full rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-4 pr-12 text-sm focus:border-[var(--color-primary)] focus:outline-none"
-              disabled={pending}
-            />
-            <div className="absolute right-2 top-1/2 -translate-y-1/2">
-              <MicButton
-                onTranscript={(text) =>
-                  setInput((prev) =>
-                    prev ? `${prev.trimEnd()} ${text}` : text,
-                  )
-                }
-                disabled={pending}
-                size="sm"
-              />
+        <div className="mt-3 space-y-2">
+          {chatInterim && (
+            <div className="rounded-[var(--radius)] border border-dashed border-[var(--color-primary)]/40 bg-[var(--color-primary)]/5 px-4 py-2 text-sm italic text-[var(--color-muted-fg)]">
+              <span className="mr-2 text-[10px] uppercase tracking-wide text-[var(--color-primary)]">
+                Đang nghe
+              </span>
+              {chatInterim}…
             </div>
-          </div>
-          <Button type="submit" size="lg" disabled={pending || !input.trim()}>
-            <Send className="size-4" />
-            Send
-          </Button>
-        </form>
+          )}
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              send();
+            }}
+          >
+            <div className="relative flex-1">
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Hỏi gì đó về kiến thức của bạn…"
+                className="h-12 w-full rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-4 pr-12 text-sm focus:border-[var(--color-primary)] focus:outline-none"
+                disabled={pending}
+              />
+              <div className="absolute right-2 top-1/2 -translate-y-1/2">
+                <MicButton
+                  onTranscript={(text) =>
+                    setInput((prev) =>
+                      prev ? `${prev.trimEnd()} ${text}` : text,
+                    )
+                  }
+                  onInterim={setChatInterim}
+                  disabled={pending}
+                  size="sm"
+                />
+              </div>
+            </div>
+            <Button type="submit" size="lg" disabled={pending || !input.trim()}>
+              <Send className="size-4" />
+              Send
+            </Button>
+          </form>
+        </div>
       </div>
     </div>
   );
@@ -557,6 +569,7 @@ function SaveModal({
   const [tagsInput, setTagsInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [interim, setInterim] = useState("");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -623,6 +636,14 @@ function SaveModal({
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="kb-content">Nội dung (markdown ok)</Label>
+          {interim && (
+            <div className="rounded-[var(--radius)] border border-dashed border-[var(--color-primary)]/40 bg-[var(--color-primary)]/5 px-3 py-1.5 text-xs italic text-[var(--color-muted-fg)]">
+              <span className="mr-2 text-[10px] uppercase tracking-wide text-[var(--color-primary)]">
+                Đang nghe
+              </span>
+              {interim}…
+            </div>
+          )}
           <div className="relative">
             <Textarea
               id="kb-content"
@@ -637,6 +658,7 @@ function SaveModal({
                     prev ? `${prev.trimEnd()} ${text}` : text,
                   )
                 }
+                onInterim={setInterim}
                 size="sm"
               />
             </div>
