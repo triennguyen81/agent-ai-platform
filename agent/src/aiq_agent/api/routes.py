@@ -18,6 +18,7 @@ from aiq_agent.api.schemas import (
 from aiq_agent.llm.base import ChatMessage, LlmService
 from aiq_agent.memory.base import MemoryStore
 from aiq_agent.orchestration import PlannerExecutorCritic
+from aiq_agent.skills import SkillRegistry, select_skills
 from aiq_agent.tools.registry import ToolExecutionError, ToolRegistry
 
 router = APIRouter()
@@ -66,6 +67,10 @@ def _memory(request: Request) -> MemoryStore:
     return request.app.state.memory
 
 
+def _skills(request: Request) -> SkillRegistry:
+    return getattr(request.app.state, "skills", SkillRegistry())
+
+
 @router.get("/healthz/live", response_model=HealthResponse)
 async def live(llm: LlmService = Depends(_llm)) -> HealthResponse:
     return HealthResponse(status="live", provider=llm.provider, model=llm.model)
@@ -83,6 +88,7 @@ async def chat(
     llm: LlmService = Depends(_llm),
     tools: ToolRegistry = Depends(_tools),
     memory: MemoryStore = Depends(_memory),
+    skills: SkillRegistry = Depends(_skills),
 ) -> ChatResponse:
     if body.tool and tools.get(body.tool) is None:
         raise HTTPException(
@@ -129,14 +135,31 @@ async def chat(
         # knowledge_context is fed via system, NOT user prompt — that keeps
         # the memory store's user message equal to the actual question, so
         # thread titles in the sidebar stay readable.
-        system_content = _DEFAULT_SYSTEM
-        if body.knowledge_context:
-            system_content = (
-                f"{_DEFAULT_SYSTEM}\n\n"
+        has_kb = bool(body.knowledge_context)
+
+        # Skills: every active SKILL.md body is appended to the system
+        # message so the model picks up domain conventions (citation style,
+        # tone, dental terminology, etc.) for this turn only.
+        active_skills = select_skills(
+            skills,
+            prompt=body.prompt,
+            has_knowledge_context=has_kb,
+        )
+        skill_block = "\n\n".join(
+            f"===== SKILL: {s.name} =====\n{s.body}" for s in active_skills
+        )
+
+        system_parts = [_DEFAULT_SYSTEM]
+        if skill_block:
+            system_parts.append(skill_block)
+        if has_kb:
+            system_parts.append(
                 "===== USER KNOWLEDGE BASE =====\n"
                 f"{body.knowledge_context}\n"
                 "===== END KNOWLEDGE BASE ====="
             )
+        system_content = "\n\n".join(system_parts)
+
         messages: list[ChatMessage] = [ChatMessage("system", system_content)]
         messages.extend(prior_history)
         messages.append(ChatMessage("user", body.prompt))

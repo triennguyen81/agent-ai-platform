@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -19,6 +21,7 @@ from aiq_agent.ocr import (
     PassthroughValidator,
     PaddleOcrExtractor,
 )
+from aiq_agent.skills import build_registry as build_skill_registry
 from aiq_agent.tools import default_registry
 
 
@@ -34,10 +37,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     validator = PassthroughValidator()
     pipeline = OcrPipeline(extractor=extractor, corrector=corrector, validator=validator)
 
+    # SKILL.md packages live at:
+    # - Dev:    <repo>/agent/skills/<skill>/SKILL.md
+    # - Docker: /app/skills/<skill>/SKILL.md (Dockerfile copies it there)
+    # Env var override AIQ_SKILLS_DIR wins if set.
+    skills_root_env = os.environ.get("AIQ_SKILLS_DIR")
+    if skills_root_env:
+        skills_root = Path(skills_root_env)
+    else:
+        repo_candidate = Path(__file__).resolve().parent.parent.parent / "skills"
+        container_candidate = Path("/app/skills")
+        skills_root = repo_candidate if repo_candidate.exists() else container_candidate
+    skill_registry = build_skill_registry(skills_root)
+
     app.state.llm = llm
     app.state.tools = default_registry
     app.state.memory = memory
     app.state.ocr_pipeline = pipeline
+    app.state.skills = skill_registry
 
     try:
         yield

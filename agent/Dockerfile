@@ -19,6 +19,11 @@ RUN groupadd --system app && useradd --system --gid app --home /home/app --creat
 COPY --from=builder /wheels /wheels
 RUN pip install --no-index --find-links /wheels aiq-agent && rm -rf /wheels
 
+# SKILL.md packages — loaded at app startup, see aiq_agent/main.py.
+# Shipped outside the wheel so a skill change ships with a runtime
+# rebuild only (no need to re-wheel the package).
+COPY skills /app/skills
+
 USER app
 EXPOSE 8000
 
