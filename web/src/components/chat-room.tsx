@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
+import { MicButton } from "@/components/mic-button";
 
 interface Message {
   id: string;
@@ -305,19 +306,32 @@ export function ChatRoom() {
         </div>
 
         <form
-          className="mt-3 flex gap-2"
+          className="mt-3 flex items-center gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             send();
           }}
         >
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Hỏi gì đó về kiến thức của bạn…"
-            className="h-12 flex-1 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-4 text-sm focus:border-[var(--color-primary)] focus:outline-none"
-            disabled={pending}
-          />
+          <div className="relative flex-1">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Hỏi gì đó về kiến thức của bạn…"
+              className="h-12 w-full rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-4 pr-12 text-sm focus:border-[var(--color-primary)] focus:outline-none"
+              disabled={pending}
+            />
+            <div className="absolute right-2 top-1/2 -translate-y-1/2">
+              <MicButton
+                onTranscript={(text) =>
+                  setInput((prev) =>
+                    prev ? `${prev.trimEnd()} ${text}` : text,
+                  )
+                }
+                disabled={pending}
+                size="sm"
+              />
+            </div>
+          </div>
           <Button type="submit" size="lg" disabled={pending || !input.trim()}>
             <Send className="size-4" />
             Send
@@ -609,12 +623,24 @@ function SaveModal({
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="kb-content">Nội dung (markdown ok)</Label>
-          <Textarea
-            id="kb-content"
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            rows={10}
-          />
+          <div className="relative">
+            <Textarea
+              id="kb-content"
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              rows={10}
+            />
+            <div className="absolute bottom-2 right-2">
+              <MicButton
+                onTranscript={(text) =>
+                  setContent((prev) =>
+                    prev ? `${prev.trimEnd()} ${text}` : text,
+                  )
+                }
+                size="sm"
+              />
+            </div>
+          </div>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="kb-tags">Tags (cách nhau bằng dấu phẩy)</Label>

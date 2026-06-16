@@ -3,8 +3,9 @@ import { redirect } from "next/navigation";
 import { gateway } from "@/lib/api";
 import { clearSession, requireSession } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
-import { Input, Label, Textarea } from "@/components/ui/input";
+import { Input, Label } from "@/components/ui/input";
 import { BulkMarkdownUpload } from "@/components/bulk-md-upload";
+import { TextareaWithMic } from "@/components/textarea-with-mic";
 
 type NoteRecord = {
   id: string;
@@ -140,7 +141,7 @@ export default async function KnowledgePage() {
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="content">Content (markdown ok)</Label>
-            <Textarea id="content" name="content" rows={8} />
+            <TextareaWithMic id="content" name="content" rows={8} />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="tags">Tags (comma-separated)</Label>
