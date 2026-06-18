@@ -106,6 +106,17 @@ export const agent = {
     const params = new URLSearchParams({ prefix, limit: String(limit) });
     return call(AGENT_BASE, `/chat/threads?${params.toString()}`);
   },
+  runTask(payload: {
+    task: string;
+    user_token: string;
+    skills?: string[];
+    max_turns?: number;
+  }) {
+    return call(AGENT_BASE, "/agent/run", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
   getThread(threadId: string) {
     return call(AGENT_BASE, `/chat/threads/${encodeURIComponent(threadId)}`);
   },

@@ -6,8 +6,10 @@ import remarkGfm from "remark-gfm";
 import {
   BookmarkPlus,
   Brain,
+  Bot,
   Check,
   Copy,
+  Link as LinkIcon,
   Loader2,
   MessageSquare,
   Plus,
@@ -15,11 +17,17 @@ import {
   Sparkles,
   Trash2,
   User as UserIcon,
+  Wand2,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import { MicButton } from "@/components/mic-button";
+
+interface AgenticStep {
+  role: string;
+  text: string;
+}
 
 interface Message {
   id: string;
@@ -28,6 +36,8 @@ interface Message {
   thinking?: string | null;
   question?: string;
   meta?: { provider?: string; model?: string };
+  /** Set when this came from /agent/run; UI shows a collapsible trace. */
+  agenticSteps?: AgenticStep[];
 }
 
 interface ChatApiResponse {
@@ -37,6 +47,20 @@ interface ChatApiResponse {
   thread_id?: string | null;
   thinking?: string | null;
   steps?: unknown[];
+}
+
+interface AgentRunApiResponse {
+  final_answer: string;
+  steps: AgenticStep[];
+}
+
+type ChatMode = "chat" | "agentic";
+
+const URL_RE = /\bhttps?:\/\/[^\s<>"']+/gi;
+
+function findUrls(text: string): string[] {
+  const matches = text.match(URL_RE) ?? [];
+  return Array.from(new Set(matches));
 }
 
 const THREAD_KEY = "aiq.chat.thread_id";
@@ -88,7 +112,10 @@ export function ChatRoom() {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [loadingThread, setLoadingThread] = useState(false);
   const [chatInterim, setChatInterim] = useState("");
+  const [mode, setMode] = useState<ChatMode>("chat");
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const detectedUrls = findUrls(input);
 
   const refreshThreads = useCallback(async () => {
     try {
@@ -227,9 +254,83 @@ export function ChatRoom() {
     [pending, threadId, refreshThreads],
   );
 
+  const sendAgenticTask = useCallback(
+    async (task: string) => {
+      if (!task || pending) return;
+
+      const userMsg: Message = {
+        id: `u-${Date.now()}`,
+        role: "user",
+        content: task,
+      };
+      setMessages((m) => [...m, userMsg]);
+      setInput("");
+      setPending(true);
+
+      try {
+        const res = await fetch("/api/agent/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ task, max_turns: 8 }),
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          let message = errText || "agentic request failed";
+          try {
+            const parsed = JSON.parse(errText) as {
+              detail?: unknown;
+              error?: string;
+            };
+            if (typeof parsed.error === "string") message = parsed.error;
+            else if (typeof parsed.detail === "string") message = parsed.detail;
+          } catch {
+            // raw text
+          }
+          setMessages((m) => [
+            ...m,
+            {
+              id: `e-${Date.now()}`,
+              role: "system",
+              content: `Agent error ${res.status}: ${message}`,
+            },
+          ]);
+          return;
+        }
+
+        const body = (await res.json()) as AgentRunApiResponse;
+        setMessages((m) => [
+          ...m,
+          {
+            id: `a-${Date.now()}`,
+            role: "assistant",
+            content: body.final_answer,
+            question: task,
+            agenticSteps: body.steps ?? [],
+          },
+        ]);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Network error";
+        setMessages((m) => [
+          ...m,
+          { id: `e-${Date.now()}`, role: "system", content: message },
+        ]);
+      } finally {
+        setPending(false);
+      }
+    },
+    [pending],
+  );
+
   const send = useCallback(() => {
-    void sendPrompt(input.trim());
-  }, [input, sendPrompt]);
+    const text = input.trim();
+    if (!text) return;
+    if (mode === "agentic") {
+      void sendAgenticTask(text);
+    } else {
+      void sendPrompt(text);
+    }
+  }, [input, mode, sendAgenticTask, sendPrompt]);
 
   function newThread() {
     const fresh = makeThreadId();
@@ -271,7 +372,7 @@ export function ChatRoom() {
       />
 
       <div className="flex min-h-0 flex-col">
-        <header className="flex items-center justify-between pb-3">
+        <header className="flex items-center justify-between gap-3 pb-3">
           <div className="min-w-0">
             <h1 className="font-serif text-2xl">Chat</h1>
             <p className="truncate text-xs text-[var(--color-muted-fg)]">
@@ -280,9 +381,12 @@ export function ChatRoom() {
                 : "Cuộc trò chuyện mới"}
             </p>
           </div>
-          <Button variant="ghost" size="sm" onClick={newThread}>
-            <Plus className="size-4" /> New
-          </Button>
+          <div className="flex items-center gap-2">
+            <ModeToggle mode={mode} onChange={setMode} />
+            <Button variant="ghost" size="sm" onClick={newThread}>
+              <Plus className="size-4" /> New
+            </Button>
+          </div>
         </header>
 
         <div
@@ -315,6 +419,27 @@ export function ChatRoom() {
               {chatInterim}…
             </div>
           )}
+          {mode === "chat" && detectedUrls.length > 0 && !pending && (
+            <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius)] border border-dashed border-[var(--color-accent)]/50 bg-[var(--color-accent)]/10 px-3 py-2 text-xs text-[var(--color-fg)]">
+              <LinkIcon className="size-3.5 text-[var(--color-accent)]" />
+              <span>
+                Phát hiện URL — chuyển sang <strong>Agentic</strong> để tự động
+                chuyển thành note?
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("agentic");
+                  setInput(
+                    `Lấy nội dung từ URL ${detectedUrls[0]} rồi lưu thành 1 note trong kiến thức.`,
+                  );
+                }}
+                className="ml-auto rounded-full bg-[var(--color-accent)] px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-fg)] hover:opacity-90"
+              >
+                Chuyển sang Agentic
+              </button>
+            </div>
+          )}
           <form
             className="flex items-center gap-2"
             onSubmit={(e) => {
@@ -326,8 +451,16 @@ export function ChatRoom() {
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Hỏi gì đó về kiến thức của bạn…"
-                className="h-12 w-full rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-4 pr-12 text-sm focus:border-[var(--color-primary)] focus:outline-none"
+                placeholder={
+                  mode === "agentic"
+                    ? "Mô tả task (vd: tổng hợp các Note về Implant thành cheatsheet)…"
+                    : "Hỏi gì đó về kiến thức của bạn…"
+                }
+                className={`h-12 w-full rounded-[var(--radius)] border bg-[var(--color-bg)] px-4 pr-12 text-sm focus:outline-none ${
+                  mode === "agentic"
+                    ? "border-[var(--color-accent)] focus:border-[var(--color-accent)]"
+                    : "border-[var(--color-border)] focus:border-[var(--color-primary)]"
+                }`}
                 disabled={pending}
               />
               <div className="absolute right-2 top-1/2 -translate-y-1/2">
@@ -344,8 +477,8 @@ export function ChatRoom() {
               </div>
             </div>
             <Button type="submit" size="lg" disabled={pending || !input.trim()}>
-              <Send className="size-4" />
-              Send
+              {mode === "agentic" ? <Wand2 className="size-4" /> : <Send className="size-4" />}
+              {mode === "agentic" ? "Run" : "Send"}
             </Button>
           </form>
         </div>
@@ -493,20 +626,41 @@ function MessageBubble({ message }: { message: Message }) {
     );
   }
 
+  const isAgentic = (message.agenticSteps?.length ?? 0) > 0;
+
   return (
     <div className="flex items-start gap-3">
-      <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-muted)] text-[var(--color-muted-fg)]">
-        <Sparkles className="size-4" />
+      <div
+        className={`flex size-8 shrink-0 items-center justify-center rounded-full ${
+          isAgentic
+            ? "bg-[var(--color-accent)]/20 text-[var(--color-accent)]"
+            : "bg-[var(--color-muted)] text-[var(--color-muted-fg)]"
+        }`}
+      >
+        {isAgentic ? <Wand2 className="size-4" /> : <Sparkles className="size-4" />}
       </div>
       <div className="min-w-0 max-w-[85%] flex-1 space-y-2">
         {message.thinking && <ThinkingBlock text={message.thinking} />}
-        <div className="rounded-[var(--radius)] border bg-[var(--color-muted)] px-4 py-3 text-sm text-[var(--color-fg)]">
+        {isAgentic && message.agenticSteps && message.agenticSteps.length > 1 && (
+          <AgenticTrace steps={message.agenticSteps} />
+        )}
+        <div
+          className={`rounded-[var(--radius)] border px-4 py-3 text-sm text-[var(--color-fg)] ${
+            isAgentic
+              ? "border-[var(--color-accent)]/40 bg-[var(--color-accent)]/5"
+              : "bg-[var(--color-muted)]"
+          }`}
+        >
           <MarkdownContent text={message.content} />
         </div>
         <div className="flex items-center justify-between gap-2 px-1">
           {message.meta?.model ? (
             <p className="text-[10px] text-[var(--color-muted-fg)]">
               {message.meta.provider} · {message.meta.model}
+            </p>
+          ) : isAgentic ? (
+            <p className="text-[10px] uppercase tracking-wide text-[var(--color-accent)]">
+              Agentic · {message.agenticSteps?.length ?? 0} bước
             </p>
           ) : (
             <span />
@@ -517,6 +671,70 @@ function MessageBubble({ message }: { message: Message }) {
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+function AgenticTrace({ steps }: { steps: AgenticStep[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      className="rounded-[var(--radius)] border border-dashed border-[var(--color-accent)]/50 bg-[var(--color-bg)] text-xs text-[var(--color-muted-fg)]"
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+    >
+      <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-[var(--color-fg)]">
+        <Bot className="size-3.5 text-[var(--color-accent)]" />
+        Trace agentic · {steps.length} bước {open ? "" : "(nhấn để xem)"}
+      </summary>
+      <ol className="border-t border-dashed border-[var(--color-accent)]/40 px-3 py-2 leading-relaxed">
+        {steps.map((step, idx) => (
+          <li key={`${idx}-${step.text.slice(0, 24)}`} className="mb-1.5 last:mb-0">
+            <span className="mr-2 inline-block min-w-5 text-[var(--color-accent)]">
+              {idx + 1}.
+            </span>
+            <span className="whitespace-pre-wrap">{step.text}</span>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
+function ModeToggle({
+  mode,
+  onChange,
+}: {
+  mode: ChatMode;
+  onChange: (mode: ChatMode) => void;
+}) {
+  return (
+    <div className="flex items-center rounded-full border border-[var(--color-border)] bg-[var(--color-bg)] p-0.5 text-xs">
+      <button
+        type="button"
+        onClick={() => onChange("chat")}
+        className={`flex items-center gap-1 rounded-full px-3 py-1 transition ${
+          mode === "chat"
+            ? "bg-[var(--color-primary)] text-[var(--color-primary-fg)]"
+            : "text-[var(--color-muted-fg)] hover:text-[var(--color-fg)]"
+        }`}
+        title="Chat thường — RAG + skills"
+      >
+        <Sparkles className="size-3" />
+        Chat
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("agentic")}
+        className={`flex items-center gap-1 rounded-full px-3 py-1 transition ${
+          mode === "agentic"
+            ? "bg-[var(--color-accent)] text-[var(--color-fg)]"
+            : "text-[var(--color-muted-fg)] hover:text-[var(--color-fg)]"
+        }`}
+        title="Agentic — multi-step + tools (search_notes, fetch_url, save_note)"
+      >
+        <Wand2 className="size-3" />
+        Agentic
+      </button>
     </div>
   );
 }
