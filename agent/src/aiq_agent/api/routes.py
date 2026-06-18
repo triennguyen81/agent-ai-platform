@@ -6,7 +6,11 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from aiq_agent.agentic import run_task
 from aiq_agent.api.schemas import (
+    AgentRunRequest,
+    AgentRunResponse,
+    AgentRunStep,
     ChatRequest,
     ChatResponse,
     HealthResponse,
@@ -15,6 +19,7 @@ from aiq_agent.api.schemas import (
     ThreadHistoryResponse,
     ThreadSummaryResponse,
 )
+from aiq_agent.config import get_settings
 from aiq_agent.llm.base import ChatMessage, LlmService
 from aiq_agent.memory.base import MemoryStore
 from aiq_agent.orchestration import PlannerExecutorCritic
@@ -231,3 +236,36 @@ async def clear_thread(thread_id: str, memory: MemoryStore = Depends(_memory)) -
 @router.get("/tools", response_model=list[dict])
 async def list_tools(tools: ToolRegistry = Depends(_tools)) -> list[dict]:
     return tools.describe()
+
+
+@router.post("/agent/run", response_model=AgentRunResponse)
+async def agentic_run(body: AgentRunRequest) -> AgentRunResponse:
+    """Run a multi-step agentic task via the Claude Agent SDK.
+
+    Tools available to the model:
+    - mcp__aiq__search_notes / get_note / save_note (gateway-backed)
+    - mcp__aiq__fetch_url
+
+    Skills auto-discovered from /app/.claude/skills (Dockerfile symlink).
+    Each run gets fresh tools bound to the caller's JWT — no cross-user
+    leakage.
+    """
+    settings = get_settings()
+    try:
+        result = await run_task(
+            task=body.task,
+            user_token=body.user_token,
+            gateway_base=settings.gateway_base_url,
+            skills=body.skills or "all",
+            max_turns=body.max_turns,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface root cause to caller
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Agentic run failed: {exc.__class__.__name__}: {exc}",
+        ) from exc
+
+    return AgentRunResponse(
+        final_answer=result.final_answer,
+        steps=[AgentRunStep(role=s.role, text=s.text) for s in result.steps],
+    )

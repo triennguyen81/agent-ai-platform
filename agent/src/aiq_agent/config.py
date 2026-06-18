@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     anthropic_model: str = Field(default="claude-sonnet-4-6")
     anthropic_max_tokens: int = Field(default=2048, gt=0)
 
+    # ---- Gateway (for agentic tools that proxy through Gateway) ----
+    gateway_base_url: str = Field(default="http://aiq-gateway:8080")
+
     # ---- Memory ----
     memory_backend: MemoryBackend = Field(default="in_memory")
     memory_ttl_seconds: int = Field(default=86_400, gt=0)

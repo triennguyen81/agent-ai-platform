@@ -61,6 +61,26 @@ class ThreadHistoryResponse(BaseModel):
     messages: list[ThreadHistoryMessage]
 
 
+class AgentRunRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=20_000)
+    user_token: str = Field(min_length=10, max_length=8_000)
+    skills: list[str] | None = Field(
+        default=None,
+        description="Skill names to enable (default: all auto-discovered).",
+    )
+    max_turns: int = Field(default=8, ge=1, le=20)
+
+
+class AgentRunStep(BaseModel):
+    role: str
+    text: str
+
+
+class AgentRunResponse(BaseModel):
+    final_answer: str
+    steps: list[AgentRunStep]
+
+
 class HealthResponse(BaseModel):
     status: str
     provider: str
