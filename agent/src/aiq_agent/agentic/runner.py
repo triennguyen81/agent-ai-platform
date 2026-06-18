@@ -60,10 +60,19 @@ async def run_task(
     )
 
     allowed_tools = [
+        # KB / web
         "mcp__aiq__search_notes",
         "mcp__aiq__get_note",
         "mcp__aiq__save_note",
         "mcp__aiq__fetch_url",
+        # Accounting Mức 2
+        "mcp__aiq__calculate_vat",
+        "mcp__aiq__calculate_pit",
+        "mcp__aiq__calculate_cit",
+        "mcp__aiq__lookup_account",
+        "mcp__aiq__check_filing_deadline",
+        "mcp__aiq__journal_entry_validator",
+        "mcp__aiq__import_excel_ledger",
     ]
 
     options = ClaudeAgentOptions(

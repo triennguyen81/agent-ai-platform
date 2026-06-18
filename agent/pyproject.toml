@@ -26,6 +26,9 @@ dependencies = [
   # Phase 2: Claude Agent SDK for /agent/run multi-step task endpoint.
   # Spawns the `claude` CLI as subprocess — Dockerfile installs it.
   "claude-agent-sdk>=0.1.0",
+  # Accounting Mức 2: import_excel_ledger tool reads XLSX files.
+  # CSV / TSV use stdlib csv module — no extra dep needed.
+  "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

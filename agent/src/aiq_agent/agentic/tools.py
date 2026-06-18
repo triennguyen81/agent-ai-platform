@@ -12,6 +12,8 @@ from typing import Any
 import httpx
 from claude_agent_sdk import tool
 
+from aiq_agent.agentic.accounting_tools import build_accounting_tools
+
 logger = logging.getLogger(__name__)
 
 # Defensive caps so a misbehaving model can't ingest gigabytes.
@@ -212,4 +214,5 @@ def build_tools(*, token: str, gateway_base: str) -> list[Any]:
             ]
         }
 
-    return [search_notes, get_note, save_note, fetch_url]
+    accounting_tools = build_accounting_tools(token=token, gateway_base=gateway_base)
+    return [search_notes, get_note, save_note, fetch_url, *accounting_tools]
