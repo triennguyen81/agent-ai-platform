@@ -13,7 +13,7 @@ Live tại **`cattuong.ai`** với MVP đầy đủ:
 - Multi-user qua Clerk invite, JWT bridge với Gateway
 - Chat history sidebar + auto-restore
 
-**17 features đã ship, 2 đang fix trong PR hiện tại** (title bug + role refactor).
+**25 features đã ship** (qua Phase 1-4 Strategy B). Sẵn sàng cho **Accounting Mức 1** (kế hoạch trong [Ketoan_plan.md](Ketoan_plan.md)).
 
 ---
 
@@ -23,9 +23,12 @@ Live tại **`cattuong.ai`** với MVP đầy đủ:
 - [x] **M2 — AI chat** (Claude Haiku 4.5, PEC orchestrator, Markdown UI với thinking step)
 - [x] **M3 — Personal KB** (Notes CRUD, RAG injection, bulk MD upload, save-from-chat)
 - [x] **M4 — Multi-user** (Clerk invite-only, JWT bridge, chat history per user, thread namespacing)
-- [ ] **M5 — Roles & permissions** (super_admin / admin / user) ← **THIS PR**
+- [x] **M5 — Roles & permissions** (super_admin / admin / user)
+- [x] **M-Voice** — Speech-to-Text tiếng Việt (Web Speech API, MicButton 3 surfaces)
+- [x] **M-Skills** — Strategy B done: skill loader + Claude Agent SDK + `/agent/run` + Agentic UI + authoring guide
+- [ ] **M-Accounting** — Mức 1 (4 SKILL.md kế toán + 8 KB notes) ← **NEXT**
 - [ ] **M6 — Scalable RAG** (Qdrant embeddings, top-K retrieval, dùng `pgvector` hoặc Qdrant)
-- [ ] **M7 — Ingestion at scale** (URL crawler, CSV import, Notion sync)
+- [ ] **M7 — Ingestion at scale** (URL crawler batch, CSV import, Notion sync — `/agent/run` đã single-URL được)
 
 ## Q4 milestones (tentative)
 
@@ -40,14 +43,16 @@ Live tại **`cattuong.ai`** với MVP đầy đủ:
 
 | # | Task | Size | ROI rationale |
 |---|---|---|---|
-| 1 | Voice input STT tiếng Việt — Option A Web Speech API | S | Chuyên gia bận, gõ chậm; voice tăng tốc nhập tri thức. Chi tiết: [stt_voice_input_decision.md](stt_voice_input_decision.md) |
+| 1 | Accounting persona Mức 1 (4 SKILL.md + 8 KB notes) | S | Đầu use case mới ngoài dental. Plan đầy đủ: [Ketoan_plan.md](Ketoan_plan.md) |
 | 2 | Qdrant embeddings + top-K | L | RAG scale từ ~50 notes → unlimited |
-| 3 | URL crawler ingestion | M | "Quickly transfer info" use case |
-| 4 | CSV import for catalogs | S | Sales-team workflow |
-| 5 | Per-user analytics | M | Biết user hỏi gì, lỗ hổng KB ở đâu |
-| 6 | CI/CD GitHub Actions | M | Replace manual SSH, enable rollback |
-| 7 | Voice input — Option B (Whisper API) | M | Upgrade nếu A không đủ |
-| 8 | Voice input — Option C (PhoWhisper self-host) | L | Privacy + fine-tune cho thuật ngữ chuyên ngành |
+| 3 | Accounting Mức 2 (tools: calculate_vat / pit / lookup_account / validator) | M | Sau Mức 1 pilot OK, AI thực sự tính chứ không chỉ tra cứu |
+| 4 | URL crawler batch (multiple URLs) | M | Single URL đã work qua /agent/run; cần batch + dedupe |
+| 5 | CSV import for catalogs | S | Sales/accounting workflow |
+| 6 | Per-user analytics | M | Biết user hỏi gì, lỗ hổng KB ở đâu |
+| 7 | CI/CD GitHub Actions | M | Replace manual SSH, enable rollback |
+| 8 | Voice input — Option B (Whisper API) | M | Upgrade nếu A không đủ chất lượng |
+| 9 | Voice input — Option C (PhoWhisper self-host) | L | Privacy + fine-tune cho thuật ngữ chuyên ngành |
+| 10 | Skills Marketplace UI (M-Skills-2..5) | L | Browse/enable/version skills từ /admin/skills |
 
 S = ≤1 day · M = 2–5 days · L = 1+ week
 
@@ -64,6 +69,12 @@ S = ≤1 day · M = 2–5 days · L = 1+ week
 | 2026-06-11 | Bulk MD upload thay vì paste single | Bootstrapping KB nhanh hơn 50× |
 | 2026-06-12 | 3-tier roles (super_admin / admin / user) | User explicit: nhập liệu vs tiêu thụ vs quản trị |
 | 2026-06-12 | Giữ legacy roles `reviewer/uploader/viewer` trong DB | Tránh foreign-key cũ vỡ, không gây hại |
+| 2026-06-12 | Voice input → Strategy A Web Speech API trước | $0, 30 phút wire; upgrade Whisper API sau nếu user phàn nàn |
+| 2026-06-18 | Strategy B (Augment) cho Claude Agent SDK | Plain chat path giữ tốc độ; agentic chỉ kích hoạt khi cần multi-step |
+| 2026-06-18 | Skills là file Markdown ngoài wheel | Sửa skill = restart container (giây), không cần re-wheel Python |
+| 2026-06-18 | Tools factory bound JWT trong closure | Mỗi /agent/run request có tools riêng, không leak token cross-user |
+| 2026-06-18 | Pin `prometheus-fastapi-instrumentator<8.0` | 8.0.0 crash FastAPI 0.115+ với `_IncludedRouter has no attribute path` |
+| 2026-06-18 | Lora serif font với vietnamese subset | Fix decompose tone-mark trên Linux containers ("Bă´t" → "Bắt") |
 
 ---
 

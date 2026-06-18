@@ -124,6 +124,12 @@ def build() -> Path:
         ("Thread namespacing theo user", "✅ Live", "Mỗi user chỉ thấy lịch sử của mình"),
         ("Sửa lỗi title hiển thị KB-prefix", "✅ Live", "knowledge_context tách side-channel"),
         ("Phân quyền 3 cấp (super_admin / admin / user)", "✅ Live", "Migration DB + UI cấp role 1-click"),
+        ("Voice input STT tiếng Việt (Web Speech API)", "✅ Live", "vi-VN, 3 surface: chat input, save modal, knowledge note"),
+        ("Serif font Vietnamese (Lora)", "✅ Live", "Fix decompose tone-mark trên Linux container"),
+        ("Skills system Phase 1 — SKILL.md loader", "✅ Live", "4 skill: dental-expert, vietnamese-style, rag-citation, knowledge-curator"),
+        ("Skills system Phase 2 — Claude Agent SDK + /agent/run", "✅ Live", "Node 22 + claude CLI v2.1.181; 4 MCP tools (search_notes, get_note, save_note, fetch_url)"),
+        ("Skills system Phase 3 — Agentic UI mode toggle", "✅ Live", "Mode pill, URL detection, collapsible trace"),
+        ("Skills system Phase 4 — authoring guide + docs", "✅ Live", "docs/skills_authoring.md cho team viết skill mới"),
     ])
 
     # 4. Phân quyền
@@ -150,30 +156,35 @@ def build() -> Path:
     # 5. Hạng mục đang/định triển khai tiếp
     add_heading(doc, "5. Lộ trình tiếp theo", level=1)
     add_bullets(doc, [
-        "Voice input STT tiếng Việt — Option A Web Speech API (next sprint, miễn phí). "
-        "Cho phép chuyên gia nói thay vì gõ khi nhập tri thức. Upgrade Whisper API / "
-        "PhoWhisper self-host khi cần chất lượng cao hơn.",
+        "Accounting persona Mức 1 — 4 SKILL.md kế toán + 8 KB notes mẫu (Hệ thống TK, "
+        "biểu thuế VAT/TNCN/TNDN, template định khoản). Plan chi tiết tại docs/Ketoan_plan.md.",
         "M6 — Scalable RAG: embedding + top-K via Qdrant (giúp KB scale qua 200+ notes).",
-        "M7 — Thu thập kiến thức tốc độ cao: URL crawler, CSV import, Notion sync.",
+        "Accounting Mức 2 — domain tools: calculate_vat, calculate_pit, lookup_account, "
+        "journal_entry_validator, import_excel_ledger.",
+        "URL crawler batch (multiple URLs cùng lúc). Single URL đã work qua /agent/run + skill url-ingest.",
         "M8 — Multi-tenant: workspace cho từng tổ chức (org boundary, billing).",
         "M9 — Specialist personas: chuyên gia domain (legal, med, dental, finance).",
         "M10 — Analytics: top câu hỏi, KB coverage gaps.",
         "M11 — Mobile-friendly + PWA.",
         "CI/CD GitHub Actions thay vì manual SSH deploy.",
+        "Skills marketplace UI — /admin/skills browse/enable/version skills.",
     ])
 
     # 6. KPI / số liệu hiện tại
     add_heading(doc, "6. Số liệu hiện tại", level=1)
-    kpi_table = doc.add_table(rows=6, cols=2)
-    kpi_table.style = "Light Grid Accent 1"
     kpis = [
-        ("Số feature đã ship", "19 / 27 (70%)"),
+        ("Số feature đã ship", "25 / 34 (74%)"),
         ("Service đang chạy production", "10 / 10 healthy"),
         ("Domain live", "app.cattuong.ai · api.cattuong.ai · agent.cattuong.ai"),
-        ("Latency chat trung bình", "~0.8s (Anthropic Haiku 4.5)"),
+        ("Latency chat plain", "~0.8s (Anthropic Haiku 4.5)"),
+        ("Latency agentic /agent/run", "5-30s (multi-step + tool use)"),
         ("Cap RAG context hiện tại", "60K chars / turn (~ 200 notes)"),
         ("Số role tier", "3 (super_admin / admin / user)"),
+        ("Số skills active", "5 (4 chat skills + 1 agentic url-ingest)"),
+        ("Số MCP tools sẵn sàng", "4 (search_notes, get_note, save_note, fetch_url)"),
     ]
+    kpi_table = doc.add_table(rows=len(kpis), cols=2)
+    kpi_table.style = "Light Grid Accent 1"
     for i, (k, v) in enumerate(kpis):
         cells = kpi_table.rows[i].cells
         cells[0].text = k

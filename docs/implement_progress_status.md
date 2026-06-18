@@ -28,23 +28,29 @@
 | 17 | Per-user thread namespacing | ✅ live | 3fc6ce6 | `<userId>:<threadId>` prefix |
 | 18 | Thread title fix (skip KB augmentation in stored prompt) | ✅ live | this PR | Separate `knowledge_context` side-channel field |
 | 19 | Roles: `super_admin` / `admin` / `user` (3 tiers) | ✅ live | this PR | super_admin manages roles · admin contributes KB · user consumes |
-| 20 | Voice input (Speech-to-Text tiếng Việt) | ⏳ planned | next | Option A — Web Speech API first; see [stt_voice_input_decision.md](stt_voice_input_decision.md) |
-| 21 | Qdrant top-K embeddings (replace full-context RAG) | 🔜 backlog | — | M6 milestone |
-| 22 | URL crawler ingestion (paste list of URLs → notes) | 🔜 backlog | — | M7 milestone |
-| 23 | CSV import for product catalogs / FAQs | 🔜 backlog | — | M7 |
-| 24 | Notion / Confluence sync | 🔜 backlog | — | M7 |
-| 25 | Per-user analytics dashboard (top questions, KB gaps) | 🔜 backlog | — | M10 |
-| 26 | Mobile responsive + PWA | 🔜 backlog | — | M11 |
-| 27 | Multi-tenant workspace (org boundary) | 🔜 backlog | — | M8 |
-| 28 | CI/CD via GitHub Actions (build + deploy on tag) | 🔜 backlog | — | currently manual SSH |
+| 20 | Voice input (Speech-to-Text tiếng Việt) — Web Speech API | ✅ live | 504e447 | Option A; mic banner UX fixed b055ff9 |
+| 21 | Serif font Vietnamese (Lora) — fix tone-mark decomposition | ✅ live | 3a9e97b | "Bă´t" → "Bắt" |
+| 22 | Skill system Phase 1 — SKILL.md loader + 4 initial skills | ✅ live | c8a27bd | dental-expert, vietnamese-style, rag-citation, knowledge-curator |
+| 23 | Skill system Phase 2 — Claude Agent SDK + /agent/run + 4 MCP tools | ✅ live | c8b263d | search_notes, get_note, save_note, fetch_url + url-ingest skill |
+| 24 | Skill system Phase 3 — Agentic UI mode toggle + URL detection + trace | ✅ live | 0f81b97 | Mode pill in chat header, URL chip → switch agentic, collapsible trace |
+| 25 | Skill system Phase 4 — authoring guide + architecture docs refresh | ✅ live | this PR | docs/skills_authoring.md, updated architecture, regenerated .docx |
+| 26 | Qdrant top-K embeddings (replace full-context RAG) | 🔜 backlog | — | M6 milestone |
+| 27 | URL crawler at-scale ingestion (multiple URLs in batch) | 🔜 backlog | — | Single URL ingest already works via /agent/run + url-ingest skill |
+| 28 | CSV import for product catalogs / FAQs | 🔜 backlog | — | M7 |
+| 29 | Notion / Confluence sync | 🔜 backlog | — | M7 |
+| 30 | Per-user analytics dashboard (top questions, KB gaps) | 🔜 backlog | — | M10 |
+| 31 | Mobile responsive + PWA | 🔜 backlog | — | M11 |
+| 32 | Multi-tenant workspace (org boundary) | 🔜 backlog | — | M8 |
+| 33 | CI/CD via GitHub Actions (build + deploy on tag) | 🔜 backlog | — | currently manual SSH |
+| 34 | Accounting persona (Mức 1: skills + KB) | ⏳ planned | next | See docs/Ketoan_plan.md |
 
 ---
 
 ## Right-now priorities (3 tuần tới)
 
-1. **Đóng #18 + #19** (this PR) — title bug + role refactor → roles operations sạch sẽ
+1. **Accounting persona Mức 1** — 4 SKILL.md kế toán + 8 note KB mẫu (theo docs/Ketoan_plan.md)
 2. **M6 — Qdrant top-K** — current RAG dumps every note, không scale qua 200 notes
-3. **M7 — URL crawler ingestion** — biggest "transfer info fast" win sau bulk MD
+3. **Accounting Mức 2** — domain tools: calculate_vat / calculate_pit / lookup_account
 
 ---
 
