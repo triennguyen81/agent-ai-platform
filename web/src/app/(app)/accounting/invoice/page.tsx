@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
+import { SaveToKbButton } from "@/components/save-to-kb-button";
 
 interface AgentRunResponse {
   final_answer: string;
@@ -155,7 +156,17 @@ Trả về bút toán đầy đủ kèm cơ sở TT200.`;
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="space-y-2 rounded-[var(--radius)] border bg-[var(--color-muted)] p-4">
-          <p className="font-medium">Trích xuất trường</p>
+          <div className="flex items-center justify-between">
+            <p className="font-medium">Trích xuất trường</p>
+            {extracted && (
+              <SaveToKbButton
+                defaultTitle="Trích xuất hoá đơn"
+                defaultContent={`# Trích xuất hoá đơn\n\n_Nguồn: input text_\n\n${extracted}\n\n---\n\n## Nội dung gốc\n\n\`\`\`\n${rawText}\n\`\`\``}
+                defaultTags="kế toán, hoá đơn, trích xuất"
+                label="Lưu vào KB"
+              />
+            )}
+          </div>
           {extracted ? (
             <div className="prose prose-sm max-w-none [&_table]:my-2 [&_table]:w-full [&_th]:border [&_th]:bg-[var(--color-bg)] [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:px-2 [&_td]:py-1">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{extracted}</ReactMarkdown>
@@ -168,7 +179,17 @@ Trả về bút toán đầy đủ kèm cơ sở TT200.`;
         </div>
 
         <div className="space-y-2 rounded-[var(--radius)] border bg-[var(--color-muted)] p-4">
-          <p className="font-medium">Bút toán đề xuất</p>
+          <div className="flex items-center justify-between">
+            <p className="font-medium">Bút toán đề xuất</p>
+            {journalSuggest && (
+              <SaveToKbButton
+                defaultTitle="Bút toán cho hoá đơn"
+                defaultContent={`# Bút toán từ hoá đơn\n\n${journalSuggest}`}
+                defaultTags="kế toán, định khoản, hoá đơn, bút toán"
+                label="Lưu vào KB"
+              />
+            )}
+          </div>
           {journalSuggest ? (
             <div className="prose prose-sm max-w-none [&_p]:my-1 [&_ul]:my-1 [&_ul]:pl-5">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{journalSuggest}</ReactMarkdown>

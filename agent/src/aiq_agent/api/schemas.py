@@ -81,6 +81,14 @@ class AgentRunResponse(BaseModel):
     steps: list[AgentRunStep]
 
 
+class SkillSummary(BaseModel):
+    name: str
+    description: str
+    keywords: list[str]
+    always_on: bool
+    requires_knowledge_context: bool
+
+
 class HealthResponse(BaseModel):
     status: str
     provider: str

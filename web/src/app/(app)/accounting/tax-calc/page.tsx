@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
+import { SaveToKbButton } from "@/components/save-to-kb-button";
 
 type Tab = "vat" | "pit" | "cit";
 
@@ -61,18 +62,22 @@ function CalcShell({
   result,
   loading,
   error,
+  saveTitle,
+  saveTags,
 }: {
   children: React.ReactNode;
   result: string;
   loading: boolean;
   error: string | null;
+  saveTitle: string;
+  saveTags: string;
 }) {
   return (
     <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
       <div className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
         {children}
       </div>
-      <div className="min-h-[200px] rounded-[var(--radius)] border bg-[var(--color-muted)] p-5">
+      <div className="min-h-[200px] space-y-3 rounded-[var(--radius)] border bg-[var(--color-muted)] p-5">
         {loading ? (
           <div className="flex items-center gap-2 text-sm text-[var(--color-muted-fg)]">
             <Loader2 className="size-4 animate-spin" />
@@ -81,9 +86,19 @@ function CalcShell({
         ) : error ? (
           <p className="text-sm text-red-700">{error}</p>
         ) : result ? (
-          <div className="prose prose-sm max-w-none text-[var(--color-fg)] [&_h2]:font-serif [&_h3]:font-semibold [&_p]:my-1.5 [&_table]:my-2 [&_table]:w-full [&_th]:border [&_th]:border-[var(--color-border)] [&_th]:bg-[var(--color-bg)] [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_td]:border [&_td]:border-[var(--color-border)] [&_td]:px-2 [&_td]:py-1 [&_ul]:my-2 [&_ul]:pl-5">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{result}</ReactMarkdown>
-          </div>
+          <>
+            <div className="prose prose-sm max-w-none text-[var(--color-fg)] [&_h2]:font-serif [&_h3]:font-semibold [&_p]:my-1.5 [&_table]:my-2 [&_table]:w-full [&_th]:border [&_th]:border-[var(--color-border)] [&_th]:bg-[var(--color-bg)] [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_td]:border [&_td]:border-[var(--color-border)] [&_td]:px-2 [&_td]:py-1 [&_ul]:my-2 [&_ul]:pl-5">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{result}</ReactMarkdown>
+            </div>
+            <div className="flex justify-end border-t pt-3">
+              <SaveToKbButton
+                defaultTitle={saveTitle}
+                defaultContent={result}
+                defaultTags={saveTags}
+                label="Lưu kết quả vào KB"
+              />
+            </div>
+          </>
         ) : (
           <p className="text-sm text-[var(--color-muted-fg)]">
             Nhập số liệu bên trái và bấm <strong>Tính</strong>.
@@ -131,7 +146,13 @@ function VatForm() {
   }
 
   return (
-    <CalcShell result={result} loading={loading} error={error}>
+    <CalcShell
+      result={result}
+      loading={loading}
+      error={error}
+      saveTitle={`Tính VAT ${rate}% — ${Number(amount).toLocaleString("vi-VN")} ₫`}
+      saveTags="kế toán, vat, thuế, calculator"
+    >
       <div className="space-y-1.5">
         <Label htmlFor="amount">Số tiền (VND)</Label>
         <Input
@@ -218,7 +239,13 @@ function PitForm() {
   }
 
   return (
-    <CalcShell result={result} loading={loading} error={error}>
+    <CalcShell
+      result={result}
+      loading={loading}
+      error={error}
+      saveTitle={`Tính TNCN — Lương gross ${Number(gross).toLocaleString("vi-VN")} ₫/tháng, ${deps} NPT`}
+      saveTags="kế toán, tncn, thuế, lương, calculator"
+    >
       <div className="space-y-1.5">
         <Label htmlFor="gross">Lương gross (VND/tháng)</Label>
         <Input
@@ -301,7 +328,13 @@ function CitForm() {
   }
 
   return (
-    <CalcShell result={result} loading={loading} error={error}>
+    <CalcShell
+      result={result}
+      loading={loading}
+      error={error}
+      saveTitle={`Tính TNDN ${ratePct}% — Doanh thu ${Number(revenue).toLocaleString("vi-VN")} ₫`}
+      saveTags="kế toán, tndn, thuế, calculator"
+    >
       <div className="space-y-1.5">
         <Label htmlFor="revenue">Doanh thu (VND/năm)</Label>
         <Input

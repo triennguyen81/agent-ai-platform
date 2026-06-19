@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SaveToKbButton } from "@/components/save-to-kb-button";
 
 interface EntryLine {
   id: string;
@@ -68,6 +69,36 @@ export default function JournalPage() {
     .filter((l) => l.side === "Có")
     .reduce((sum, l) => sum + parseAmount(l.amount), 0);
   const balanced = totalDebit === totalCredit && totalDebit > 0;
+
+  // Render bút toán as Markdown for KB save.
+  const journalAsMarkdown = (() => {
+    const sections = [
+      `# Bút toán: ${description}`,
+      "",
+      `> _Lập ngày ${new Date().toLocaleDateString("vi-VN")}_`,
+      "",
+      "| Vế | TK | Tên | Số tiền (₫) | Diễn giải |",
+      "|---|---|---|---:|---|",
+    ];
+    for (const line of lines) {
+      const amt = parseAmount(line.amount);
+      if (!amt) continue;
+      sections.push(
+        `| ${line.side} | TK ${line.account} | ${line.description || "—"} | ${formatVnd(amt)} | |`,
+      );
+    }
+    sections.push("");
+    sections.push(`- **Tổng Nợ:** ${formatVnd(totalDebit)} ₫`);
+    sections.push(`- **Tổng Có:** ${formatVnd(totalCredit)} ₫`);
+    sections.push(`- **Trạng thái:** ${balanced ? "✅ Cân đối" : `❌ Lệch ${formatVnd(Math.abs(totalDebit - totalCredit))} ₫`}`);
+    if (validationResult) {
+      sections.push("");
+      sections.push("## Kết quả validate");
+      sections.push("");
+      sections.push(validationResult);
+    }
+    return sections.join("\n");
+  })();
 
   async function callAgent(task: string): Promise<string> {
     const res = await fetch("/api/agent/run", {
@@ -249,6 +280,12 @@ export default function JournalPage() {
             {loading === "suggest" ? <Loader2 className="size-4 animate-spin" /> : <Wand2 className="size-4" />}
             AI gợi ý
           </Button>
+          <SaveToKbButton
+            defaultTitle={`Bút toán: ${description.slice(0, 80)}`}
+            defaultContent={journalAsMarkdown}
+            defaultTags="kế toán, định khoản, bút toán"
+            label="Lưu bút toán vào KB"
+          />
         </div>
 
         {error && (

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  BookmarkPlus,
   Brain,
   Bot,
   Check,
@@ -18,11 +17,10 @@ import {
   Trash2,
   User as UserIcon,
   Wand2,
-  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input, Label, Textarea } from "@/components/ui/input";
 import { MicButton } from "@/components/mic-button";
+import { SaveToKbButton } from "@/components/save-to-kb-button";
 
 interface AgenticStep {
   role: string;
@@ -665,9 +663,10 @@ function MessageBubble({ message }: { message: Message }) {
           ) : (
             <span />
           )}
-          <SaveToKnowledgeButton
+          <SaveToKbButton
             defaultTitle={message.question ?? "Câu trả lời từ chat"}
             defaultContent={buildSaveContent(message.question, message.content)}
+            variant="chip"
           />
         </div>
       </div>
@@ -742,178 +741,6 @@ function ModeToggle({
 function buildSaveContent(question: string | undefined, answer: string): string {
   if (!question) return answer;
   return `**Câu hỏi:** ${question}\n\n${answer}`;
-}
-
-function SaveToKnowledgeButton({
-  defaultTitle,
-  defaultContent,
-}: {
-  defaultTitle: string;
-  defaultContent: string;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="flex items-center gap-1 rounded-full border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[10px] text-[var(--color-muted-fg)] hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]"
-      >
-        <BookmarkPlus className="size-3" />
-        Lưu vào kiến thức
-      </button>
-      {open && (
-        <SaveModal
-          defaultTitle={defaultTitle}
-          defaultContent={defaultContent}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </>
-  );
-}
-
-function SaveModal({
-  defaultTitle,
-  defaultContent,
-  onClose,
-}: {
-  defaultTitle: string;
-  defaultContent: string;
-  onClose: () => void;
-}) {
-  const [title, setTitle] = useState(defaultTitle.slice(0, 300));
-  const [content, setContent] = useState(defaultContent);
-  const [tagsInput, setTagsInput] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [interim, setInterim] = useState("");
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (saving) return;
-    setSaving(true);
-    setError(null);
-
-    const tags = tagsInput
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
-
-    try {
-      const res = await fetch("/api/notes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: title.trim(), content, tags }),
-      });
-      if (!res.ok) {
-        const body = await res.text();
-        setError(body.slice(0, 300) || `HTTP ${res.status}`);
-        return;
-      }
-      onClose();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-lg space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5 shadow-xl"
-      >
-        <div className="flex items-start justify-between">
-          <div>
-            <h3 className="font-serif text-lg">Lưu vào kiến thức</h3>
-            <p className="text-xs text-[var(--color-muted-fg)]">
-              Câu trả lời này sẽ được dùng cho các chat sau (RAG).
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-[var(--color-muted-fg)] hover:text-[var(--color-fg)]"
-            aria-label="Close"
-          >
-            <X className="size-4" />
-          </button>
-        </div>
-
-        <div className="space-y-1.5">
-          <Label htmlFor="kb-title">Tiêu đề</Label>
-          <Input
-            id="kb-title"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            maxLength={300}
-            required
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="kb-content">Nội dung (markdown ok)</Label>
-          {interim && (
-            <div className="rounded-[var(--radius)] border border-dashed border-[var(--color-primary)]/40 bg-[var(--color-primary)]/5 px-3 py-1.5 text-xs italic text-[var(--color-muted-fg)]">
-              <span className="mr-2 text-[10px] uppercase tracking-wide text-[var(--color-primary)]">
-                Đang nghe
-              </span>
-              {interim}…
-            </div>
-          )}
-          <div className="relative">
-            <Textarea
-              id="kb-content"
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              rows={10}
-            />
-            <div className="absolute bottom-2 right-2">
-              <MicButton
-                onTranscript={(text) =>
-                  setContent((prev) =>
-                    prev ? `${prev.trimEnd()} ${text}` : text,
-                  )
-                }
-                onInterim={setInterim}
-                size="sm"
-              />
-            </div>
-          </div>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="kb-tags">Tags (cách nhau bằng dấu phẩy)</Label>
-          <Input
-            id="kb-tags"
-            value={tagsInput}
-            onChange={(e) => setTagsInput(e.target.value)}
-            placeholder="chat, dental, faq"
-          />
-        </div>
-        {error && (
-          <p className="rounded-[var(--radius)] border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-            {error}
-          </p>
-        )}
-        <div className="flex justify-end gap-2 pt-2">
-          <Button type="button" variant="ghost" size="sm" onClick={onClose}>
-            Huỷ
-          </Button>
-          <Button type="submit" size="sm" disabled={saving || !title.trim()}>
-            {saving ? (
-              <>
-                <Loader2 className="mr-1 size-3.5 animate-spin" />
-                Đang lưu…
-              </>
-            ) : (
-              "Lưu note"
-            )}
-          </Button>
-        </div>
-      </form>
-    </div>
-  );
 }
 
 function ThinkingBlock({ text }: { text: string }) {

@@ -117,6 +117,9 @@ export const agent = {
       body: JSON.stringify(payload),
     });
   },
+  listSkills() {
+    return call(AGENT_BASE, "/skills/list");
+  },
   getThread(threadId: string) {
     return call(AGENT_BASE, `/chat/threads/${encodeURIComponent(threadId)}`);
   },

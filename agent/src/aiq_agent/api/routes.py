@@ -14,6 +14,7 @@ from aiq_agent.api.schemas import (
     ChatRequest,
     ChatResponse,
     HealthResponse,
+    SkillSummary,
     StepResponse,
     ThreadHistoryMessage,
     ThreadHistoryResponse,
@@ -236,6 +237,20 @@ async def clear_thread(thread_id: str, memory: MemoryStore = Depends(_memory)) -
 @router.get("/tools", response_model=list[dict])
 async def list_tools(tools: ToolRegistry = Depends(_tools)) -> list[dict]:
     return tools.describe()
+
+
+@router.get("/skills/list", response_model=list[SkillSummary])
+async def list_skills(skills: SkillRegistry = Depends(_skills)) -> list[SkillSummary]:
+    return [
+        SkillSummary(
+            name=s.name,
+            description=s.description,
+            keywords=list(s.keywords),
+            always_on=s.always_on,
+            requires_knowledge_context=s.requires_knowledge_context,
+        )
+        for s in skills.skills
+    ]
 
 
 @router.post("/agent/run", response_model=AgentRunResponse)

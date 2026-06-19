@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
+import { SaveToKbButton } from "@/components/save-to-kb-button";
 
 type ReportType = "bckqhdkd" | "bcdkt" | "lctt";
 
@@ -33,6 +34,7 @@ export default function ReportsPage() {
   const [companyName, setCompanyName] = useState("Công ty TNHH Cát Tường AI");
   const [period, setPeriod] = useState("Năm 2025");
   const [contextData, setContextData] = useState("");
+  const [searchKb, setSearchKb] = useState(true);
   const [report, setReport] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,17 +43,22 @@ export default function ReportsPage() {
     setLoading(true);
     setError(null);
     try {
+      const kbDirective = searchKb
+        ? `\n\n**Bước 0:** Trước khi lập báo cáo, dùng tool \`search_notes\` để tìm các Note liên quan đến "${period}" hoặc "${REPORT_NAMES[type]}" trong KB. Nếu có Note phù hợp, dùng \`get_note\` để đọc nội dung và tích hợp số liệu vào báo cáo. Nếu không có Note nào liên quan, dùng số liệu user cung cấp bên dưới.\n`
+        : "";
+
       const task = `Lập khung mẫu cho **${REPORT_NAMES[type]}** áp dụng TT200/2014/TT-BTC.
 
 **Doanh nghiệp:** ${companyName}
 **Kỳ báo cáo:** ${period}
-
+${kbDirective}
 ${contextData.trim() ? `**Dữ liệu / số liệu user cung cấp:**\n\n${contextData.trim()}\n\n` : ""}**Yêu cầu:**
 1. Lập bảng đầy đủ các chỉ tiêu (Mã số, Tên chỉ tiêu, Số năm này, Số năm trước).
-2. Nếu có dữ liệu user cung cấp → điền vào tương ứng; còn lại để "—".
+2. Điền số từ KB / user cung cấp tương ứng; còn lại để "—".
 3. Tham chiếu: ${REPORT_HINTS[type]}
 4. Cuối bảng có dòng ký xác nhận (Người lập / Kế toán trưởng / Giám đốc).
-5. Format Markdown đẹp, export được sang Word.`;
+5. Nếu có dùng Note từ KB, ghi rõ tên Note ở cuối (theo skill rag-citation).
+6. Format Markdown đẹp, export được sang Word.`;
       const res = await fetch("/api/agent/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -148,17 +155,41 @@ ${contextData.trim() ? `**Dữ liệu / số liệu user cung cấp:**\n\n${cont
             </p>
           </div>
 
+          <label className="flex items-start gap-2 rounded-[var(--radius)] border border-dashed bg-[var(--color-muted)] p-2 text-xs">
+            <input
+              type="checkbox"
+              checked={searchKb}
+              onChange={(e) => setSearchKb(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              <strong>Tự động search KB</strong> trước khi sinh báo cáo. AI sẽ
+              tìm Note liên quan đến kỳ và loại báo cáo qua tool{" "}
+              <code>search_notes</code> để có data thật.
+            </span>
+          </label>
+
           <div className="flex gap-2">
             <Button onClick={generate} disabled={loading} className="flex-1">
               {loading ? <Loader2 className="size-4 animate-spin" /> : <Wand2 className="size-4" />}
               Sinh báo cáo
             </Button>
             {report && (
-              <Button variant="outline" onClick={downloadMarkdown}>
-                <Download className="size-4" />
-              </Button>
+              <>
+                <Button variant="outline" onClick={downloadMarkdown}>
+                  <Download className="size-4" />
+                </Button>
+              </>
             )}
           </div>
+          {report && (
+            <SaveToKbButton
+              defaultTitle={`${REPORT_NAMES[type]} — ${companyName} — ${period}`}
+              defaultContent={report}
+              defaultTags={`kế toán, báo cáo, ${type}, ${period.toLowerCase().replace(/\s+/g, "-")}`}
+              label="Lưu báo cáo vào KB"
+            />
+          )}
 
           {error && (
             <p className="rounded-[var(--radius)] border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">

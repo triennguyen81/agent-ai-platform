@@ -65,9 +65,14 @@ export default async function AppLayout({
               </Button>
             )}
             {isSuperAdmin && (
-              <Button variant="ghost" size="sm" asChild>
-                <Link href="/admin/users">Admin</Link>
-              </Button>
+              <>
+                <Button variant="ghost" size="sm" asChild>
+                  <Link href="/admin/users">Admin</Link>
+                </Button>
+                <Button variant="ghost" size="sm" asChild>
+                  <Link href="/admin/skills">Skills</Link>
+                </Button>
+              </>
             )}
             <span className="ml-3 text-sm text-[var(--color-muted-fg)]">
               {me.email ?? "you"}
