@@ -59,6 +59,11 @@ export default async function AppLayout({
                 <Link href="/knowledge">Knowledge</Link>
               </Button>
             )}
+            {canEditKnowledge && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/accounting">Kế toán</Link>
+              </Button>
+            )}
             {isSuperAdmin && (
               <Button variant="ghost" size="sm" asChild>
                 <Link href="/admin/users">Admin</Link>
