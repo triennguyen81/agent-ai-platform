@@ -11,6 +11,7 @@ from fastapi import FastAPI
 
 from aiq_agent.api.ocr_routes import router as ocr_router
 from aiq_agent.api.routes import router
+from aiq_agent.audit import build_audit_store
 from aiq_agent.config import get_settings
 from aiq_agent.llm import build_llm_service
 from aiq_agent.memory import build_memory_store
@@ -50,11 +51,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         skills_root = repo_candidate if repo_candidate.exists() else container_candidate
     skill_registry = build_skill_registry(skills_root)
 
+    # Audit store reuses the memory store's underlying Redis client when
+    # the redis backend is selected; otherwise audit is disabled (None).
+    audit_store = None
+    if settings.memory_backend == "redis" and hasattr(memory, "_redis"):
+        audit_store = build_audit_store(redis=memory._redis)  # noqa: SLF001 — intentional
+
     app.state.llm = llm
     app.state.tools = default_registry
     app.state.memory = memory
     app.state.ocr_pipeline = pipeline
     app.state.skills = skill_registry
+    app.state.audit = audit_store
 
     try:
         yield

@@ -11,6 +11,7 @@ from aiq_agent.api.schemas import (
     AgentRunRequest,
     AgentRunResponse,
     AgentRunStep,
+    AuditEntryResponse,
     ChatRequest,
     ChatResponse,
     HealthResponse,
@@ -21,6 +22,7 @@ from aiq_agent.api.schemas import (
     ThreadSummaryResponse,
 )
 from aiq_agent.config import get_settings
+from aiq_agent.audit import AuditStore
 from aiq_agent.llm.base import ChatMessage, LlmService
 from aiq_agent.memory.base import MemoryStore
 from aiq_agent.orchestration import PlannerExecutorCritic
@@ -77,6 +79,10 @@ def _skills(request: Request) -> SkillRegistry:
     return getattr(request.app.state, "skills", SkillRegistry())
 
 
+def _audit(request: Request) -> AuditStore | None:
+    return getattr(request.app.state, "audit", None)
+
+
 @router.get("/healthz/live", response_model=HealthResponse)
 async def live(llm: LlmService = Depends(_llm)) -> HealthResponse:
     return HealthResponse(status="live", provider=llm.provider, model=llm.model)
@@ -95,7 +101,11 @@ async def chat(
     tools: ToolRegistry = Depends(_tools),
     memory: MemoryStore = Depends(_memory),
     skills: SkillRegistry = Depends(_skills),
+    audit: AuditStore | None = Depends(_audit),
 ) -> ChatResponse:
+    import time as _t
+
+    _started = _t.monotonic()
     if body.tool and tools.get(body.tool) is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -184,6 +194,24 @@ async def chat(
         )
         history_length += 2
 
+    if audit is not None:
+        user_prefix = (body.thread_id or "anon").split(":")[0]
+        if body.tool:
+            audit_name = f"tool:{body.tool}"
+        else:
+            try:
+                audit_name = ",".join(s.name for s in active_skills) or "no-skill"  # type: ignore[name-defined]
+            except NameError:
+                audit_name = "no-skill"
+        await audit.write(
+            event="chat",
+            name=audit_name,
+            user_prefix=user_prefix,
+            ms=int((_t.monotonic() - _started) * 1000),
+            ok=True,
+            detail=body.prompt[:200],
+        )
+
     return ChatResponse(
         final_answer=final_answer,
         provider=llm.provider,
@@ -253,8 +281,34 @@ async def list_skills(skills: SkillRegistry = Depends(_skills)) -> list[SkillSum
     ]
 
 
+@router.get("/admin/audit", response_model=list[AuditEntryResponse])
+async def admin_audit(
+    limit: int = 100,
+    event: str | None = None,
+    audit: AuditStore | None = Depends(_audit),
+) -> list[AuditEntryResponse]:
+    if audit is None:
+        return []
+    entries = await audit.list(limit=max(1, min(limit, 500)), event=event)
+    return [
+        AuditEntryResponse(
+            ts=e.ts,
+            event=e.event,
+            user_prefix=e.user_prefix,
+            name=e.name,
+            ms=e.ms,
+            ok=e.ok,
+            detail=e.detail,
+        )
+        for e in entries
+    ]
+
+
 @router.post("/agent/run", response_model=AgentRunResponse)
-async def agentic_run(body: AgentRunRequest) -> AgentRunResponse:
+async def agentic_run(
+    body: AgentRunRequest,
+    audit: AuditStore | None = Depends(_audit),
+) -> AgentRunResponse:
     """Run a multi-step agentic task via the Claude Agent SDK.
 
     Tools available to the model:
@@ -266,6 +320,24 @@ async def agentic_run(body: AgentRunRequest) -> AgentRunResponse:
     leakage.
     """
     settings = get_settings()
+    import time as _t
+
+    _started = _t.monotonic()
+    user_prefix = "anon"
+    try:
+        # Best-effort decode JWT to derive user prefix for audit; tools.py
+        # also uses this token verbatim so we don't want to verify it twice.
+        import base64
+        import json as _json
+
+        parts = body.user_token.split(".")
+        if len(parts) >= 2:
+            padded = parts[1] + "=" * (-len(parts[1]) % 4)
+            claims = _json.loads(base64.urlsafe_b64decode(padded))
+            user_prefix = str(claims.get("sub", "anon"))[:12]
+    except Exception:  # noqa: BLE001
+        pass
+
     try:
         result = await run_task(
             task=body.task,
@@ -275,10 +347,29 @@ async def agentic_run(body: AgentRunRequest) -> AgentRunResponse:
             max_turns=body.max_turns,
         )
     except Exception as exc:  # noqa: BLE001 — surface root cause to caller
+        if audit is not None:
+            await audit.write(
+                event="agentic",
+                name="run_task",
+                user_prefix=user_prefix,
+                ms=int((_t.monotonic() - _started) * 1000),
+                ok=False,
+                detail=f"{exc.__class__.__name__}: {exc}"[:200],
+            )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Agentic run failed: {exc.__class__.__name__}: {exc}",
         ) from exc
+
+    if audit is not None:
+        await audit.write(
+            event="agentic",
+            name="run_task",
+            user_prefix=user_prefix,
+            ms=int((_t.monotonic() - _started) * 1000),
+            ok=True,
+            detail=body.task[:200],
+        )
 
     return AgentRunResponse(
         final_answer=result.final_answer,

@@ -120,6 +120,11 @@ export const agent = {
   listSkills() {
     return call(AGENT_BASE, "/skills/list");
   },
+  listAudit(limit = 100, event?: string) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (event) params.set("event", event);
+    return call(AGENT_BASE, `/admin/audit?${params.toString()}`);
+  },
   getThread(threadId: string) {
     return call(AGENT_BASE, `/chat/threads/${encodeURIComponent(threadId)}`);
   },

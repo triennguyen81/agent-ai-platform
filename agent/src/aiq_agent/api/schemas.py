@@ -89,6 +89,16 @@ class SkillSummary(BaseModel):
     requires_knowledge_context: bool
 
 
+class AuditEntryResponse(BaseModel):
+    ts: float
+    event: str
+    user_prefix: str
+    name: str
+    ms: int
+    ok: bool
+    detail: str | None = None
+
+
 class HealthResponse(BaseModel):
     status: str
     provider: str
