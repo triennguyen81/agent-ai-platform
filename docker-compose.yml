@@ -118,7 +118,7 @@ services:
       # M6 — Qdrant top-K embeddings (self-hosted via fastembed)
       QDRANT_URL: ${QDRANT_INTERNAL_URL:-http://qdrant:6333}
       QDRANT_API_KEY: ${QDRANT_API_KEY:-}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-small}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
       EMBEDDING_DIM: ${EMBEDDING_DIM:-384}
       EMBEDDING_ENABLED: ${EMBEDDING_ENABLED:-true}
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-aiq_notes}
