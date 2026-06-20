@@ -41,8 +41,11 @@ class Settings(BaseSettings):
     # ---- M6: Embeddings + Qdrant top-K RAG ----
     # Self-hosted via fastembed (ONNX) — $0 marginal cost. Falls back to
     # full-context RAG if Qdrant or model init fails.
-    # multilingual-e5-small: 384 dim, ~120MB, decent Vietnamese support.
-    embedding_model: str = Field(default="intfloat/multilingual-e5-small")
+    # paraphrase-multilingual-MiniLM-L12-v2: 384 dim, ~220MB, supports
+    # Vietnamese + 50 languages. Smallest fastembed multilingual model.
+    embedding_model: str = Field(
+        default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    )
     embedding_dim: int = Field(default=384, gt=0)
     embedding_enabled: bool = Field(default=True)
     qdrant_url: str = Field(default="http://aiq-qdrant:6333")

@@ -50,8 +50,10 @@ class IngestNote:
 
     @property
     def embed_text(self) -> str:
-        # e5 family expects "passage: {text}" on indexing.
-        return f"passage: {self.title}\n\n{self.content[:8000]}"
+        # paraphrase-multilingual model doesn't need a prefix; we just
+        # concatenate title + content. Cap content to ~8K chars to keep
+        # embedding fast.
+        return f"{self.title}\n\n{self.content[:8000]}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,8 +206,8 @@ class EmbeddingService:
         from qdrant_client.http import models as qmodels
 
         client = self._ensure_qdrant()
-        # e5 family expects "query: {text}" prefix at search time.
-        vector = self._embed_one(f"query: {query}")
+        # paraphrase-multilingual: no special prefix needed.
+        vector = self._embed_one(query)
         hits = client.search(
             collection_name=self._collection,
             query_vector=vector,
