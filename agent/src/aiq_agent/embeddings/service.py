@@ -57,10 +57,12 @@ class EmbeddingService:
         embedding_dim: int,
         qdrant_url: str,
         collection: str,
+        qdrant_api_key: str | None = None,
     ) -> None:
         self._model_name = model_name
         self._dim = embedding_dim
         self._qdrant_url = qdrant_url
+        self._qdrant_api_key = qdrant_api_key
         self._collection = collection
         self._encoder: Any = None  # fastembed.TextEmbedding lazy init
         self._qdrant: Any = None  # qdrant_client.QdrantClient lazy init
@@ -78,7 +80,13 @@ class EmbeddingService:
             from qdrant_client import QdrantClient  # lazy import
             from qdrant_client.http import models as qmodels
 
-            client = QdrantClient(url=self._qdrant_url, timeout=10)
+            client = QdrantClient(
+                url=self._qdrant_url,
+                api_key=self._qdrant_api_key,
+                timeout=10,
+                # Server is 1.12, client is 1.18 — minor mismatch is fine.
+                check_compatibility=False,
+            )
             existing = {c.name for c in client.get_collections().collections}
             if self._collection not in existing:
                 logger.info(
@@ -203,10 +211,12 @@ def build_embedding_service(
     embedding_dim: int,
     qdrant_url: str,
     collection: str,
+    qdrant_api_key: str | None = None,
 ) -> EmbeddingService:
     return EmbeddingService(
         model_name=model_name,
         embedding_dim=embedding_dim,
         qdrant_url=qdrant_url,
+        qdrant_api_key=qdrant_api_key,
         collection=collection,
     )

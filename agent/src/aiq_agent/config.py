@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     embedding_dim: int = Field(default=384, gt=0)
     embedding_enabled: bool = Field(default=True)
     qdrant_url: str = Field(default="http://aiq-qdrant:6333")
+    qdrant_api_key: str | None = Field(default=None)
     qdrant_collection: str = Field(default="aiq_notes")
     qdrant_top_k: int = Field(default=10, gt=0, le=100)
 

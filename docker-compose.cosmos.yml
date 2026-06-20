@@ -50,6 +50,10 @@ services:
 
   agent:
     ports: []
+    environment:
+      # Cross-network DNS — point at container_name (same reason as gateway).
+      GATEWAY_BASE_URL: "http://aiq-gateway:8080"
+      QDRANT_URL: "http://aiq-qdrant:6333"
     networks:
       - aiq-net
       - agentic-net

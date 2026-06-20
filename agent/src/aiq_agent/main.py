@@ -68,6 +68,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             model_name=settings.embedding_model,
             embedding_dim=settings.embedding_dim,
             qdrant_url=settings.qdrant_url,
+            qdrant_api_key=settings.qdrant_api_key,
             collection=settings.qdrant_collection,
         )
 
