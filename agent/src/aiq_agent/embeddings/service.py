@@ -208,9 +208,10 @@ class EmbeddingService:
         client = self._ensure_qdrant()
         # paraphrase-multilingual: no special prefix needed.
         vector = self._embed_one(query)
-        hits = client.search(
+        # qdrant-client 1.11+ deprecated .search() in favor of .query_points().
+        result = client.query_points(
             collection_name=self._collection,
-            query_vector=vector,
+            query=vector,
             query_filter=qmodels.Filter(
                 must=[
                     qmodels.FieldCondition(
@@ -229,7 +230,7 @@ class EmbeddingService:
                 note_id=str((h.payload or {}).get("note_id", h.id)),
                 score=float(h.score),
             )
-            for h in hits
+            for h in result.points
         ]
 
 
