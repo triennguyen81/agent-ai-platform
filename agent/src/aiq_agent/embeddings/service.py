@@ -12,10 +12,25 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Stable namespace for hashing arbitrary note_id strings into UUIDs that
+# Qdrant accepts as point IDs. Don't change this — it would invalidate
+# all existing vectors in the collection.
+_NOTE_ID_NAMESPACE = uuid.UUID("00000000-1111-2222-3333-444455556666")
+
+
+def _note_id_to_point_id(note_id: str) -> str:
+    """Map any note_id string to a deterministic UUID Qdrant will accept."""
+    try:
+        # If note_id already is a UUID, keep it (real notes from gateway).
+        return str(uuid.UUID(note_id))
+    except ValueError:
+        return str(uuid.uuid5(_NOTE_ID_NAMESPACE, note_id))
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,16 +153,19 @@ class EmbeddingService:
 
         client = self._ensure_qdrant()
 
-        # Fetch current state for these note ids
-        ids = [n.note_id for n in notes]
+        # Fetch current state for these note ids — Qdrant only accepts
+        # UUID or uint for point IDs, so map note_id strings to UUIDs.
+        point_ids = [_note_id_to_point_id(n.note_id) for n in notes]
         existing = client.retrieve(
             collection_name=self._collection,
-            ids=ids,
+            ids=point_ids,
             with_payload=True,
             with_vectors=False,
         )
         existing_hashes: dict[str, str] = {
-            str(point.id): str((point.payload or {}).get("hash", ""))
+            str((point.payload or {}).get("note_id", "")): str(
+                (point.payload or {}).get("hash", "")
+            )
             for point in existing
         }
 
@@ -161,7 +179,7 @@ class EmbeddingService:
 
         points = [
             qmodels.PointStruct(
-                id=note.note_id,
+                id=_note_id_to_point_id(note.note_id),
                 vector=vector,
                 payload={
                     "user_id": note.user_id,
@@ -200,9 +218,17 @@ class EmbeddingService:
                 ]
             ),
             limit=k,
-            with_payload=False,
+            with_payload=True,
         )
-        return [TopKHit(note_id=str(h.id), score=float(h.score)) for h in hits]
+        # Use the original note_id from payload — the point.id is a UUID,
+        # but the caller wants the original string id from gateway.
+        return [
+            TopKHit(
+                note_id=str((h.payload or {}).get("note_id", h.id)),
+                score=float(h.score),
+            )
+            for h in hits
+        ]
 
 
 def build_embedding_service(
