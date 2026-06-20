@@ -125,6 +125,17 @@ export const agent = {
     if (event) params.set("event", event);
     return call(AGENT_BASE, `/admin/audit?${params.toString()}`);
   },
+  queryEmbeddings(payload: {
+    query: string;
+    user_id: string;
+    notes: { id: string; title: string; content: string }[];
+    k?: number;
+  }) {
+    return call(AGENT_BASE, "/embeddings/query", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
   getThread(threadId: string) {
     return call(AGENT_BASE, `/chat/threads/${encodeURIComponent(threadId)}`);
   },

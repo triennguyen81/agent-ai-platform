@@ -14,6 +14,9 @@ from aiq_agent.api.schemas import (
     AuditEntryResponse,
     ChatRequest,
     ChatResponse,
+    EmbeddingQueryHit,
+    EmbeddingQueryRequest,
+    EmbeddingQueryResponse,
     HealthResponse,
     SkillSummary,
     StepResponse,
@@ -21,6 +24,8 @@ from aiq_agent.api.schemas import (
     ThreadHistoryResponse,
     ThreadSummaryResponse,
 )
+from aiq_agent.embeddings import EmbeddingService
+from aiq_agent.embeddings.service import IngestNote
 from aiq_agent.config import get_settings
 from aiq_agent.audit import AuditStore
 from aiq_agent.llm.base import ChatMessage, LlmService
@@ -81,6 +86,10 @@ def _skills(request: Request) -> SkillRegistry:
 
 def _audit(request: Request) -> AuditStore | None:
     return getattr(request.app.state, "audit", None)
+
+
+def _embeddings(request: Request) -> EmbeddingService | None:
+    return getattr(request.app.state, "embeddings", None)
 
 
 @router.get("/healthz/live", response_model=HealthResponse)
@@ -279,6 +288,58 @@ async def list_skills(skills: SkillRegistry = Depends(_skills)) -> list[SkillSum
         )
         for s in skills.skills
     ]
+
+
+@router.post("/embeddings/query", response_model=EmbeddingQueryResponse)
+async def embeddings_query(
+    body: EmbeddingQueryRequest,
+    embeddings: EmbeddingService | None = Depends(_embeddings),
+) -> EmbeddingQueryResponse:
+    """Lazy-upsert notes + return top-K nearest to the query.
+
+    Designed to be called from the web /api/chat path right before the LLM
+    call: web sends all the user's notes + the prompt, gets back the K most
+    relevant note ids, and only inserts those into knowledge_context.
+
+    If embeddings are disabled or fail, returns enabled=False — caller must
+    fall back to full-context RAG.
+    """
+    if embeddings is None:
+        return EmbeddingQueryResponse(top_k=[], upserted=0, enabled=False)
+
+    try:
+        import asyncio
+
+        ingest_notes = [
+            IngestNote(
+                note_id=n.id,
+                user_id=body.user_id,
+                title=n.title,
+                content=n.content,
+            )
+            for n in body.notes
+        ]
+        # fastembed + qdrant_client are sync — push to thread pool so we
+        # don't block the FastAPI event loop on first-call model download.
+        upserted = await asyncio.to_thread(embeddings.sync_notes, ingest_notes)
+        hits = await asyncio.to_thread(
+            embeddings.search,
+            query=body.query,
+            user_id=body.user_id,
+            k=body.k,
+        )
+        return EmbeddingQueryResponse(
+            top_k=[EmbeddingQueryHit(note_id=h.note_id, score=h.score) for h in hits],
+            upserted=upserted,
+            enabled=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — never let embedding errors break /chat
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Embedding query failed, caller will fall back: %s", exc
+        )
+        return EmbeddingQueryResponse(top_k=[], upserted=0, enabled=False)
 
 
 @router.get("/admin/audit", response_model=list[AuditEntryResponse])

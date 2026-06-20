@@ -38,6 +38,17 @@ class Settings(BaseSettings):
     # ---- Gateway (for agentic tools that proxy through Gateway) ----
     gateway_base_url: str = Field(default="http://aiq-gateway:8080")
 
+    # ---- M6: Embeddings + Qdrant top-K RAG ----
+    # Self-hosted via fastembed (ONNX) — $0 marginal cost. Falls back to
+    # full-context RAG if Qdrant or model init fails.
+    # multilingual-e5-small: 384 dim, ~120MB, decent Vietnamese support.
+    embedding_model: str = Field(default="intfloat/multilingual-e5-small")
+    embedding_dim: int = Field(default=384, gt=0)
+    embedding_enabled: bool = Field(default=True)
+    qdrant_url: str = Field(default="http://aiq-qdrant:6333")
+    qdrant_collection: str = Field(default="aiq_notes")
+    qdrant_top_k: int = Field(default=10, gt=0, le=100)
+
     # ---- Memory ----
     memory_backend: MemoryBackend = Field(default="in_memory")
     memory_ttl_seconds: int = Field(default=86_400, gt=0)

@@ -13,6 +13,7 @@ from aiq_agent.api.ocr_routes import router as ocr_router
 from aiq_agent.api.routes import router
 from aiq_agent.audit import build_audit_store
 from aiq_agent.config import get_settings
+from aiq_agent.embeddings import build_embedding_service
 from aiq_agent.llm import build_llm_service
 from aiq_agent.memory import build_memory_store
 from aiq_agent.observability import RecordedLlmService, configure_tracing, instrument_fastapi
@@ -57,12 +58,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.memory_backend == "redis" and hasattr(memory, "_redis"):
         audit_store = build_audit_store(redis=memory._redis)  # noqa: SLF001 — intentional
 
+    # Embedding service is lazy: fastembed model is downloaded the first
+    # time anyone calls .sync_notes() or .search(), not at startup. That
+    # keeps container startup fast and lets the system fall back to
+    # full-context RAG silently if fastembed init fails later.
+    embeddings = None
+    if settings.embedding_enabled:
+        embeddings = build_embedding_service(
+            model_name=settings.embedding_model,
+            embedding_dim=settings.embedding_dim,
+            qdrant_url=settings.qdrant_url,
+            collection=settings.qdrant_collection,
+        )
+
     app.state.llm = llm
     app.state.tools = default_registry
     app.state.memory = memory
     app.state.ocr_pipeline = pipeline
     app.state.skills = skill_registry
     app.state.audit = audit_store
+    app.state.embeddings = embeddings
 
     try:
         yield

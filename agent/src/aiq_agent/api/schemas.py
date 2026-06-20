@@ -99,6 +99,32 @@ class AuditEntryResponse(BaseModel):
     detail: str | None = None
 
 
+class EmbeddingNoteInput(BaseModel):
+    """One note input for embedding upsert + search."""
+
+    id: str = Field(min_length=1, max_length=64)
+    title: str = Field(max_length=500)
+    content: str = Field(max_length=200_000)
+
+
+class EmbeddingQueryRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=10_000)
+    user_id: str = Field(min_length=1, max_length=128)
+    notes: list[EmbeddingNoteInput]
+    k: int = Field(default=10, ge=1, le=50)
+
+
+class EmbeddingQueryHit(BaseModel):
+    note_id: str
+    score: float
+
+
+class EmbeddingQueryResponse(BaseModel):
+    top_k: list[EmbeddingQueryHit]
+    upserted: int
+    enabled: bool
+
+
 class HealthResponse(BaseModel):
     status: str
     provider: str

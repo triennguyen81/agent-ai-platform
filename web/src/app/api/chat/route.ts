@@ -56,14 +56,55 @@ export async function POST(request: NextRequest) {
   // Pull the user's saved notes from Gateway. Failure here is non-fatal —
   // we still fall back to a vanilla chat without RAG.
   let knowledgeBlock = "";
+  let allNotes: NoteRecord[] = [];
   try {
     const notesRes = await gateway.listNotes(token);
     if (notesRes.ok) {
       const payload = (await notesRes.json()) as NotesResponse;
-      knowledgeBlock = buildKnowledgeBlock(payload.items ?? []);
+      allNotes = payload.items ?? [];
     }
   } catch {
     // swallow — RAG is optional, never fail the chat over a notes outage
+  }
+
+  // M6: ask the agent's embedding service for top-K relevant notes only.
+  // Falls back to full-context if the service is disabled or fails.
+  let topK: NoteRecord[] | null = null;
+  if (allNotes.length > 0) {
+    const userId = decodeUserId(token);
+    if (userId) {
+      try {
+        const embRes = await agent.queryEmbeddings({
+          query: prompt,
+          user_id: userId,
+          notes: allNotes.map((n) => ({
+            id: n.id,
+            title: n.title,
+            content: n.content,
+          })),
+          k: 10,
+        });
+        if (embRes.ok) {
+          const embBody = (await embRes.json()) as {
+            top_k: { note_id: string }[];
+            enabled: boolean;
+          };
+          if (embBody.enabled && embBody.top_k.length > 0) {
+            const byId = new Map(allNotes.map((n) => [n.id, n]));
+            topK = embBody.top_k
+              .map((hit) => byId.get(hit.note_id))
+              .filter((n): n is NoteRecord => Boolean(n));
+          }
+        }
+      } catch {
+        // swallow — fall through to full-context
+      }
+    }
+  }
+
+  const notesForContext = topK ?? allNotes;
+  if (notesForContext.length > 0) {
+    knowledgeBlock = buildKnowledgeBlock(notesForContext);
   }
 
   // Send the user's original question as `prompt` so the agent stores it

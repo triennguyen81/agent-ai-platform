@@ -29,6 +29,11 @@ dependencies = [
   # Accounting Mức 2: import_excel_ledger tool reads XLSX files.
   # CSV / TSV use stdlib csv module — no extra dep needed.
   "openpyxl>=3.1",
+  # M6: Qdrant top-K embeddings (RAG scaling).
+  # fastembed runs sentence-transformer models locally via ONNX —
+  # no API cost, ~120 MB model auto-downloaded on first init.
+  "qdrant-client>=1.12",
+  "fastembed>=0.4",
 ]
 
 [project.optional-dependencies]
