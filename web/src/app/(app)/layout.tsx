@@ -75,6 +75,9 @@ export default async function AppLayout({
                 <Button variant="ghost" size="sm" asChild>
                   <Link href="/admin/audit">Audit</Link>
                 </Button>
+                <Button variant="ghost" size="sm" asChild>
+                  <Link href="/admin/health">Health</Link>
+                </Button>
               </>
             )}
             <span className="ml-3 text-sm text-[var(--color-muted-fg)]">
