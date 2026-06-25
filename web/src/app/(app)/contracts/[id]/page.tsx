@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { AlertTriangle, ArrowLeft, Calendar, FileText, Scale } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
+import { ContractChecklist } from "@/components/contract-checklist";
 
 interface ContractRecord {
   id: string;
@@ -34,6 +35,22 @@ interface ClauseRecord {
 interface ContractWithClauses {
   contract: ContractRecord;
   clauses: ClauseRecord[];
+}
+
+interface ChecklistItem {
+  id: string;
+  contractId: string;
+  clauseId: string | null;
+  title: string;
+  description: string | null;
+  dueDate: string | null;
+  remindDaysBefore: number;
+  assigneeEmail: string | null;
+  status: "open" | "in_progress" | "done" | "skipped";
+  completedAt: string | null;
+  completedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 function formatVnd(amount: number | null | undefined, currency?: string | null): string {
@@ -79,6 +96,14 @@ export default async function ContractDetailPage({ params }: Props) {
 
   const data = (await res.json()) as ContractWithClauses;
   const { contract, clauses } = data;
+
+  // Best-effort: load checklist via gateway helper. Failures fall through
+  // to empty initial state (the client component will refetch on mount
+  // if needed).
+  const checklistRes = await gateway.listChecklist(token, id);
+  const checklist = checklistRes.ok
+    ? ((await checklistRes.json()) as { items: ChecklistItem[] }).items
+    : [];
 
   return (
     <div className="space-y-6">
@@ -195,6 +220,10 @@ export default async function ContractDetailPage({ params }: Props) {
             ))}
           </div>
         )}
+      </section>
+
+      <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
+        <ContractChecklist contractId={contract.id} initialItems={checklist} />
       </section>
 
       {contract.rawText && (

@@ -76,6 +76,9 @@ async def run_task(
         # Contract module Phase 1
         "mcp__aiq__extract_contract_fields",
         "mcp__aiq__save_contract",
+        # Contract module Phase 2
+        "mcp__aiq__get_contract",
+        "mcp__aiq__save_checklist_items",
     ]
 
     options = ClaudeAgentOptions(

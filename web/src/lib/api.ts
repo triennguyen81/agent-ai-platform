@@ -108,6 +108,35 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  listChecklist(token: string, contractId: string) {
+    return call(GATEWAY_BASE, `/contracts/${contractId}/checklist`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  bulkCreateChecklist(
+    token: string,
+    contractId: string,
+    payload: { items: unknown[]; replaceExisting?: boolean },
+  ) {
+    return call(GATEWAY_BASE, `/contracts/${contractId}/checklist`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateChecklistItem(token: string, itemId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/checklist/${itemId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  deleteChecklistItem(token: string, itemId: string) {
+    return call(GATEWAY_BASE, `/checklist/${itemId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
   assignRole(token: string, userId: string, role: string) {
     return call(GATEWAY_BASE, `/users/${userId}/roles`, {
       method: "POST",

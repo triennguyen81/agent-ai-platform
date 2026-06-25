@@ -140,4 +140,124 @@ def build_contract_tools(*, token: str, gateway_base: str) -> list[Any]:
             ]
         }
 
-    return [extract_contract_fields, save_contract]
+    @tool(
+        "get_contract",
+        "Fetch a contract by id with all clauses (for checklist generation).",
+        {"contract_id": str},
+    )
+    async def get_contract(args: dict[str, Any]) -> dict[str, Any]:
+        cid = str(args.get("contract_id", "")).strip()
+        if not cid:
+            return {"content": [{"type": "text", "text": "contract_id required"}]}
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.get(
+                f"{gateway_base}/contracts/{cid}",
+                headers=auth_headers,
+            )
+        if res.status_code == 404:
+            return {"content": [{"type": "text", "text": "Contract not found"}]}
+        if res.status_code != 200:
+            return {
+                "content": [
+                    {"type": "text", "text": f"Gateway returned {res.status_code}"}
+                ]
+            }
+        return {"content": [{"type": "text", "text": res.text}]}
+
+    @tool(
+        "save_checklist_items",
+        "Lưu danh sách checklist items cho 1 contract. items là list JSON "
+        "với schema: {clause_ordinal, title, description, due_date, "
+        "remind_days_before, assignee_email}. replace_existing=true sẽ xoá "
+        "checklist cũ trước khi insert.",
+        {"contract_id": str, "items": list, "replace_existing": bool},
+    )
+    async def save_checklist_items(args: dict[str, Any]) -> dict[str, Any]:
+        contract_id = str(args.get("contract_id", "")).strip()
+        items_in = args.get("items") or []
+        replace = bool(args.get("replace_existing", True))
+
+        if not contract_id:
+            return {"content": [{"type": "text", "text": "contract_id required"}]}
+        if not isinstance(items_in, list) or not items_in:
+            return {"content": [{"type": "text", "text": "items must be a non-empty list"}]}
+
+        # Fetch contract once to map clause_ordinal → clause_id
+        async with httpx.AsyncClient(timeout=10) as client:
+            contract_res = await client.get(
+                f"{gateway_base}/contracts/{contract_id}",
+                headers=auth_headers,
+            )
+        if contract_res.status_code != 200:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Cannot fetch contract for clause mapping: {contract_res.status_code}",
+                    }
+                ]
+            }
+        contract_data = contract_res.json()
+        clauses_by_ordinal: dict[int, str] = {}
+        for clause in contract_data.get("clauses", []):
+            ord_val = clause.get("ordinal")
+            if isinstance(ord_val, int):
+                clauses_by_ordinal[ord_val] = clause.get("id")
+
+        # Normalize each item — drop any without a title.
+        normalized: list[dict[str, Any]] = []
+        for raw in items_in:
+            if not isinstance(raw, dict):
+                continue
+            title = str(raw.get("title", "")).strip()
+            if not title:
+                continue
+            clause_ord = raw.get("clause_ordinal")
+            clause_id = clauses_by_ordinal.get(clause_ord) if isinstance(clause_ord, int) else None
+            normalized.append(
+                {
+                    "clauseId": clause_id,
+                    "title": title[:500],
+                    "description": raw.get("description"),
+                    "dueDate": raw.get("due_date"),
+                    "remindDaysBefore": int(raw.get("remind_days_before") or 7),
+                    "assigneeEmail": raw.get("assignee_email"),
+                }
+            )
+
+        if not normalized:
+            return {"content": [{"type": "text", "text": "No valid items after normalization"}]}
+
+        body = {"items": normalized, "replaceExisting": replace}
+        async with httpx.AsyncClient(timeout=20) as client:
+            res = await client.post(
+                f"{gateway_base}/contracts/{contract_id}/checklist",
+                headers=auth_headers,
+                json=body,
+            )
+        if res.status_code not in (200, 201):
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Save checklist failed ({res.status_code}): {res.text[:200]}",
+                    }
+                ]
+            }
+        payload = res.json()
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"✓ Đã lưu {payload.get('total', len(normalized))} checklist items cho contract {contract_id}",
+                }
+            ]
+        }
+
+    return [
+        extract_contract_fields,
+        save_contract,
+        get_contract,
+        save_checklist_items,
+    ]
