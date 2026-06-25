@@ -2,170 +2,181 @@
 
 > Checklist tracking module Hợp đồng. File platform-wide: [`progress-check.md`](progress-check.md).
 > Đánh dấu `[x]` xong · `[~]` đang làm · `[ ]` chưa làm.
-> Cập nhật cuối: 2026-06-25 (start).
+> Cập nhật cuối: 2026-06-25 — Phases 1+2+3 deployed cosmos.
+
+**Status snapshot:**
+
+- `e72bf58` Phase 1 — Foundation ✅
+- `f0e71b4` Phase 2 — Checklist ✅
+- `cebf063` Phase 3 — Notifications + cron ✅
+- Pending: browser smoke test + pilot 1 tuần + docs
 
 ---
 
 ## 0. Quyết định cần chốt trước khi start
 
-- [ ] **Notification channel** — chọn 1+: in-app / email / Telegram / Zalo
-- [ ] **Loại hợp đồng** đối tác xử lý — generic / lao động / mua bán / dịch vụ / xây dựng
-- [ ] **Multi-tenant model** — user riêng vs shared org
-- [ ] **PDF storage** — volume `/var/aiq/uploads` (MVP) vs cloud (S3 / R2)
-- [ ] **Scope đợt này** — Full 3 phases (~3 tuần) vs Phase 1 trước (1 tuần)
+- [x] **Notification channel** — chọn: **in-app** (zero infra; có thể thêm email/Telegram sau)
+- [x] **Loại hợp đồng** đối tác xử lý — generic VN business (extractor skill xử lý đa dạng)
+- [x] **Multi-tenant model** — per-user (contracts.user_id FK)
+- [x] **PDF storage** — volume `/var/aiq/uploads` (MVP)
+- [x] **Scope đợt này** — Full 3 phases (commits e72bf58 → cebf063)
 
 ---
 
-## Phase 1 — Foundation (1 tuần)
+## Phase 1 — Foundation (1 tuần) ✅ commit `e72bf58`
 
 ### Schema & Migration
 
-- [ ] Tạo `infra/postgres/init/07_contracts.sql` với 2 bảng: `contracts`, `contract_clauses`
-- [ ] Migration idempotent (chạy được trên DB live)
-- [ ] Run trên cosmos: `docker exec aiq-postgres psql -U aiq -d aiq < 07_contracts.sql`
+- [x] Tạo `infra/postgres/init/07_contracts.sql` với 2 bảng: `contracts`, `contract_clauses`
+- [x] Migration idempotent (chạy được trên DB live)
+- [x] Run trên cosmos: `docker exec aiq-postgres psql -U aiq -d aiq < 07_contracts.sql`
 
 ### Gateway (.NET)
 
-- [ ] `gateway/src/Aiq.Gateway/Contracts/ContractRecords.cs` — DTOs
-- [ ] `gateway/src/Aiq.Gateway/Contracts/IContractRepository.cs` — interface + impl Dapper
-- [ ] Register `IContractRepository` trong `Program.cs` DI
-- [ ] `gateway/src/Aiq.Gateway/Endpoints/ContractEndpoints.cs`:
-  - [ ] `GET /contracts` — list
-  - [ ] `POST /contracts` — create
-  - [ ] `GET /contracts/{id}` — detail with clauses
-  - [ ] `PATCH /contracts/{id}` — update
-  - [ ] `DELETE /contracts/{id}` — soft delete (status='terminated')
-  - [ ] `POST /contracts/{id}/clauses` — add clause
-- [ ] Authorization: yêu cầu role `admin` hoặc `super_admin`
-- [ ] Gateway build pass: `dotnet build`
+- [x] `gateway/src/Aiq.Gateway/Contracts/ContractRecords.cs` — DTOs
+- [x] `gateway/src/Aiq.Gateway/Contracts/IContractRepository.cs` — interface + impl Dapper
+- [x] Register `IContractRepository` trong `Program.cs` DI
+- [x] `gateway/src/Aiq.Gateway/Endpoints/ContractEndpoints.cs`:
+  - [x] `GET /contracts` — list
+  - [x] `POST /contracts` — create (transactional clauses)
+  - [x] `GET /contracts/{id}` — detail with clauses
+  - [x] `PATCH /contracts/{id}` — update
+  - [x] `DELETE /contracts/{id}` — soft delete (status='terminated')
+  - [ ] `POST /contracts/{id}/clauses` — add clause _(not built — clauses come bundled via create)_
+- [x] Authorization: yêu cầu role `admin` hoặc `super_admin`
+- [x] Gateway build pass: `dotnet build`
 
 ### Agent (Python)
 
-- [ ] `agent/skills/contract-extractor/SKILL.md` — extraction prompt rules
-- [ ] `agent/src/aiq_agent/agentic/contract_tools.py`:
-  - [ ] `@tool extract_contract_fields(raw_text)` → JSON với party_a/b, dates, amount, clauses[]
-  - [ ] `@tool save_contract(fields, user_token)` → POST gateway
-- [ ] Wire vào `agentic/tools.py` `build_tools()`
-- [ ] Update `runner.py` allowed_tools list
-- [ ] Python syntax check pass
+- [x] `agent/skills/contract-extractor/SKILL.md` — extraction prompt rules
+- [x] `agent/src/aiq_agent/agentic/contract_tools.py`:
+  - [x] `@tool extract_contract_fields(raw_text)` → JSON với party_a/b, dates, amount, clauses[]
+  - [x] `@tool save_contract(fields, user_token)` → POST gateway
+- [x] Wire vào `agentic/tools.py` `build_tools()`
+- [x] Update `runner.py` allowed_tools list
+- [x] Python syntax check pass
 
 ### Web (Next.js)
 
-- [ ] `web/src/app/(app)/contracts/page.tsx` — list page
-- [ ] `web/src/app/(app)/contracts/[id]/page.tsx` — detail
-- [ ] `web/src/app/(app)/contracts/upload/page.tsx` — PDF dropzone
-- [ ] `web/src/app/api/contracts/route.ts` — proxy list/create
-- [ ] `web/src/app/api/contracts/[id]/route.ts` — proxy detail/update
-- [ ] `web/src/app/api/contracts/upload/route.ts` — multipart proxy
-- [ ] `web/src/lib/api.ts` — `gateway.listContracts/getContract/createContract` helpers
-- [ ] Header nav: thêm "Hợp đồng" link cho admin/super_admin (`web/src/app/(app)/layout.tsx`)
+- [x] `web/src/app/(app)/contracts/page.tsx` — list page
+- [x] `web/src/app/(app)/contracts/[id]/page.tsx` — detail
+- [x] `web/src/app/(app)/contracts/upload/page.tsx` — PDF dropzone
+- [x] `web/src/app/api/contracts/route.ts` — proxy list/create
+- [x] `web/src/app/api/contracts/[id]/route.ts` — proxy detail/update
+- [x] `web/src/app/api/contracts/upload/route.ts` — multipart proxy
+- [x] `web/src/lib/api.ts` — `gateway.listContracts/getContract/createContract` helpers
+- [x] Header nav: thêm "Hợp đồng" link cho admin/super_admin (`web/src/app/(app)/layout.tsx`)
 
 ### Deploy + Smoke test
 
-- [ ] Commit + push
-- [ ] Cosmos: git pull + run migration + rebuild gateway/agent/web
-- [ ] Restart containers
-- [ ] Upload PDF hợp đồng lao động mẫu
-- [ ] Verify: raw text hiển thị + extracted fields đầy đủ
-- [ ] Verify: `/contracts` list hiện 1 row
+- [x] Commit + push
+- [x] Cosmos: git pull + run migration + rebuild gateway/agent/web
+- [x] Restart containers
+- [ ] Upload PDF hợp đồng lao động mẫu _(user smoke test pending)_
+- [ ] Verify: raw text hiển thị + extracted fields đầy đủ _(user smoke test pending)_
+- [ ] Verify: `/contracts` list hiện 1 row _(user smoke test pending)_
 
 ---
 
-## Phase 2 — Checklist (1 tuần)
+## Phase 2 — Checklist (1 tuần) ✅ commit `f0e71b4`
 
-### Schema
+### Schema — Phase 2
 
-- [ ] `infra/postgres/init/08_contract_checklist.sql`:
-  - [ ] Bảng `contract_checklist_items` với cột status / due_date / assignee_email
-- [ ] Migration trên cosmos
+- [x] `infra/postgres/init/08_contract_checklist.sql`:
+  - [x] Bảng `contract_checklist_items` với cột status / due_date / assignee_email
+  - [x] Trigger auto-stamp `completed_at` khi status → done (và clear khi rời done)
+- [x] Migration trên cosmos
 
-### Gateway
+### Gateway — Phase 2
 
-- [ ] `gateway/src/Aiq.Gateway/Contracts/IChecklistRepository.cs`
-- [ ] Endpoints:
-  - [ ] `POST /contracts/{id}/generate-checklist` — trigger AI
-  - [ ] `GET /contracts/{id}/checklist` — list items
-  - [ ] `PATCH /checklist/{itemId}` — update status / due_date / assignee
-  - [ ] `DELETE /checklist/{itemId}`
+- [x] `gateway/src/Aiq.Gateway/Contracts/IChecklistRepository.cs` (Dapper, ownership check)
+- [x] Endpoints:
+  - [x] `POST /contracts/{id}/checklist` — bulk insert (với `replaceExisting` flag thay vì generate riêng)
+  - [x] `GET /contracts/{id}/checklist` — list items
+  - [x] `PATCH /checklist/{itemId}` — update status / due_date / assignee
+  - [x] `DELETE /checklist/{itemId}`
+- [x] AI generation chạy qua `/api/contracts/[id]/checklist/generate` (web → agent.runTask)
 
-### Agent
+### Agent — Phase 2
 
-- [ ] `agent/skills/contract-checklist-builder/SKILL.md` — rules cho mỗi loại clause
-- [ ] MCP tool `generate_checklist(contract_id, user_token)` → POST gateway
+- [x] `agent/skills/contract-checklist-builder/SKILL.md` — rules cho mỗi loại clause
+- [x] MCP tools `get_contract` + `save_checklist_items` (clause_ordinal → clause_id mapping)
+- [x] Wire vào `tools.py` + `runner.py` allowed_tools
 
-### Web
+### Web — Phase 2
 
-- [ ] Trong `/contracts/[id]`: tab "Checklist" với table interactive
-- [ ] Button "AI sinh checklist" (gọi generate-checklist endpoint)
-- [ ] Checkbox + due date picker + assignee input → PATCH on change
-- [ ] Filter: Open / Due soon (≤7d) / Overdue / Done
+- [x] Trong `/contracts/[id]`: section "Checklist" với UI interactive (`ContractChecklist` client component)
+- [x] Button "AI sinh checklist" (gọi generate endpoint)
+- [x] Checkbox toggle + status dropdown + delete → PATCH/DELETE on change
+- [x] Filter pills: Tất cả / Mở / Sắp hạn / Quá hạn / Hoàn tất với counts
 
-### Smoke test
+### Smoke test — Phase 2
 
-- [ ] Vào contract đã upload Phase 1 → bấm "AI sinh checklist"
-- [ ] Verify: 5-15 items với due date hợp lý
-- [ ] Check/uncheck → reload page → state persist
-- [ ] Filter "Due soon" hiển thị đúng
+- [ ] Vào contract đã upload Phase 1 → bấm "AI sinh checklist" _(user)_
+- [ ] Verify: 5-15 items với due date hợp lý _(user)_
+- [ ] Check/uncheck → reload page → state persist _(user)_
+- [ ] Filter "Due soon" hiển thị đúng _(user)_
 
 ---
 
-## Phase 3 — Notification + Tracking (3-5 ngày)
+## Phase 3 — Notification + Tracking (3-5 ngày) ✅ commit `cebf063`
 
-### Schema
+### Schema — Phase 3
 
-- [ ] `infra/postgres/init/09_notifications.sql`: bảng `notifications`
+- [x] `infra/postgres/init/09_notifications.sql`: bảng `notifications` + unique `(user_id, kind, ref_id)` để dedupe cron re-runs
 
 ### Gateway — Hangfire job
 
-- [ ] `gateway/src/Aiq.Gateway/Jobs/ContractDeadlineJob.cs` (copy pattern từ `OcrJobRunner.cs`)
-- [ ] Recurring schedule: daily 07:00 VN (`RecurringJob.AddOrUpdate`)
-- [ ] Logic: SELECT items WHERE status='open' AND due_date - remind_days_before <= today → INSERT notifications
-- [ ] Test trigger manual qua `/jobs/dashboard`
+- [x] `gateway/src/Aiq.Gateway/Jobs/ContractDeadlineJob.cs`
+- [x] Recurring schedule: daily 07:00 VN (`RecurringJob.AddOrUpdate` với TZ `Asia/Ho_Chi_Minh`)
+- [x] Logic: JOIN checklist_items + contracts → emit `checklist_overdue` / `checklist_due_soon` per item
+- [x] Idempotent qua `ON CONFLICT (user_id, kind, ref_id) DO NOTHING`
+- [ ] Test trigger manual qua `/jobs/dashboard` _(user — JobsOptions.DashboardPath cần set)_
 
-### Gateway — Endpoints
+### Gateway — Endpoints — Phase 3
 
-- [ ] `GET /notifications` — list cho user
-- [ ] `PATCH /notifications/{id}/read` — mark as read
-- [ ] `GET /notifications/unread-count`
+- [x] `GET /notifications` — list cho user (with `?unread=true&limit=N`)
+- [x] `PATCH /notifications/{id}/read` — mark as read
+- [x] `GET /notifications/unread-count`
+- [x] `POST /notifications/mark-all-read` (bonus)
 
 ### Notification channels (chọn theo Decision #1)
 
-#### In-app (always on)
+#### In-app (always on) ✅
 
-- [ ] Web: bell icon trong header với badge unread count
-- [ ] `web/src/app/(app)/notifications/page.tsx` — list + mark as read
-- [ ] Poll unread count mỗi 60s (hoặc SSE/websocket sau)
+- [x] Web: bell icon trong header với badge unread count (`NotificationBell` component)
+- [x] `web/src/app/(app)/notifications/page.tsx` — list + mark as read
+- [x] Poll unread count mỗi 60s
 
-#### Email SMTP (nếu chọn)
+#### Email SMTP (nếu chọn) — chưa làm
 
 - [ ] Cài SMTP provider (Brevo / SendGrid / Mailgun) — cần ENV `SMTP_*`
 - [ ] Gateway: `IEmailSender` interface + impl
 - [ ] Hangfire job nhánh: nếu user có email → send template
 
-#### Telegram bot (nếu chọn)
+#### Telegram bot (nếu chọn) — chưa làm
 
 - [ ] Tạo bot qua @BotFather, lấy token
 - [ ] User binding: mỗi user nhập chat_id vào profile
 - [ ] Gateway: HTTP POST → Telegram Bot API
 
-#### Zalo OA (nếu chọn)
+#### Zalo OA (nếu chọn) — chưa làm
 
 - [ ] Cấu hình ZNS — cần Zalo certificate
 - [ ] Template message approval
 
-### Smoke test
+### Smoke test — Phase 3
 
-- [ ] Trigger Hangfire job qua dashboard
-- [ ] Verify: bell icon hiện badge ≥ 1
-- [ ] Click → `/notifications` page list items
-- [ ] Mark as read → badge giảm
-- [ ] (Nếu email) check inbox
+- [ ] Trigger Hangfire job qua dashboard (hoặc đợi 07:00 VN) _(user)_
+- [ ] Verify: bell icon hiện badge ≥ 1 _(user)_
+- [ ] Click → `/notifications` page list items _(user)_
+- [ ] Mark as read → badge giảm _(user)_
 
 ---
 
 ## Deploy + Documentation
 
-- [ ] Commit + push từng phase riêng để rollback dễ
+- [x] Commit + push từng phase riêng để rollback dễ (`e72bf58` / `f0e71b4` / `cebf063`)
 - [ ] Update `docs/architecture_structure.md` — thêm Contracts section + Mermaid
 - [ ] Update `docs/implement_progress_status.md` — thêm rows cho Phase 1-3 contracts
 - [ ] Update `docs/roadmap.md` — đánh dấu M-Contracts done
