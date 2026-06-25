@@ -73,6 +73,41 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  listContracts(token: string, params?: { status?: string; q?: string; limit?: number }) {
+    const search = new URLSearchParams();
+    if (params?.status) search.set("status", params.status);
+    if (params?.q) search.set("q", params.q);
+    if (params?.limit) search.set("limit", String(params.limit));
+    const qs = search.toString();
+    return call(GATEWAY_BASE, `/contracts${qs ? `?${qs}` : ""}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  getContract(token: string, id: string) {
+    return call(GATEWAY_BASE, `/contracts/${id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createContract(token: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, "/contracts", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateContract(token: string, id: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/contracts/${id}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  deleteContract(token: string, id: string) {
+    return call(GATEWAY_BASE, `/contracts/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
   assignRole(token: string, userId: string, role: string) {
     return call(GATEWAY_BASE, `/users/${userId}/roles`, {
       method: "POST",

@@ -64,6 +64,11 @@ export default async function AppLayout({
                 <Link href="/accounting">Kế toán</Link>
               </Button>
             )}
+            {canEditKnowledge && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/contracts">Hợp đồng</Link>
+              </Button>
+            )}
             {isSuperAdmin && (
               <>
                 <Button variant="ghost" size="sm" asChild>

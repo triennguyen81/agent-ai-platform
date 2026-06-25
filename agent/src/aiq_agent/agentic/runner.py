@@ -73,6 +73,9 @@ async def run_task(
         "mcp__aiq__check_filing_deadline",
         "mcp__aiq__journal_entry_validator",
         "mcp__aiq__import_excel_ledger",
+        # Contract module Phase 1
+        "mcp__aiq__extract_contract_fields",
+        "mcp__aiq__save_contract",
     ]
 
     options = ClaudeAgentOptions(

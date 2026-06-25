@@ -4,6 +4,7 @@ using Aiq.Gateway.Audit;
 using Aiq.Gateway.Auth;
 using Aiq.Gateway.Books;
 using Aiq.Gateway.Configuration;
+using Aiq.Gateway.Contracts;
 using Aiq.Gateway.Data;
 using Aiq.Gateway.Endpoints;
 using Aiq.Gateway.Jobs;
@@ -112,6 +113,7 @@ builder.Services.AddSingleton(new NpgsqlConnectionFactory(connectionString));
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IBookRepository, BookRepository>();
 builder.Services.AddScoped<INoteRepository, NoteRepository>();
+builder.Services.AddScoped<IContractRepository, ContractRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IFileUploadGuard, FileUploadGuard>();
@@ -280,6 +282,7 @@ app.MapAuthEndpoints();
 app.MapUploadEndpoints();
 app.MapBookEndpoints();
 app.MapNoteEndpoints();
+app.MapContractEndpoints();
 app.MapUserEndpoints();
 app.MapMetrics();              // Prometheus scrape endpoint at /metrics
 
