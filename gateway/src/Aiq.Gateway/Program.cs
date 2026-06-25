@@ -115,6 +115,7 @@ builder.Services.AddScoped<IBookRepository, BookRepository>();
 builder.Services.AddScoped<INoteRepository, NoteRepository>();
 builder.Services.AddScoped<IContractRepository, ContractRepository>();
 builder.Services.AddScoped<IChecklistRepository, ChecklistRepository>();
+builder.Services.AddScoped<INotificationRepository, NotificationRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IFileUploadGuard, FileUploadGuard>();
@@ -146,6 +147,7 @@ builder.Services.AddHangfireServer(server =>
 
 builder.Services.AddScoped<OcrJobRunner>();
 builder.Services.AddScoped<IOcrJobScheduler, OcrJobScheduler>();
+builder.Services.AddScoped<ContractDeadlineJob>();
 
 builder.Services.AddScoped<IAuditLogger, PostgresAuditLogger>();
 
@@ -285,6 +287,7 @@ app.MapBookEndpoints();
 app.MapNoteEndpoints();
 app.MapContractEndpoints();
 app.MapChecklistEndpoints();
+app.MapNotificationEndpoints();
 app.MapUserEndpoints();
 app.MapMetrics();              // Prometheus scrape endpoint at /metrics
 
@@ -298,6 +301,28 @@ if (!string.IsNullOrWhiteSpace(jobsOptions.DashboardPath))
         ],
         IgnoreAntiforgeryToken = false,
     });
+}
+
+// Recurring jobs — must run AFTER the Hangfire server is configured.
+// Daily 07:00 Asia/Ho_Chi_Minh scan for contract checklist deadlines.
+RecurringJob.AddOrUpdate<ContractDeadlineJob>(
+    ContractDeadlineJob.RecurringJobId,
+    job => job.RunAsync(CancellationToken.None),
+    "0 7 * * *",
+    new RecurringJobOptions
+    {
+        TimeZone = TryGetVnTimeZone(),
+    });
+
+static TimeZoneInfo TryGetVnTimeZone()
+{
+    // Linux uses IANA names, Windows uses Windows IDs. Probe both so the
+    // job schedules correctly on cosmos (Linux) and dev (Windows).
+    try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Ho_Chi_Minh"); }
+    catch (TimeZoneNotFoundException) { }
+    try { return TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time"); }
+    catch (TimeZoneNotFoundException) { }
+    return TimeZoneInfo.Utc;
 }
 
 app.MapGet("/me", (HttpContext ctx) =>

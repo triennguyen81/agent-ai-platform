@@ -4,6 +4,7 @@ import { gateway } from "@/lib/api";
 import { clearSession, getSession } from "@/lib/auth";
 import { isClerkConfigured } from "@/lib/env";
 import { Button } from "@/components/ui/button";
+import { NotificationBell } from "@/components/notification-bell";
 
 interface MeResponse {
   sub?: string | null;
@@ -85,6 +86,7 @@ export default async function AppLayout({
                 </Button>
               </>
             )}
+            <NotificationBell />
             <span className="ml-3 text-sm text-[var(--color-muted-fg)]">
               {me.email ?? "you"}
             </span>

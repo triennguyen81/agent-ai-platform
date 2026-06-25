@@ -137,6 +137,32 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  listNotifications(token: string, params?: { unread?: boolean; limit?: number }) {
+    const search = new URLSearchParams();
+    if (params?.unread) search.set("unread", "true");
+    if (params?.limit) search.set("limit", String(params.limit));
+    const qs = search.toString();
+    return call(GATEWAY_BASE, `/notifications${qs ? `?${qs}` : ""}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  unreadNotificationCount(token: string) {
+    return call(GATEWAY_BASE, "/notifications/unread-count", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  markNotificationRead(token: string, id: string) {
+    return call(GATEWAY_BASE, `/notifications/${id}/read`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  markAllNotificationsRead(token: string) {
+    return call(GATEWAY_BASE, "/notifications/mark-all-read", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
   assignRole(token: string, userId: string, role: string) {
     return call(GATEWAY_BASE, `/users/${userId}/roles`, {
       method: "POST",
