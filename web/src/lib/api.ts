@@ -314,6 +314,72 @@ export const gateway = {
     });
   },
   // ---------- end Tool Registry ----------
+  // ---------- Review Board (G3) ----------
+  listReviewBoards(token: string) {
+    return call(GATEWAY_BASE, "/review-boards", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createReviewBoard(token: string, payload: { name: string; quorum?: number }) {
+    return call(GATEWAY_BASE, "/review-boards", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  listBoardMembers(token: string, boardId: string) {
+    return call(GATEWAY_BASE, `/review-boards/${boardId}/members`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  addBoardMember(token: string, boardId: string, payload: { userId: string; role?: string }) {
+    return call(GATEWAY_BASE, `/review-boards/${boardId}/members`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  removeBoardMember(token: string, boardId: string, userId: string) {
+    return call(GATEWAY_BASE, `/review-boards/${boardId}/members/${userId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listAgentReviewRequests(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/review-requests`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  submitReviewRequest(token: string, agentId: string, payload: { boardId: string; rationale?: string }) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/review-requests`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  getReviewRequest(token: string, requestId: string) {
+    return call(GATEWAY_BASE, `/review-requests/${requestId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listReviewVotes(token: string, requestId: string) {
+    return call(GATEWAY_BASE, `/review-requests/${requestId}/votes`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  castReviewVote(token: string, requestId: string, payload: { vote: string; comment?: string }) {
+    return call(GATEWAY_BASE, `/review-requests/${requestId}/votes`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  myReviewQueue(token: string) {
+    return call(GATEWAY_BASE, "/me/review-queue", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // ---------- end Review Board ----------
   // ---------- end Governance ----------
   assignRole(token: string, userId: string, role: string) {
     return call(GATEWAY_BASE, `/users/${userId}/roles`, {

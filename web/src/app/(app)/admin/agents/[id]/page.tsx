@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { AlertTriangle, ArrowLeft, History, Power, Shield, ShieldCheck, UserCheck, Wrench } from "lucide-react";
+import { AlertTriangle, ArrowLeft, FileCheck2, History, Power, Shield, ShieldCheck, UserCheck, Vote, Wrench } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
@@ -61,6 +61,30 @@ interface ToolRecord {
   riskTier: string;
   minActionTier: string;
   isActive: boolean;
+}
+
+interface ReviewBoardRecord {
+  id: string;
+  tenantId: string;
+  name: string;
+  quorum: number;
+}
+
+interface ReviewRequestRecord {
+  id: string;
+  agentId: string;
+  boardId: string;
+  boardName: string;
+  requestedBy: string;
+  requestedByEmail: string | null;
+  targetState: string;
+  status: string;
+  rationale: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+  approveCount: number;
+  rejectCount: number;
+  quorum: number;
 }
 
 const RISK_BADGE: Record<string, string> = {
@@ -144,6 +168,26 @@ async function grantAclAction(formData: FormData): Promise<void> {
   redirect(`/admin/agents/${agentId}?ok=granted`);
 }
 
+async function submitReviewAction(formData: FormData): Promise<void> {
+  "use server";
+  const agentId = String(formData.get("agentId") ?? "");
+  const boardId = String(formData.get("boardId") ?? "");
+  const rationale = String(formData.get("rationale") ?? "");
+  if (!agentId || !boardId) redirect(`/admin/agents/${agentId}?error=invalid`);
+
+  const token = await requireSession();
+  const res = await gateway.submitReviewRequest(token, agentId, {
+    boardId,
+    rationale: rationale || undefined,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    redirect(`/admin/agents/${agentId}?error=${encodeURIComponent(body.slice(0, 200))}`);
+  }
+  revalidatePath(`/admin/agents/${agentId}`);
+  redirect(`/admin/agents/${agentId}?ok=review-submitted`);
+}
+
 async function grantToolAction(formData: FormData): Promise<void> {
   "use server";
   const agentId = String(formData.get("agentId") ?? "");
@@ -210,11 +254,13 @@ export default async function AgentDetailPage({
   const { ok, error } = await searchParams;
 
   const token = await requireSession();
-  const [detailRes, lifecycleRes, grantsRes, allToolsRes] = await Promise.all([
+  const [detailRes, lifecycleRes, grantsRes, allToolsRes, boardsRes, reviewsRes] = await Promise.all([
     gateway.getAgent(token, id),
     gateway.listAgentLifecycle(token, id),
     gateway.listAgentTools(token, id),
     gateway.listTools(token, true),  // active tools only for the grant dropdown
+    gateway.listReviewBoards(token),
+    gateway.listAgentReviewRequests(token, id),
   ]);
 
   if (detailRes.status === 403) redirect("/chat");
@@ -241,6 +287,16 @@ export default async function AgentDetailPage({
       !grantedIds.has(t.id) &&
       TIER_ORDER.indexOf(t.minActionTier) <= agentTierLevel,
   );
+
+  const boards: ReviewBoardRecord[] = boardsRes.ok
+    ? ((await boardsRes.json()) as { items: ReviewBoardRecord[] }).items
+    : [];
+  const reviews: ReviewRequestRecord[] = reviewsRes.ok
+    ? ((await reviewsRes.json()) as { items: ReviewRequestRecord[] }).items
+    : [];
+  const hasPendingReview = reviews.some((r) => r.status === "pending");
+  const canSubmitReview =
+    detail.agent.lifecycleState === "pending_review" && !hasPendingReview && boards.length > 0;
 
   const { agent, acl } = detail;
   const allowedNext = ALLOWED_NEXT[agent.lifecycleState] ?? [];
@@ -538,6 +594,104 @@ export default async function AgentDetailPage({
               Grant
             </Button>
           </form>
+        )}
+      </section>
+
+      <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
+        <h2 className="font-serif text-lg">
+          <Vote className="mr-2 inline size-4" /> Review Requests ({reviews.length})
+        </h2>
+        <p className="text-xs text-[var(--color-muted-fg)]">
+          Promotion to production cần qua review board. Owner không thể tự promote.
+        </p>
+
+        {reviews.length === 0 ? (
+          <p className="text-sm text-[var(--color-muted-fg)]">Chưa có request nào.</p>
+        ) : (
+          <ul className="space-y-2">
+            {reviews.map((r) => {
+              const badge =
+                r.status === "approved"
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-700"
+                  : r.status === "rejected"
+                  ? "border-red-300 bg-red-50 text-red-700"
+                  : r.status === "withdrawn"
+                  ? "border-gray-300 bg-gray-50 text-gray-700"
+                  : "border-amber-300 bg-amber-50 text-amber-700";
+              return (
+                <li
+                  key={r.id}
+                  className="flex flex-wrap items-start justify-between gap-2 rounded border p-3 text-sm"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`rounded-full border px-2 py-0.5 text-[10px] ${badge}`}>
+                        {r.status}
+                      </span>
+                      <span className="text-xs text-[var(--color-muted-fg)]">
+                        target: {r.targetState}
+                      </span>
+                      <span className="text-xs text-[var(--color-muted-fg)]">
+                        · board: {r.boardName}
+                      </span>
+                    </div>
+                    {r.rationale && <p className="mt-1 text-xs">{r.rationale}</p>}
+                    <p className="mt-1 text-[10px] text-[var(--color-muted-fg)]">
+                      By {r.requestedByEmail ?? r.requestedBy} · {formatDateTime(r.createdAt)}
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right text-xs">
+                    <div>
+                      ✓ {r.approveCount} / quorum {r.quorum}
+                    </div>
+                    {r.rejectCount > 0 && (
+                      <div className="text-red-700">✗ {r.rejectCount}</div>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        {canSubmitReview && (
+          <form action={submitReviewAction} className="space-y-2 border-t pt-3">
+            <input type="hidden" name="agentId" value={agent.id} />
+            <div className="flex flex-wrap gap-2">
+              <div className="flex-1 space-y-1.5">
+                <Label htmlFor="board-sel">Review Board</Label>
+                <select
+                  id="board-sel"
+                  name="boardId"
+                  required
+                  className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+                >
+                  {boards.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name} (quorum {b.quorum})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <Input name="rationale" placeholder="Lý do submit (optional)..." />
+            <Button type="submit" size="sm" className="w-full">
+              <FileCheck2 className="size-4" /> Submit for production review
+            </Button>
+          </form>
+        )}
+
+        {detail.agent.lifecycleState !== "pending_review" && (
+          <p className="text-xs text-[var(--color-muted-fg)]">
+            Agent phải ở lifecycle <code>pending_review</code> để submit. Hiện đang:{" "}
+            <code>{detail.agent.lifecycleState}</code>.
+          </p>
+        )}
+
+        {hasPendingReview && (
+          <p className="text-xs text-amber-700">
+            ⚠ Đang có request pending — đợi vote xong trước khi submit mới.
+          </p>
         )}
       </section>
 

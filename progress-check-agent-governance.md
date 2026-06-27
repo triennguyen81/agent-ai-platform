@@ -143,32 +143,36 @@
 
 ## Phase G3 — Lifecycle + Review Board (2 tuần)
 
-### Schema
+### Schema G3
 
-- [ ] `14_governance_review.sql` — `review_boards`, `review_board_members`, `agent_review_requests`, `agent_review_votes`
+- [x] `14_governance_review.sql` — `review_boards`, `review_board_members`, `agent_review_requests`, `agent_review_votes`
+- [x] Unique partial index — 1 pending request per (agent, target_state)
+- [x] Seed default board for default tenant với tất cả tenant_admins làm reviewer (quorum=1)
 
-### Gateway
+### Gateway G3
 
-- [ ] `Governance/IReviewBoardRepository.cs` + impl
-- [ ] `Endpoints/ReviewEndpoints.cs`:
-  - [ ] `POST /review-boards` — create board
-  - [ ] `POST /agents/{id}/review-requests` — submit for review
-  - [ ] `POST /review-requests/{id}/votes` — cast vote
-  - [ ] `GET /review-queue` — pending for current user
-- [ ] Lifecycle state machine enforcement (Owner CANNOT skip to production)
+- [x] `Governance/IReviewBoardRepository.cs` + impl (atomic vote → re-tally → flip status)
+- [x] `Endpoints/ReviewEndpoints.cs`:
+  - [x] `/review-boards` CRUD + members
+  - [x] `POST /agents/{id}/review-requests` — submit (requires lifecycle=pending_review)
+  - [x] `GET /agents/{id}/review-requests` — list history per agent
+  - [x] `GET/POST /review-requests/{id}/votes` — list + cast (atomic transition)
+  - [x] `GET /me/review-queue` — pending for current user (board-membership filter)
+- [x] AgentRepository: state-machine guard — `pending_review → production` blocked unless approved review exists
 
-### Web
+### Web G3
 
-- [ ] `/admin/review-boards` — manage boards + members
-- [ ] `/admin/review-queue` — pending reviews
-- [ ] `/admin/agents/[id]` — "Submit for review" button replaces direct promote
-- [ ] Vote card with comment
+- [x] api proxies: `/api/review-boards/*`, `/api/agents/[id]/review-requests`, `/api/review-requests/[id]/{,votes}`, `/api/me/review-queue`
+- [x] `/admin/review-queue` page — pending list with inline approve/reject + comment
+- [x] Agent detail: Review Requests section with history + Submit-for-review form (enabled only when lifecycle=pending_review + no pending request)
+- [x] Header: "Reviews" link cho admin+
 
-### Verify
+### Verify G3
 
-- [ ] Owner cannot promote draft → production directly
-- [ ] Quorum enforced before transition
-- [ ] All votes + transitions in audit log
+- [x] Gateway build pass: 0 errors
+- [ ] Owner không thể tự promote agent lên production (verify on cosmos)
+- [ ] Vote đủ quorum mới chuyển state (verify on cosmos)
+- [ ] Any reject vote → status=rejected immediately (verify on cosmos)
 
 ---
 
