@@ -168,10 +168,12 @@ public sealed class AgentRepository : IAgentRepository
     };
 
     private readonly NpgsqlConnectionFactory _factory;
+    private readonly IReviewBoardRepository? _reviews;
 
-    public AgentRepository(NpgsqlConnectionFactory factory)
+    public AgentRepository(NpgsqlConnectionFactory factory, IReviewBoardRepository? reviews = null)
     {
         _factory = factory;
+        _reviews = reviews;
     }
 
     public async Task<IReadOnlyList<AgentRecord>> ListAsync(
@@ -308,6 +310,21 @@ public sealed class AgentRepository : IAgentRepository
         {
             throw new InvalidOperationException(
                 $"Transition {current.LifecycleState} → {request.ToState} not allowed.");
+        }
+
+        // G3 review-board guard: production promotion needs an approved
+        // agent_review_request. Skip when review repo is unavailable (legacy
+        // bootstrap) so the system stays bootable.
+        if (current.LifecycleState == "pending_review"
+            && request.ToState == "production"
+            && _reviews is not null)
+        {
+            var approved = await _reviews.HasApprovedRequestAsync(agentId, "production", ct);
+            if (!approved)
+            {
+                throw new InvalidOperationException(
+                    "Promotion to production requires an approved review request.");
+            }
         }
 
         var updated = await conn.QuerySingleAsync<AgentRecord>(

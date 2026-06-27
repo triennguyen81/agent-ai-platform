@@ -14,8 +14,8 @@
 | **G1 Backend** Tenant + Agent Identity | 🟡 Backend done, web pending | _pending commit_ | Schemas + repos + endpoints + JWT + middleware + existing repo updates |
 | G1 Web | ⏳ Pending | — | admin/tenants, admin/agents, tenant-switcher |
 | G1 Deploy | ⏳ Pending | — | Run 10/11/12 migrations on cosmos |
-| **G2** Tool Registry + Action Tier | 🟡 Backend+Web done, deploy pending | _pending commit_ | Schema + repo + endpoints + runtime registry lookup + admin UI |
-| G3 Lifecycle + Review Board | ⏳ Pending | — | 2 tuần |
+| **G2** Tool Registry + Action Tier | ✅ Deployed | `e6de96f` | Schema + repo + endpoints + runtime registry lookup + admin UI |
+| **G3** Lifecycle + Review Board | 🟡 Backend done (schema+repo+endpoints+state-machine guard), Web + deploy pending | _pending commit_ | Web review queue + agent submit-for-review UI chưa làm |
 | G4 HITL + Kill Switch + Rate | ⏳ Pending | — | (out of scope đợt 1-2-3) |
 | G5 Decision Trace + Cost | ⏳ Pending | — | (out of scope đợt 1-2-3) |
 | G6 Governance Body + Export | ⏳ Pending | — | (out of scope đợt 1-2-3) |

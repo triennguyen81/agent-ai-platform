@@ -121,6 +121,7 @@ builder.Services.AddScoped<INotificationRepository, NotificationRepository>();
 builder.Services.AddScoped<ITenantRepository, TenantRepository>();
 builder.Services.AddScoped<IAgentRepository, AgentRepository>();
 builder.Services.AddScoped<IToolRepository, ToolRepository>();
+builder.Services.AddScoped<IReviewBoardRepository, ReviewBoardRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IFileUploadGuard, FileUploadGuard>();
@@ -297,6 +298,7 @@ app.MapNotificationEndpoints();
 app.MapTenantEndpoints();
 app.MapAgentEndpoints();
 app.MapToolEndpoints();
+app.MapReviewEndpoints();
 app.MapUserEndpoints();
 app.MapMetrics();              // Prometheus scrape endpoint at /metrics
 
