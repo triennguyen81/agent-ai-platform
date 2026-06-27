@@ -274,6 +274,46 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  // ---------- Tool Registry (G2) ----------
+  listTools(token: string, activeOnly?: boolean) {
+    const qs = activeOnly ? "?activeOnly=true" : "";
+    return call(GATEWAY_BASE, `/tools${qs}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createTool(token: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, "/tools", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateTool(token: string, toolId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/tools/${toolId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  listAgentTools(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/tools`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  grantAgentTool(token: string, agentId: string, toolId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/tools`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ toolId }),
+    });
+  },
+  revokeAgentTool(token: string, agentId: string, toolId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/tools/${toolId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // ---------- end Tool Registry ----------
   // ---------- end Governance ----------
   assignRole(token: string, userId: string, role: string) {
     return call(GATEWAY_BASE, `/users/${userId}/roles`, {

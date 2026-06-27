@@ -83,6 +83,9 @@ export default async function AppLayout({
                   <Link href="/admin/tenants">Tenants</Link>
                 </Button>
                 <Button variant="ghost" size="sm" asChild>
+                  <Link href="/admin/tools">Tools</Link>
+                </Button>
+                <Button variant="ghost" size="sm" asChild>
                   <Link href="/admin/users">Admin</Link>
                 </Button>
                 <Button variant="ghost" size="sm" asChild>

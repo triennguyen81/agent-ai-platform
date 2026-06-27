@@ -406,6 +406,7 @@ async def agentic_run(
             gateway_base=settings.gateway_base_url,
             skills=body.skills or "all",
             max_turns=body.max_turns,
+            agent_id=body.agent_id,
         )
     except Exception as exc:  # noqa: BLE001 — surface root cause to caller
         if audit is not None:

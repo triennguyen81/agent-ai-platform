@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { AlertTriangle, ArrowLeft, History, Power, ShieldCheck, UserCheck } from "lucide-react";
+import { AlertTriangle, ArrowLeft, History, Power, Shield, ShieldCheck, UserCheck, Wrench } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,32 @@ interface LifecycleEvent {
   reason: string | null;
   occurredAt: string;
 }
+
+interface ToolGrant {
+  agentId: string;
+  toolId: string;
+  toolCode: string;
+  toolName: string;
+  riskTier: string;
+  minActionTier: string;
+  grantedAt: string;
+}
+
+interface ToolRecord {
+  id: string;
+  code: string;
+  name: string;
+  riskTier: string;
+  minActionTier: string;
+  isActive: boolean;
+}
+
+const RISK_BADGE: Record<string, string> = {
+  low: "border-emerald-300 bg-emerald-50 text-emerald-700",
+  medium: "border-amber-300 bg-amber-50 text-amber-700",
+  high: "border-orange-300 bg-orange-50 text-orange-700",
+  critical: "border-red-300 bg-red-50 text-red-700",
+};
 
 // Same map as list page — keep these in sync.
 const LIFECYCLE_BADGES: Record<string, string> = {
@@ -118,6 +144,37 @@ async function grantAclAction(formData: FormData): Promise<void> {
   redirect(`/admin/agents/${agentId}?ok=granted`);
 }
 
+async function grantToolAction(formData: FormData): Promise<void> {
+  "use server";
+  const agentId = String(formData.get("agentId") ?? "");
+  const toolId = String(formData.get("toolId") ?? "");
+  if (!agentId || !toolId) redirect(`/admin/agents/${agentId}?error=invalid`);
+
+  const token = await requireSession();
+  const res = await gateway.grantAgentTool(token, agentId, toolId);
+  if (!res.ok) {
+    const body = await res.text();
+    redirect(`/admin/agents/${agentId}?error=${encodeURIComponent(body.slice(0, 200))}`);
+  }
+  revalidatePath(`/admin/agents/${agentId}`);
+  redirect(`/admin/agents/${agentId}?ok=tool-granted`);
+}
+
+async function revokeToolAction(formData: FormData): Promise<void> {
+  "use server";
+  const agentId = String(formData.get("agentId") ?? "");
+  const toolId = String(formData.get("toolId") ?? "");
+  if (!agentId || !toolId) redirect("/admin/agents");
+
+  const token = await requireSession();
+  const res = await gateway.revokeAgentTool(token, agentId, toolId);
+  if (!res.ok) {
+    redirect(`/admin/agents/${agentId}?error=tool-revoke-failed`);
+  }
+  revalidatePath(`/admin/agents/${agentId}`);
+  redirect(`/admin/agents/${agentId}?ok=tool-revoked`);
+}
+
 async function revokeAclAction(formData: FormData): Promise<void> {
   "use server";
   const agentId = String(formData.get("agentId") ?? "");
@@ -153,9 +210,11 @@ export default async function AgentDetailPage({
   const { ok, error } = await searchParams;
 
   const token = await requireSession();
-  const [detailRes, lifecycleRes] = await Promise.all([
+  const [detailRes, lifecycleRes, grantsRes, allToolsRes] = await Promise.all([
     gateway.getAgent(token, id),
     gateway.listAgentLifecycle(token, id),
+    gateway.listAgentTools(token, id),
+    gateway.listTools(token, true),  // active tools only for the grant dropdown
   ]);
 
   if (detailRes.status === 403) redirect("/chat");
@@ -167,6 +226,21 @@ export default async function AgentDetailPage({
   const lifecycle = lifecycleRes.ok
     ? ((await lifecycleRes.json()) as { items: LifecycleEvent[] }).items
     : [];
+  const grants: ToolGrant[] = grantsRes.ok
+    ? ((await grantsRes.json()) as { items: ToolGrant[] }).items
+    : [];
+  const allTools: ToolRecord[] = allToolsRes.ok
+    ? ((await allToolsRes.json()) as { items: ToolRecord[] }).items
+    : [];
+  // Tools available to grant: not yet granted AND tier-compatible with this agent
+  const grantedIds = new Set(grants.map((g) => g.toolId));
+  const TIER_ORDER = ["read_only", "suggest", "execute_with_approval", "autonomous"];
+  const agentTierLevel = TIER_ORDER.indexOf(detail.agent.actionTier);
+  const grantable = allTools.filter(
+    (t) =>
+      !grantedIds.has(t.id) &&
+      TIER_ORDER.indexOf(t.minActionTier) <= agentTierLevel,
+  );
 
   const { agent, acl } = detail;
   const allowedNext = ALLOWED_NEXT[agent.lifecycleState] ?? [];
@@ -378,6 +452,93 @@ export default async function AgentDetailPage({
             Grant
           </Button>
         </form>
+      </section>
+
+      <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
+        <h2 className="font-serif text-lg">
+          <Wrench className="mr-2 inline size-4" /> Tool Grants ({grants.length})
+        </h2>
+        <p className="text-xs text-[var(--color-muted-fg)]">
+          Agent chỉ gọi được tools đã grant ở đây. Tools có <code>min_action_tier</code> cao
+          hơn <code>{detail.agent.actionTier}</code> sẽ bị ẩn khỏi dropdown grant.
+        </p>
+        <div className="overflow-hidden rounded border">
+          <table className="w-full text-sm">
+            <thead className="bg-[var(--color-muted)] text-xs uppercase tracking-wider text-[var(--color-muted-fg)]">
+              <tr>
+                <th className="px-3 py-2 text-left">Tool</th>
+                <th className="px-3 py-2 text-left">Risk</th>
+                <th className="px-3 py-2 text-left">Min Tier</th>
+                <th className="px-3 py-2 text-right">—</th>
+              </tr>
+            </thead>
+            <tbody>
+              {grants.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-3 py-4 text-center text-[var(--color-muted-fg)]">
+                    Chưa grant tool nào — agent này không gọi được tool nào.
+                  </td>
+                </tr>
+              ) : (
+                grants.map((g) => (
+                  <tr key={g.toolId} className="border-t">
+                    <td className="px-3 py-2">
+                      <div className="font-medium">{g.toolName}</div>
+                      <div className="font-mono text-[10px] text-[var(--color-muted-fg)]">
+                        {g.toolCode}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] ${
+                          RISK_BADGE[g.riskTier] ?? "border-gray-300"
+                        }`}
+                      >
+                        <Shield className="size-3" />
+                        {g.riskTier}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-xs">{g.minActionTier}</td>
+                    <td className="px-3 py-2 text-right">
+                      <form action={revokeToolAction}>
+                        <input type="hidden" name="agentId" value={agent.id} />
+                        <input type="hidden" name="toolId" value={g.toolId} />
+                        <Button type="submit" size="sm" variant="ghost">
+                          Revoke
+                        </Button>
+                      </form>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {grantable.length > 0 && (
+          <form action={grantToolAction} className="flex flex-wrap items-end gap-2">
+            <input type="hidden" name="agentId" value={agent.id} />
+            <div className="flex-1 space-y-1.5">
+              <Label htmlFor="tool-sel">Grant tool</Label>
+              <select
+                id="tool-sel"
+                name="toolId"
+                required
+                className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+              >
+                <option value="">— Chọn tool —</option>
+                {grantable.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} [{t.riskTier}] · min: {t.minActionTier}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Button type="submit" size="sm">
+              Grant
+            </Button>
+          </form>
+        )}
       </section>
 
       <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">

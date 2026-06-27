@@ -14,7 +14,7 @@
 | **G1 Backend** Tenant + Agent Identity | 🟡 Backend done, web pending | _pending commit_ | Schemas + repos + endpoints + JWT + middleware + existing repo updates |
 | G1 Web | ⏳ Pending | — | admin/tenants, admin/agents, tenant-switcher |
 | G1 Deploy | ⏳ Pending | — | Run 10/11/12 migrations on cosmos |
-| G2 Tool Registry + Action Tier | ⏳ Pending | — | 1.5 tuần |
+| **G2** Tool Registry + Action Tier | 🟡 Backend+Web done, deploy pending | _pending commit_ | Schema + repo + endpoints + runtime registry lookup + admin UI |
 | G3 Lifecycle + Review Board | ⏳ Pending | — | 2 tuần |
 | G4 HITL + Kill Switch + Rate | ⏳ Pending | — | (out of scope đợt 1-2-3) |
 | G5 Decision Trace + Cost | ⏳ Pending | — | (out of scope đợt 1-2-3) |
@@ -86,50 +86,58 @@
 
 ### Deploy + Verify
 
-- [ ] Commit + push G1 backend ✅ (this commit)
-- [ ] Cosmos: pull + run migrations 10/11/12 + rebuild gateway
-- [ ] Verify: existing Contract Assistant data có `tenant_id='default'`
-- [ ] Verify: existing users có `tenant_members` row
-- [ ] Verify: `contract-monitor` agent created with lifecycle='production'
-- [ ] Create test tenant + agent + ACL → verify isolation
+- [x] Commit G1 backend `b9ec42b`
+- [x] Commit G1 web `48ad06b`
+- [x] Cosmos: pull + run migrations 10/11/12 + rebuild gateway+web + restart
+- [x] Verify: default tenant created (status=active)
+- [x] Verify: 4 existing users đều có `tenant_members` row với role=tenant_admin
+- [x] Verify: `contract-monitor` agent lifecycle=production, owner=tuong247@gmail.com, action_tier=execute_with_approval
+- [x] Gateway healthy, /tenants returns 401 (auth required as expected)
+- [ ] Browser smoke test (user) — sign-in mới + thấy "Agents" link + create test agent + ACL
 
 ---
 
 ## Phase G2 — Tool Registry + Action Tier (1.5 tuần)
 
-### Schema
+### Schema G2
 
-- [ ] `13_governance_tools.sql` — `tools`, `agent_tool_grants`, `agent_delegations`
-- [ ] Seed all existing MCP tools (`mcp__aiq__*`) with risk_tier
+- [x] `13_governance_tools.sql` — `tools`, `agent_tool_grants`, `agent_delegations`
+- [x] Seed 4 contract MCP tools với risk_tier + min_action_tier
+- [x] Auto-grant cả 4 vào contract-monitor agent (backward-compat)
 
-### Gateway
+### Gateway G2
 
-- [ ] `Governance/IToolRepository.cs` + impl
-- [ ] `Endpoints/ToolEndpoints.cs`:
-  - [ ] `GET /tools` — list global registry
-  - [ ] `POST /tools` — create (super_admin)
-  - [ ] `GET /agents/{id}/tools` — whitelist for runtime
-  - [ ] `POST /agents/{id}/tools` — grant
-  - [ ] `DELETE /agents/{id}/tools/{toolId}` — revoke
+- [x] `Governance/IToolRepository.cs` + impl (with tier-check on grant)
+- [x] `Endpoints/ToolEndpoints.cs`:
+  - [x] `GET /tools` — list global registry (super_admin)
+  - [x] `POST /tools` + `PATCH /tools/{id}` + `DELETE` (super_admin)
+  - [x] `GET /agents/{id}/tools` — list grants per agent
+  - [x] `POST /agents/{id}/tools` — grant (tier-enforced; rejects if agent_tier < tool_min)
+  - [x] `DELETE /agents/{id}/tools/{toolId}` — revoke
+  - [x] `GET /agents/{id}/tools/allowed` — runtime endpoint returning allowed tool codes
 
-### Agent runtime (Python)
+### Agent runtime (Python) G2
 
-- [ ] `agentic/registry.py` — fetch agent + tool grants from gateway
-- [ ] `runner.py` — `allowed_tools` query from registry instead of hardcode
-- [ ] Tool wrapper — check `agent.action_tier >= tool.min_action_tier`
-- [ ] Log `agent_delegations` when orchestrator → sub-agent
+- [x] `agentic/registry.py` — `fetch_allowed_tool_codes()` calls gateway
+- [x] `runner.py` — accepts optional `agent_id`, uses registry codes when set; falls back to `DEFAULT_ALLOWED_TOOLS` for backward-compat
+- [x] `AgentRunRequest` schema — added `agent_id` optional field
+- [x] `routes.py` — pipes `agent_id` through
+- [ ] Tool wrapper — `agent.action_tier >= tool.min_action_tier` (enforced server-side in `ListAllowedToolCodesAsync` instead — clean separation)
+- [ ] Log `agent_delegations` when orchestrator → sub-agent (deferred to G4)
 
-### Web
+### Web G2
 
-- [ ] `/admin/tools` — global registry (super_admin)
-- [ ] `/admin/agents/[id]/tools` — grant tools to agent
-- [ ] Filter UI: hide tools where min_action_tier > agent.action_tier
+- [x] `/admin/tools` — global registry list + create + enable/disable toggle (super_admin)
+- [x] Agent detail `/admin/agents/[id]`: Tool Grants section with revoke + grant dropdown (only shows tier-compatible active tools)
+- [x] Header: thêm "Tools" link cho super_admin
+- [x] api proxies `/api/tools/*` + `/api/agents/[id]/tools/*`
 
-### Verify
+### Verify G2
 
-- [ ] Agent without grant → tool call returns 403
-- [ ] read_only agent → cannot call execute_with_approval tool
-- [ ] Orchestrator → sub-agent invocation logged
+- [x] Build pass: gateway + python syntax
+- [ ] Agent without grant → tool call returns 403 (verify on cosmos)
+- [ ] read_only agent → cannot grant tools tier > read_only (verify)
+- [ ] contract-monitor agent retains all 4 tools after migration
 
 ---
 

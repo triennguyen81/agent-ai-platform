@@ -69,6 +69,14 @@ class AgentRunRequest(BaseModel):
         description="Skill names to enable (default: all auto-discovered).",
     )
     max_turns: int = Field(default=8, ge=1, le=20)
+    agent_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional governance agent id. When set, allowed_tools is fetched "
+            "from /agents/{id}/tools/allowed instead of the hardcoded default. "
+            "Backward-compatible: omit to use the legacy hardcoded tool list."
+        ),
+    )
 
 
 class AgentRunStep(BaseModel):

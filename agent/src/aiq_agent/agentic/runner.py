@@ -20,9 +20,35 @@ from claude_agent_sdk import (
     create_sdk_mcp_server,
 )
 
+from aiq_agent.agentic.registry import fetch_allowed_tool_codes
 from aiq_agent.agentic.tools import build_tools
 
 logger = logging.getLogger(__name__)
+
+# Fallback list for callers that don't supply an agent_id (chat, notes, etc.).
+# Once those callers migrate to the agent registry, this constant can shrink
+# to just the always-on/system tools.
+DEFAULT_ALLOWED_TOOLS = [
+    # KB / web
+    "mcp__aiq__search_notes",
+    "mcp__aiq__get_note",
+    "mcp__aiq__save_note",
+    "mcp__aiq__fetch_url",
+    # Accounting Mức 2
+    "mcp__aiq__calculate_vat",
+    "mcp__aiq__calculate_pit",
+    "mcp__aiq__calculate_cit",
+    "mcp__aiq__lookup_account",
+    "mcp__aiq__check_filing_deadline",
+    "mcp__aiq__journal_entry_validator",
+    "mcp__aiq__import_excel_ledger",
+    # Contract module Phase 1
+    "mcp__aiq__extract_contract_fields",
+    "mcp__aiq__save_contract",
+    # Contract module Phase 2
+    "mcp__aiq__get_contract",
+    "mcp__aiq__save_checklist_items",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,8 +72,13 @@ async def run_task(
     gateway_base: str,
     skills: list[str] | str | None = "all",
     max_turns: int = 8,
+    agent_id: str | None = None,
 ) -> AgenticRunResult:
     """Execute `task` agentically.
+
+    When `agent_id` is supplied the allowed tool list is fetched from the
+    governance registry; otherwise the legacy hardcoded list is used so
+    existing chat/notes flows keep working.
 
     Returns the assistant's final text + a list of intermediate text
     blocks (so the UI can render a step-by-step trace).
@@ -59,27 +90,25 @@ async def run_task(
         tools=tools,
     )
 
-    allowed_tools = [
-        # KB / web
-        "mcp__aiq__search_notes",
-        "mcp__aiq__get_note",
-        "mcp__aiq__save_note",
-        "mcp__aiq__fetch_url",
-        # Accounting Mức 2
-        "mcp__aiq__calculate_vat",
-        "mcp__aiq__calculate_pit",
-        "mcp__aiq__calculate_cit",
-        "mcp__aiq__lookup_account",
-        "mcp__aiq__check_filing_deadline",
-        "mcp__aiq__journal_entry_validator",
-        "mcp__aiq__import_excel_ledger",
-        # Contract module Phase 1
-        "mcp__aiq__extract_contract_fields",
-        "mcp__aiq__save_contract",
-        # Contract module Phase 2
-        "mcp__aiq__get_contract",
-        "mcp__aiq__save_checklist_items",
-    ]
+    allowed_tools: list[str] = list(DEFAULT_ALLOWED_TOOLS)
+    if agent_id:
+        registry_codes = await fetch_allowed_tool_codes(
+            gateway_base=gateway_base,
+            user_token=user_token,
+            agent_id=agent_id,
+        )
+        if registry_codes is not None:
+            allowed_tools = registry_codes
+            logger.info(
+                "agent %s: using registry-supplied tool list (%d tools)",
+                agent_id,
+                len(registry_codes),
+            )
+        else:
+            logger.warning(
+                "agent %s: registry lookup failed, falling back to default list",
+                agent_id,
+            )
 
     options = ClaudeAgentOptions(
         mcp_servers={"aiq": mcp_server},
