@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { AlertTriangle, ArrowLeft, FileCheck2, History, Power, Shield, ShieldCheck, UserCheck, Vote, Wrench } from "lucide-react";
+import { AlertOctagon, AlertTriangle, ArrowLeft, FileCheck2, History, Power, Shield, ShieldCheck, UserCheck, Vote, Wrench } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
@@ -87,6 +87,18 @@ interface ReviewRequestRecord {
   quorum: number;
 }
 
+interface HitlGateRecord {
+  id: string;
+  tenantId: string;
+  agentId: string;
+  name: string;
+  description: string | null;
+  triggerRuleJson: string;
+  approverRole: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
 const RISK_BADGE: Record<string, string> = {
   low: "border-emerald-300 bg-emerald-50 text-emerald-700",
   medium: "border-amber-300 bg-amber-50 text-amber-700",
@@ -166,6 +178,95 @@ async function grantAclAction(formData: FormData): Promise<void> {
   }
   revalidatePath(`/admin/agents/${agentId}`);
   redirect(`/admin/agents/${agentId}?ok=granted`);
+}
+
+async function createGateAction(formData: FormData): Promise<void> {
+  "use server";
+  const agentId = String(formData.get("agentId") ?? "");
+  const name = String(formData.get("name") ?? "").trim();
+  const description = String(formData.get("description") ?? "").trim();
+  const toolCode = String(formData.get("toolCode") ?? "").trim();
+  const fieldPath = String(formData.get("fieldPath") ?? "").trim();
+  const op = String(formData.get("op") ?? "gte").trim();
+  const value = String(formData.get("value") ?? "").trim();
+  const approverRole = String(formData.get("approverRole") ?? "owner").trim();
+
+  if (!agentId || !name) redirect(`/admin/agents/${agentId}?error=invalid`);
+
+  const triggerRule: Record<string, unknown> = {};
+  if (toolCode) triggerRule.tool = toolCode;
+  if (fieldPath) triggerRule.field_path = fieldPath;
+  if (op) triggerRule.op = op;
+  if (value) {
+    const num = Number(value);
+    triggerRule.value = Number.isFinite(num) ? num : value;
+  }
+
+  const token = await requireSession();
+  const res = await gateway.createAgentGate(token, agentId, {
+    name,
+    description: description || undefined,
+    triggerRule,
+    approverRole,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    redirect(`/admin/agents/${agentId}?error=${encodeURIComponent(body.slice(0, 200))}`);
+  }
+  revalidatePath(`/admin/agents/${agentId}`);
+  redirect(`/admin/agents/${agentId}?ok=gate-created`);
+}
+
+async function toggleGateAction(formData: FormData): Promise<void> {
+  "use server";
+  const agentId = String(formData.get("agentId") ?? "");
+  const gateId = String(formData.get("gateId") ?? "");
+  const isActive = String(formData.get("isActive") ?? "") === "true";
+  if (!gateId) redirect(`/admin/agents/${agentId}`);
+
+  const token = await requireSession();
+  await gateway.updateGate(token, gateId, { isActive: !isActive });
+  revalidatePath(`/admin/agents/${agentId}`);
+  redirect(`/admin/agents/${agentId}?ok=gate-toggled`);
+}
+
+async function deleteGateAction(formData: FormData): Promise<void> {
+  "use server";
+  const agentId = String(formData.get("agentId") ?? "");
+  const gateId = String(formData.get("gateId") ?? "");
+  if (!gateId) redirect(`/admin/agents/${agentId}`);
+
+  const token = await requireSession();
+  await gateway.deleteGate(token, gateId);
+  revalidatePath(`/admin/agents/${agentId}`);
+  redirect(`/admin/agents/${agentId}?ok=gate-deleted`);
+}
+
+async function simulateTriggerAction(formData: FormData): Promise<void> {
+  "use server";
+  const agentId = String(formData.get("agentId") ?? "");
+  const gateId = String(formData.get("gateId") ?? "");
+  const toolCode = String(formData.get("toolCode") ?? "demo_tool");
+  if (!gateId) redirect(`/admin/agents/${agentId}`);
+
+  const token = await requireSession();
+  // Send a demo payload so the queue has something to vote on
+  const res = await fetch(`${process.env.GATEWAY_BASE_URL ?? "http://aiq-gateway:8080"}/hitl/actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      gateId,
+      toolCode,
+      payload: { simulated: true, amount: 75000000, note: "Demo trigger from agent detail UI" },
+    }),
+  });
+  if (!res.ok) {
+    redirect(`/admin/agents/${agentId}?error=simulate-failed`);
+  }
+  redirect(`/admin/hitl-queue?ok=simulated`);
 }
 
 async function submitReviewAction(formData: FormData): Promise<void> {
@@ -254,13 +355,14 @@ export default async function AgentDetailPage({
   const { ok, error } = await searchParams;
 
   const token = await requireSession();
-  const [detailRes, lifecycleRes, grantsRes, allToolsRes, boardsRes, reviewsRes] = await Promise.all([
+  const [detailRes, lifecycleRes, grantsRes, allToolsRes, boardsRes, reviewsRes, gatesRes] = await Promise.all([
     gateway.getAgent(token, id),
     gateway.listAgentLifecycle(token, id),
     gateway.listAgentTools(token, id),
     gateway.listTools(token, true),  // active tools only for the grant dropdown
     gateway.listReviewBoards(token),
     gateway.listAgentReviewRequests(token, id),
+    gateway.listAgentGates(token, id),
   ]);
 
   if (detailRes.status === 403) redirect("/chat");
@@ -297,6 +399,10 @@ export default async function AgentDetailPage({
   const hasPendingReview = reviews.some((r) => r.status === "pending");
   const canSubmitReview =
     detail.agent.lifecycleState === "pending_review" && !hasPendingReview && boards.length > 0;
+
+  const gates: HitlGateRecord[] = gatesRes.ok
+    ? ((await gatesRes.json()) as { items: HitlGateRecord[] }).items
+    : [];
 
   const { agent, acl } = detail;
   const allowedNext = ALLOWED_NEXT[agent.lifecycleState] ?? [];
@@ -595,6 +701,130 @@ export default async function AgentDetailPage({
             </Button>
           </form>
         )}
+      </section>
+
+      <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
+        <h2 className="font-serif text-lg">
+          <AlertOctagon className="mr-2 inline size-4" /> HITL Gates ({gates.length})
+        </h2>
+        <p className="text-xs text-[var(--color-muted-fg)]">
+          Tool calls khớp với <em>trigger rule</em> sẽ bị tạm dừng và đẩy vào{" "}
+          <Link href="/admin/hitl-queue" className="underline">
+            HITL Queue
+          </Link>{" "}
+          để con người duyệt trước khi chạy thực.
+        </p>
+
+        {gates.length === 0 ? (
+          <p className="text-sm text-[var(--color-muted-fg)]">Chưa có gate nào.</p>
+        ) : (
+          <div className="overflow-hidden rounded border">
+            <table className="w-full text-sm">
+              <thead className="bg-[var(--color-muted)] text-xs uppercase tracking-wider text-[var(--color-muted-fg)]">
+                <tr>
+                  <th className="px-3 py-2 text-left">Name</th>
+                  <th className="px-3 py-2 text-left">Trigger Rule</th>
+                  <th className="px-3 py-2 text-left">Approver</th>
+                  <th className="px-3 py-2 text-left">Status</th>
+                  <th className="px-3 py-2 text-right">—</th>
+                </tr>
+              </thead>
+              <tbody>
+                {gates.map((g) => (
+                  <tr key={g.id} className="border-t align-top">
+                    <td className="px-3 py-2">
+                      <div className="font-medium">{g.name}</div>
+                      {g.description && (
+                        <div className="text-[10px] text-[var(--color-muted-fg)]">
+                          {g.description}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      <code className="text-[10px]">{g.triggerRuleJson}</code>
+                    </td>
+                    <td className="px-3 py-2 text-xs">{g.approverRole}</td>
+                    <td className="px-3 py-2">
+                      {g.isActive ? (
+                        <span className="text-xs text-emerald-700">active</span>
+                      ) : (
+                        <span className="text-xs text-[var(--color-muted-fg)]">disabled</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <div className="flex justify-end gap-1">
+                        <form action={simulateTriggerAction}>
+                          <input type="hidden" name="agentId" value={agent.id} />
+                          <input type="hidden" name="gateId" value={g.id} />
+                          <Button type="submit" size="sm" variant="ghost" title="Tạo pending action demo">
+                            Simulate
+                          </Button>
+                        </form>
+                        <form action={toggleGateAction}>
+                          <input type="hidden" name="agentId" value={agent.id} />
+                          <input type="hidden" name="gateId" value={g.id} />
+                          <input type="hidden" name="isActive" value={String(g.isActive)} />
+                          <Button type="submit" size="sm" variant="ghost">
+                            {g.isActive ? "Tắt" : "Bật"}
+                          </Button>
+                        </form>
+                        <form action={deleteGateAction}>
+                          <input type="hidden" name="agentId" value={agent.id} />
+                          <input type="hidden" name="gateId" value={g.id} />
+                          <Button type="submit" size="sm" variant="ghost">
+                            Xoá
+                          </Button>
+                        </form>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <form action={createGateAction} className="space-y-2 border-t pt-3">
+          <input type="hidden" name="agentId" value={agent.id} />
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="g-name">Tên gate</Label>
+              <Input id="g-name" name="name" required placeholder="Payment > 50M" />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="g-approver">Approver</Label>
+              <select
+                id="g-approver"
+                name="approverRole"
+                className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+                defaultValue="owner"
+              >
+                <option value="owner">owner</option>
+                <option value="tenant_admin">tenant_admin</option>
+              </select>
+            </div>
+          </div>
+          <Input name="description" placeholder="Mô tả (optional)" />
+          <div className="grid gap-2 sm:grid-cols-4">
+            <Input name="toolCode" placeholder="tool: send_payment" />
+            <Input name="fieldPath" placeholder="field: amount" />
+            <select
+              name="op"
+              className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+              defaultValue="gte"
+            >
+              <option value="eq">eq</option>
+              <option value="gte">gte</option>
+              <option value="gt">gt</option>
+              <option value="lte">lte</option>
+              <option value="lt">lt</option>
+            </select>
+            <Input name="value" placeholder="value: 50000000" />
+          </div>
+          <Button type="submit" size="sm" className="w-full">
+            <AlertOctagon className="size-4" /> Tạo HITL gate
+          </Button>
+        </form>
       </section>
 
       <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">

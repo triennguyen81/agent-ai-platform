@@ -16,7 +16,7 @@
 | G1 Deploy | ⏳ Pending | — | Run 10/11/12 migrations on cosmos |
 | **G2** Tool Registry + Action Tier | ✅ Deployed | `e6de96f` | Schema + repo + endpoints + runtime registry lookup + admin UI |
 | **G3** Lifecycle + Review Board | ✅ Deployed | `b7dc6a5` + `e05ace0` | Schema + repo + endpoints + state-machine guard + review queue UI + submit-for-review |
-| G4 HITL + Kill Switch + Rate | ⏳ Pending | — | (out of scope đợt 1-2-3) |
+| **G4** HITL Gates + Pending Actions | 🟡 MVP done (schema + backend + web); runtime pause/resume + per-agent rate limit deferred | _pending commit_ | Gates CRUD, queue with approve/reject, simulate trigger for demo |
 | G5 Decision Trace + Cost | ⏳ Pending | — | (out of scope đợt 1-2-3) |
 | G6 Governance Body + Export | ⏳ Pending | — | (out of scope đợt 1-2-3) |
 

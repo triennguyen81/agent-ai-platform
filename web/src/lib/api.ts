@@ -380,6 +380,52 @@ export const gateway = {
     });
   },
   // ---------- end Review Board ----------
+  // ---------- HITL (G4) ----------
+  listAgentGates(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/gates`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createAgentGate(token: string, agentId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/gates`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateGate(token: string, gateId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/gates/${gateId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  deleteGate(token: string, gateId: string) {
+    return call(GATEWAY_BASE, `/gates/${gateId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createHitlAction(token: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, "/hitl/actions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  hitlQueue(token: string) {
+    return call(GATEWAY_BASE, "/hitl/queue", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  decideHitlAction(token: string, actionId: string, payload: { decision: string; comment?: string }) {
+    return call(GATEWAY_BASE, `/hitl/${actionId}/decide`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  // ---------- end HITL ----------
   // ---------- end Governance ----------
   assignRole(token: string, userId: string, role: string) {
     return call(GATEWAY_BASE, `/users/${userId}/roles`, {

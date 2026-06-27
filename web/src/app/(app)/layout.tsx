@@ -82,6 +82,11 @@ export default async function AppLayout({
                 <Link href="/admin/review-queue">Reviews</Link>
               </Button>
             )}
+            {canEditKnowledge && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/admin/hitl-queue">HITL</Link>
+              </Button>
+            )}
             {isSuperAdmin && (
               <>
                 <Button variant="ghost" size="sm" asChild>
