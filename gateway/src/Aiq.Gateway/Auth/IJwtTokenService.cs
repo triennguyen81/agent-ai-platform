@@ -10,7 +10,7 @@ namespace Aiq.Gateway.Auth;
 
 public interface IJwtTokenService
 {
-    AccessToken Issue(UserRecord user, IReadOnlyCollection<string> roles);
+    AccessToken Issue(UserRecord user, IReadOnlyCollection<string> roles, Guid? tenantId = null);
 }
 
 public sealed record AccessToken(string Token, DateTimeOffset ExpiresAt);
@@ -24,7 +24,7 @@ public sealed class JwtTokenService : IJwtTokenService
         _options = options.Value;
     }
 
-    public AccessToken Issue(UserRecord user, IReadOnlyCollection<string> roles)
+    public AccessToken Issue(UserRecord user, IReadOnlyCollection<string> roles, Guid? tenantId = null)
     {
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(_options.AccessTokenMinutes);
 
@@ -34,6 +34,11 @@ public sealed class JwtTokenService : IJwtTokenService
             new("email", user.Email),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N"))
         };
+
+        if (tenantId is { } tid)
+        {
+            claims.Add(new Claim("tenant_id", tid.ToString()));
+        }
 
         foreach (var role in roles)
         {

@@ -4,6 +4,7 @@ namespace Aiq.Gateway.Data;
 
 public interface IUserRepository
 {
+    Task<UserRecord?> FindByIdAsync(Guid id, CancellationToken ct);
     Task<UserRecord?> FindByEmailAsync(string email, CancellationToken ct);
     Task<UserRecord?> FindByExternalAsync(string provider, string externalId, CancellationToken ct);
     Task<UserRecord>  CreateAsync(string email, string passwordHash, string? displayName, CancellationToken ct);
@@ -42,6 +43,14 @@ public sealed class UserRepository : IUserRepository
             external_provider  AS ExternalProvider,
             external_id        AS ExternalId
         """;
+
+    public async Task<UserRecord?> FindByIdAsync(Guid id, CancellationToken ct)
+    {
+        var sql = $"SELECT {UserSelectColumns} FROM users WHERE id = @id LIMIT 1;";
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<UserRecord>(
+            new CommandDefinition(sql, new { id }, cancellationToken: ct));
+    }
 
     public async Task<UserRecord?> FindByEmailAsync(string email, CancellationToken ct)
     {

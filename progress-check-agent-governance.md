@@ -10,28 +10,30 @@
 
 | Phase | Status | Commit | Notes |
 |-------|--------|--------|-------|
-| Decisions D1–D8 | ⏳ Waiting user | — | Cần chốt trước khi G1 |
-| G1 Tenant + Agent Identity | ⏳ Pending | — | 2 tuần |
+| Decisions D1–D8 | ✅ Defaults chosen | — | User chọn defaults, ghi rõ ở bên dưới |
+| **G1 Backend** Tenant + Agent Identity | 🟡 Backend done, web pending | _pending commit_ | Schemas + repos + endpoints + JWT + middleware + existing repo updates |
+| G1 Web | ⏳ Pending | — | admin/tenants, admin/agents, tenant-switcher |
+| G1 Deploy | ⏳ Pending | — | Run 10/11/12 migrations on cosmos |
 | G2 Tool Registry + Action Tier | ⏳ Pending | — | 1.5 tuần |
 | G3 Lifecycle + Review Board | ⏳ Pending | — | 2 tuần |
-| G4 HITL + Kill Switch + Rate | ⏳ Pending | — | 2 tuần |
-| G5 Decision Trace + Cost | ⏳ Pending | — | 1.5 tuần |
-| G6 Governance Body + Export | ⏳ Pending | — | 1 tuần |
+| G4 HITL + Kill Switch + Rate | ⏳ Pending | — | (out of scope đợt 1-2-3) |
+| G5 Decision Trace + Cost | ⏳ Pending | — | (out of scope đợt 1-2-3) |
+| G6 Governance Body + Export | ⏳ Pending | — | (out of scope đợt 1-2-3) |
 
 **Pilot:** 1 tuần thực tế sau G3.
 
 ---
 
-## 0. Decisions (D1–D8) — cần user chốt
+## 0. Decisions (D1–D8) — chốt 2026-06-27 (user chọn defaults)
 
-- [ ] **D1** Phase scope: full 6 phases hay G1+G2 trước? _(default: G1+G2)_
-- [ ] **D2** Multi-tenant: 1 user → N tenants hay 1-1? _(default: N-N)_
-- [ ] **D3** Skill cũ vs Agent mới: gộp hay tách? _(default: tách, Agent = orchestrator + N skills)_
-- [ ] **D4** Compliance target: NĐ 13 only hay thêm GDPR/SOC2? _(default: NĐ 13 only MVP)_
-- [ ] **D5** Contract Assistant: backward-compat hay refactor? _(default: backward-compat, gắn vào framework mới)_
-- [ ] **D6** Data isolation: RLS hay app-level filter? _(default: RLS)_
-- [ ] **D7** Action Tier default cho agents mới _(default: suggest)_
-- [ ] **D8** Per-agent credential storage strategy _(default: OIDC service account trong gateway)_
+- [x] **D1** Scope: **G1+G2+G3** (3 phases ~5.5 tuần)
+- [x] **D2** Multi-tenant: **1 user → N tenants** (membership table tenant_members)
+- [x] **D3** Skill vs Agent: **tách** — Agent = entity quản lý, skills là capabilities
+- [x] **D4** Compliance: **NĐ 13 only MVP** (GDPR/SOC2 sau)
+- [x] **D5** Contract Assistant: **backward-compat** — backfill thành agent `contract-monitor` tenant `default`
+- [x] **D6** Data isolation: **app-level filter** (RLS có thể bật sau khi pilot ổn)
+- [x] **D7** Action Tier default: **suggest** (Contract Assistant nâng lên `execute_with_approval`)
+- [x] **D8** Per-agent credentials: **OIDC service account** trong gateway (deferred — chưa cần ở G1)
 
 ---
 
@@ -39,34 +41,37 @@
 
 ### Schema & Migration
 
-- [ ] `10_governance_tenants.sql` — `tenants`, `tenant_members`
-- [ ] `11_governance_agents.sql` — `agents`, `agent_lifecycle_events`, `agent_acl`
-- [ ] `12_backfill_default_tenant.sql` — seed default tenant + migrate existing users/data
-- [ ] Add `tenant_id` column to: contracts, notes, books, audit_log, notifications, contract_clauses, contract_checklist_items
-- [ ] Backfill all existing rows to default tenant
-- [ ] Set tenant_id NOT NULL after backfill
+- [x] `10_governance_tenants.sql` — `tenants`, `tenant_members`
+- [x] `11_governance_agents.sql` — `agents`, `agent_lifecycle_events`, `agent_acl` + trigger auto-log transitions
+- [x] `12_backfill_default_tenant.sql` — seed default tenant + migrate existing users/data
+- [x] Add `tenant_id` column to: contracts, notes, books, audit_log, notifications, contract_clauses, contract_checklist_items
+- [x] Backfill all existing rows to default tenant
+- [x] Set tenant_id NOT NULL after backfill (audit_log nullable)
+- [ ] **Run on cosmos** (pending deploy)
 
 ### Gateway (.NET)
 
-- [ ] `Governance/ITenantRepository.cs` + impl
-- [ ] `Governance/IAgentRepository.cs` + impl (lifecycle transitions)
-- [ ] `Governance/IAgentAclRepository.cs` + impl (M:N grant/revoke)
-- [ ] `Endpoints/TenantEndpoints.cs` — CRUD (super_admin only)
-- [ ] `Endpoints/AgentEndpoints.cs`:
-  - [ ] `GET /agents` — list per tenant
-  - [ ] `POST /agents` — create (default state=draft)
-  - [ ] `GET /agents/{id}` — detail with ACL
-  - [ ] `PATCH /agents/{id}` — update config/action_tier
-  - [ ] `POST /agents/{id}/transitions` — lifecycle state change
-  - [ ] `POST /agents/{id}/disable` — kill switch
-  - [ ] `POST /agents/{id}/acl` — grant principal
-  - [ ] `DELETE /agents/{id}/acl/{principalId}` — revoke
-- [ ] `Auth/JwtTokenService.cs` — thêm `tenant_id` claim
-- [ ] `Middleware/TenantContextMiddleware.cs` — extract tenant from JWT
-- [ ] `Middleware/AgentAclMiddleware.cs` — check agent_acl khi action target agent
-- [ ] Update existing repos (Note, Contract, Checklist, Book, Notification) — filter by tenantId
-- [ ] DI registration in `Program.cs`
-- [ ] `dotnet build` pass
+- [x] `Governance/ITenantRepository.cs` + impl (list/create/find/memberships)
+- [x] `Governance/IAgentRepository.cs` + impl (CRUD + lifecycle state machine + ACL)
+- [x] `Endpoints/TenantEndpoints.cs` — CRUD super_admin + /me/tenants/switch
+- [x] `Endpoints/AgentEndpoints.cs`:
+  - [x] `GET /agents` — list per tenant
+  - [x] `POST /agents` — create (default state=draft, auto-grant owner ACL)
+  - [x] `GET /agents/{id}` — detail with ACL
+  - [x] `PATCH /agents/{id}` — update config/action_tier
+  - [x] `POST /agents/{id}/transitions` — lifecycle state change (state machine enforced)
+  - [x] `POST /agents/{id}/disable` + `/enable` — kill switch
+  - [x] `GET /agents/{id}/lifecycle` — transition history
+  - [x] `GET /agents/{id}/acl` + `POST` + `DELETE` — ACL management
+- [x] `Auth/JwtTokenService.cs` — thêm `tenant_id` claim (optional)
+- [x] `Middleware/TenantContext.cs` — TenantContextMiddleware extract tenant from JWT (fallback to first membership for legacy tokens)
+- [x] Update Auth endpoints — login/register/external-link auto-issue tenant claim
+- [x] Update `IContractRepository` + `ContractEndpoints` — tenant-filtered everywhere
+- [x] Update `IChecklistRepository` + `ChecklistEndpoints` — tenant-filtered via contract JOIN
+- [x] Update `INotificationRepository` + `ContractDeadlineJob` — pass tenant_id on insert
+- [ ] Notes / Books repos — deferred (not used by Contract Assistant; can update later)
+- [x] DI registration in `Program.cs` (ITenantRepository, IAgentRepository, TenantContextMiddleware)
+- [x] `dotnet build` pass — 0 warnings, 0 errors
 
 ### Web (Next.js)
 
@@ -81,10 +86,11 @@
 
 ### Deploy + Verify
 
-- [ ] Commit + push
-- [ ] Cosmos: pull + run migrations + rebuild gateway/web
+- [ ] Commit + push G1 backend ✅ (this commit)
+- [ ] Cosmos: pull + run migrations 10/11/12 + rebuild gateway
 - [ ] Verify: existing Contract Assistant data có `tenant_id='default'`
-- [ ] Verify: user existing có `tenant_members` row
+- [ ] Verify: existing users có `tenant_members` row
+- [ ] Verify: `contract-monitor` agent created with lifecycle='production'
 - [ ] Create test tenant + agent + ACL → verify isolation
 
 ---

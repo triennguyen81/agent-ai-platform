@@ -6,13 +6,15 @@ namespace Aiq.Gateway.Contracts;
 public interface IContractRepository
 {
     Task<ContractWithClauses> CreateAsync(
+        Guid tenantId,
         Guid userId,
         CreateContractRequest request,
         CancellationToken ct);
 
-    Task<ContractWithClauses?> FindAsync(Guid userId, Guid id, CancellationToken ct);
+    Task<ContractWithClauses?> FindAsync(Guid tenantId, Guid userId, Guid id, CancellationToken ct);
 
     Task<IReadOnlyList<ContractRecord>> ListAsync(
+        Guid tenantId,
         Guid userId,
         string? statusFilter,
         string? search,
@@ -21,12 +23,13 @@ public interface IContractRepository
         CancellationToken ct);
 
     Task<ContractRecord?> UpdateAsync(
+        Guid tenantId,
         Guid userId,
         Guid id,
         UpdateContractRequest request,
         CancellationToken ct);
 
-    Task<bool> DeleteAsync(Guid userId, Guid id, CancellationToken ct);
+    Task<bool> DeleteAsync(Guid tenantId, Guid userId, Guid id, CancellationToken ct);
 }
 
 public sealed class ContractRepository : IContractRepository
@@ -69,15 +72,15 @@ public sealed class ContractRepository : IContractRepository
         """;
 
     public async Task<ContractWithClauses> CreateAsync(
-        Guid userId, CreateContractRequest request, CancellationToken ct)
+        Guid tenantId, Guid userId, CreateContractRequest request, CancellationToken ct)
     {
         var insertContract = $"""
             INSERT INTO contracts (
-                user_id, title, party_a, party_b,
+                tenant_id, user_id, title, party_a, party_b,
                 signed_date, effective_date, end_date,
                 total_value, currency, source_pdf_path, raw_text, tags
             ) VALUES (
-                @userId, @title, @partyA, @partyB,
+                @tenantId, @userId, @title, @partyA, @partyB,
                 @signedDate, @effectiveDate, @endDate,
                 @totalValue, @currency, @sourcePdfPath, @rawText, @tags
             )
@@ -92,6 +95,7 @@ public sealed class ContractRepository : IContractRepository
                 insertContract,
                 new
                 {
+                    tenantId,
                     userId,
                     title = request.Title,
                     partyA = request.PartyA,
@@ -113,9 +117,9 @@ public sealed class ContractRepository : IContractRepository
         {
             const string insertClause = """
                 INSERT INTO contract_clauses (
-                    contract_id, ordinal, heading, body, has_deadline, has_penalty
+                    tenant_id, contract_id, ordinal, heading, body, has_deadline, has_penalty
                 ) VALUES (
-                    @contractId, @ordinal, @heading, @body, @hasDeadline, @hasPenalty
+                    @tenantId, @contractId, @ordinal, @heading, @body, @hasDeadline, @hasPenalty
                 )
                 RETURNING
                     id              AS Id,
@@ -135,6 +139,7 @@ public sealed class ContractRepository : IContractRepository
                         insertClause,
                         new
                         {
+                            tenantId,
                             contractId = contract.Id,
                             clause.Ordinal,
                             clause.Heading,
@@ -152,35 +157,36 @@ public sealed class ContractRepository : IContractRepository
         return new ContractWithClauses(contract, clauses);
     }
 
-    public async Task<ContractWithClauses?> FindAsync(Guid userId, Guid id, CancellationToken ct)
+    public async Task<ContractWithClauses?> FindAsync(Guid tenantId, Guid userId, Guid id, CancellationToken ct)
     {
         var contractSql = $"""
             SELECT {ContractSelectColumns}
             FROM contracts
-            WHERE id = @id AND user_id = @userId;
+            WHERE id = @id AND tenant_id = @tenantId AND user_id = @userId;
             """;
 
         var clausesSql = $"""
             SELECT {ClauseSelectColumns}
             FROM contract_clauses
-            WHERE contract_id = @id
+            WHERE contract_id = @id AND tenant_id = @tenantId
             ORDER BY ordinal;
             """;
 
         await using var conn = await _factory.OpenAsync(ct);
         var contract = await conn.QuerySingleOrDefaultAsync<ContractRecord>(
-            new CommandDefinition(contractSql, new { id, userId }, cancellationToken: ct));
+            new CommandDefinition(contractSql, new { id, tenantId, userId }, cancellationToken: ct));
         if (contract is null)
         {
             return null;
         }
 
         var clauses = await conn.QueryAsync<ContractClauseRecord>(
-            new CommandDefinition(clausesSql, new { id }, cancellationToken: ct));
+            new CommandDefinition(clausesSql, new { id, tenantId }, cancellationToken: ct));
         return new ContractWithClauses(contract, clauses.ToArray());
     }
 
     public async Task<IReadOnlyList<ContractRecord>> ListAsync(
+        Guid tenantId,
         Guid userId,
         string? statusFilter,
         string? search,
@@ -194,7 +200,7 @@ public sealed class ContractRepository : IContractRepository
         var sql = $"""
             SELECT {ContractSelectColumns}
             FROM contracts
-            WHERE user_id = @userId
+            WHERE tenant_id = @tenantId AND user_id = @userId
               {(hasStatus ? "AND status = @statusFilter" : "")}
               {(hasSearch ? "AND title ILIKE @searchPattern" : "")}
             ORDER BY created_at DESC
@@ -207,6 +213,7 @@ public sealed class ContractRepository : IContractRepository
                 sql,
                 new
                 {
+                    tenantId,
                     userId,
                     statusFilter,
                     searchPattern = hasSearch ? $"%{search}%" : null,
@@ -218,7 +225,7 @@ public sealed class ContractRepository : IContractRepository
     }
 
     public async Task<ContractRecord?> UpdateAsync(
-        Guid userId, Guid id, UpdateContractRequest request, CancellationToken ct)
+        Guid tenantId, Guid userId, Guid id, UpdateContractRequest request, CancellationToken ct)
     {
         var sql = $"""
             UPDATE contracts SET
@@ -232,7 +239,7 @@ public sealed class ContractRepository : IContractRepository
                 currency       = COALESCE(@currency, currency),
                 status         = COALESCE(@status, status),
                 tags           = COALESCE(@tags, tags)
-            WHERE id = @id AND user_id = @userId
+            WHERE id = @id AND tenant_id = @tenantId AND user_id = @userId
             RETURNING {ContractSelectColumns};
             """;
 
@@ -243,6 +250,7 @@ public sealed class ContractRepository : IContractRepository
                 new
                 {
                     id,
+                    tenantId,
                     userId,
                     title = request.Title,
                     partyA = request.PartyA,
@@ -258,12 +266,12 @@ public sealed class ContractRepository : IContractRepository
                 cancellationToken: ct));
     }
 
-    public async Task<bool> DeleteAsync(Guid userId, Guid id, CancellationToken ct)
+    public async Task<bool> DeleteAsync(Guid tenantId, Guid userId, Guid id, CancellationToken ct)
     {
-        const string sql = "DELETE FROM contracts WHERE id = @id AND user_id = @userId;";
+        const string sql = "DELETE FROM contracts WHERE id = @id AND tenant_id = @tenantId AND user_id = @userId;";
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.ExecuteAsync(
-            new CommandDefinition(sql, new { id, userId }, cancellationToken: ct));
+            new CommandDefinition(sql, new { id, tenantId, userId }, cancellationToken: ct));
         return rows > 0;
     }
 }

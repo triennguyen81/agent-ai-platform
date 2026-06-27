@@ -46,6 +46,7 @@ public sealed class ContractDeadlineJob
                 ci.due_date      AS due_date,
                 ci.remind_days_before AS remind_days,
                 c.user_id        AS user_id,
+                c.tenant_id      AS tenant_id,
                 c.title          AS contract_title,
                 CASE
                     WHEN ci.due_date < CURRENT_DATE THEN 'checklist_overdue'
@@ -69,6 +70,7 @@ public sealed class ContractDeadlineJob
         }
 
         var inserts = rows.Select(r => new InsertNotificationDto(
+            TenantId: r.TenantId,
             UserId: r.UserId,
             Kind: r.Kind,
             RefType: "checklist_item",
@@ -100,6 +102,7 @@ public sealed class ContractDeadlineJob
         DateOnly DueDate,
         int RemindDays,
         Guid UserId,
+        Guid TenantId,
         string ContractTitle,
         string Kind,
         int DaysRemaining);

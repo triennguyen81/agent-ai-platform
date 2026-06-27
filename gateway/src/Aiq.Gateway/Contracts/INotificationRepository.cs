@@ -15,6 +15,7 @@ public sealed record NotificationRecord(
     DateTime CreatedAt);
 
 public sealed record InsertNotificationDto(
+    Guid TenantId,
     Guid UserId,
     string Kind,
     string? RefType,
@@ -127,8 +128,8 @@ public sealed class NotificationRepository : INotificationRepository
         if (rows.Count == 0) return 0;
 
         const string sql = """
-            INSERT INTO notifications (user_id, kind, ref_type, ref_id, title, body)
-            VALUES (@UserId, @Kind, @RefType, @RefId, @Title, @Body)
+            INSERT INTO notifications (tenant_id, user_id, kind, ref_type, ref_id, title, body)
+            VALUES (@TenantId, @UserId, @Kind, @RefType, @RefId, @Title, @Body)
             ON CONFLICT (user_id, kind, ref_id) WHERE ref_id IS NOT NULL DO NOTHING
             """;
 

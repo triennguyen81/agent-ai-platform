@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Contracts;
+using Aiq.Gateway.Middleware;
 using Microsoft.AspNetCore.Http;
 
 namespace Aiq.Gateway.Endpoints;
@@ -37,8 +38,12 @@ public static class ContractEndpoints
         {
             return Results.Unauthorized();
         }
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+        {
+            return Results.BadRequest(new { error = "tenant context missing" });
+        }
 
-        var items = await repo.ListAsync(userId, status, q, limit, offset, ct);
+        var items = await repo.ListAsync(tenantId, userId, status, q, limit, offset, ct);
         return Results.Ok(new ContractsListResponse(items, items.Count));
     }
 
@@ -56,8 +61,12 @@ public static class ContractEndpoints
         {
             return Results.Unauthorized();
         }
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+        {
+            return Results.BadRequest(new { error = "tenant context missing" });
+        }
 
-        var created = await repo.CreateAsync(userId, request, ct);
+        var created = await repo.CreateAsync(tenantId, userId, request, ct);
         return Results.Created($"/contracts/{created.Contract.Id}", created);
     }
 
@@ -71,8 +80,12 @@ public static class ContractEndpoints
         {
             return Results.Unauthorized();
         }
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+        {
+            return Results.BadRequest(new { error = "tenant context missing" });
+        }
 
-        var contract = await repo.FindAsync(userId, id, ct);
+        var contract = await repo.FindAsync(tenantId, userId, id, ct);
         return contract is null ? Results.NotFound() : Results.Ok(contract);
     }
 
@@ -87,8 +100,12 @@ public static class ContractEndpoints
         {
             return Results.Unauthorized();
         }
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+        {
+            return Results.BadRequest(new { error = "tenant context missing" });
+        }
 
-        var updated = await repo.UpdateAsync(userId, id, request, ct);
+        var updated = await repo.UpdateAsync(tenantId, userId, id, request, ct);
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
 
@@ -102,8 +119,12 @@ public static class ContractEndpoints
         {
             return Results.Unauthorized();
         }
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+        {
+            return Results.BadRequest(new { error = "tenant context missing" });
+        }
 
-        var deleted = await repo.DeleteAsync(userId, id, ct);
+        var deleted = await repo.DeleteAsync(tenantId, userId, id, ct);
         return deleted ? Results.NoContent() : Results.NotFound();
     }
 

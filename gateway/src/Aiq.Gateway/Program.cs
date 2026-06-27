@@ -7,7 +7,9 @@ using Aiq.Gateway.Configuration;
 using Aiq.Gateway.Contracts;
 using Aiq.Gateway.Data;
 using Aiq.Gateway.Endpoints;
+using Aiq.Gateway.Governance;
 using Aiq.Gateway.Jobs;
+using Aiq.Gateway.Middleware;
 using Aiq.Gateway.Notes;
 using Aiq.Gateway.Observability;
 using Aiq.Gateway.Security;
@@ -116,6 +118,8 @@ builder.Services.AddScoped<INoteRepository, NoteRepository>();
 builder.Services.AddScoped<IContractRepository, ContractRepository>();
 builder.Services.AddScoped<IChecklistRepository, ChecklistRepository>();
 builder.Services.AddScoped<INotificationRepository, NotificationRepository>();
+builder.Services.AddScoped<ITenantRepository, TenantRepository>();
+builder.Services.AddScoped<IAgentRepository, AgentRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IFileUploadGuard, FileUploadGuard>();
@@ -273,6 +277,7 @@ app.UseRateLimiter();
 app.UseOutputCache();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseMiddleware<TenantContextMiddleware>();
 app.UseMiddleware<AuditMiddleware>();
 
 if (app.Environment.IsDevelopment())
@@ -288,6 +293,8 @@ app.MapNoteEndpoints();
 app.MapContractEndpoints();
 app.MapChecklistEndpoints();
 app.MapNotificationEndpoints();
+app.MapTenantEndpoints();
+app.MapAgentEndpoints();
 app.MapUserEndpoints();
 app.MapMetrics();              // Prometheus scrape endpoint at /metrics
 

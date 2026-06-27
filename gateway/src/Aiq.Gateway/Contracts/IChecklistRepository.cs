@@ -42,21 +42,23 @@ public sealed record UpdateChecklistItemRequest(
 public interface IChecklistRepository
 {
     Task<IReadOnlyList<ChecklistItemRecord>> ListAsync(
-        Guid userId, Guid contractId, CancellationToken ct);
+        Guid tenantId, Guid userId, Guid contractId, CancellationToken ct);
 
     Task<IReadOnlyList<ChecklistItemRecord>> BulkCreateAsync(
+        Guid tenantId,
         Guid userId,
         Guid contractId,
         BulkCreateChecklistRequest request,
         CancellationToken ct);
 
     Task<ChecklistItemRecord?> UpdateAsync(
+        Guid tenantId,
         Guid userId,
         Guid itemId,
         UpdateChecklistItemRequest request,
         CancellationToken ct);
 
-    Task<bool> DeleteAsync(Guid userId, Guid itemId, CancellationToken ct);
+    Task<bool> DeleteAsync(Guid tenantId, Guid userId, Guid itemId, CancellationToken ct);
 }
 
 public sealed class ChecklistRepository : IChecklistRepository
@@ -85,13 +87,13 @@ public sealed class ChecklistRepository : IChecklistRepository
         """;
 
     public async Task<IReadOnlyList<ChecklistItemRecord>> ListAsync(
-        Guid userId, Guid contractId, CancellationToken ct)
+        Guid tenantId, Guid userId, Guid contractId, CancellationToken ct)
     {
         var sql = $"""
             SELECT {SelectColumns}
             FROM contract_checklist_items i
             INNER JOIN contracts c ON c.id = i.contract_id
-            WHERE c.id = @contractId AND c.user_id = @userId
+            WHERE c.id = @contractId AND c.tenant_id = @tenantId AND c.user_id = @userId
             ORDER BY
                 CASE i.status
                     WHEN 'open' THEN 1
@@ -106,21 +108,22 @@ public sealed class ChecklistRepository : IChecklistRepository
 
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<ChecklistItemRecord>(
-            new CommandDefinition(sql, new { userId, contractId }, cancellationToken: ct));
+            new CommandDefinition(sql, new { tenantId, userId, contractId }, cancellationToken: ct));
         return rows.ToArray();
     }
 
     public async Task<IReadOnlyList<ChecklistItemRecord>> BulkCreateAsync(
+        Guid tenantId,
         Guid userId,
         Guid contractId,
         BulkCreateChecklistRequest request,
         CancellationToken ct)
     {
-        // Ownership check — caller's user must own the contract.
-        const string ownsSql = "SELECT 1 FROM contracts WHERE id = @contractId AND user_id = @userId;";
+        // Ownership check — caller's user must own the contract within this tenant.
+        const string ownsSql = "SELECT 1 FROM contracts WHERE id = @contractId AND tenant_id = @tenantId AND user_id = @userId;";
         await using var conn = await _factory.OpenAsync(ct);
         var owns = await conn.QuerySingleOrDefaultAsync<int?>(
-            new CommandDefinition(ownsSql, new { contractId, userId }, cancellationToken: ct));
+            new CommandDefinition(ownsSql, new { contractId, tenantId, userId }, cancellationToken: ct));
         if (owns is null)
         {
             return Array.Empty<ChecklistItemRecord>();
@@ -130,17 +133,17 @@ public sealed class ChecklistRepository : IChecklistRepository
 
         if (request.ReplaceExisting)
         {
-            const string deleteSql = "DELETE FROM contract_checklist_items WHERE contract_id = @contractId;";
+            const string deleteSql = "DELETE FROM contract_checklist_items WHERE contract_id = @contractId AND tenant_id = @tenantId;";
             await conn.ExecuteAsync(
-                new CommandDefinition(deleteSql, new { contractId }, transaction: tx, cancellationToken: ct));
+                new CommandDefinition(deleteSql, new { contractId, tenantId }, transaction: tx, cancellationToken: ct));
         }
 
         const string insertSql = """
             INSERT INTO contract_checklist_items (
-                contract_id, clause_id, title, description,
+                tenant_id, contract_id, clause_id, title, description,
                 due_date, remind_days_before, assignee_email
             ) VALUES (
-                @contractId, @clauseId, @title, @description,
+                @tenantId, @contractId, @clauseId, @title, @description,
                 @dueDate, @remindDaysBefore, @assigneeEmail
             )
             RETURNING
@@ -167,6 +170,7 @@ public sealed class ChecklistRepository : IChecklistRepository
                     insertSql,
                     new
                     {
+                        tenantId,
                         contractId,
                         clauseId = item.ClauseId,
                         title = item.Title,
@@ -185,6 +189,7 @@ public sealed class ChecklistRepository : IChecklistRepository
     }
 
     public async Task<ChecklistItemRecord?> UpdateAsync(
+        Guid tenantId,
         Guid userId,
         Guid itemId,
         UpdateChecklistItemRequest request,
@@ -205,6 +210,7 @@ public sealed class ChecklistRepository : IChecklistRepository
             FROM contracts c
             WHERE i.id = @itemId
               AND i.contract_id = c.id
+              AND c.tenant_id = @tenantId
               AND c.user_id = @userId
             RETURNING {SelectColumns};
             """;
@@ -216,6 +222,7 @@ public sealed class ChecklistRepository : IChecklistRepository
                 new
                 {
                     itemId,
+                    tenantId,
                     userId,
                     title = request.Title,
                     description = request.Description,
@@ -227,18 +234,19 @@ public sealed class ChecklistRepository : IChecklistRepository
                 cancellationToken: ct));
     }
 
-    public async Task<bool> DeleteAsync(Guid userId, Guid itemId, CancellationToken ct)
+    public async Task<bool> DeleteAsync(Guid tenantId, Guid userId, Guid itemId, CancellationToken ct)
     {
         const string sql = """
             DELETE FROM contract_checklist_items i
             USING contracts c
             WHERE i.id = @itemId
               AND i.contract_id = c.id
+              AND c.tenant_id = @tenantId
               AND c.user_id = @userId;
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.ExecuteAsync(
-            new CommandDefinition(sql, new { itemId, userId }, cancellationToken: ct));
+            new CommandDefinition(sql, new { itemId, tenantId, userId }, cancellationToken: ct));
         return rows > 0;
     }
 }

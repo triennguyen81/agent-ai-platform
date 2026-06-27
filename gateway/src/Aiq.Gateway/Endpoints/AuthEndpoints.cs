@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Auth;
 using Aiq.Gateway.Data;
+using Aiq.Gateway.Governance;
 
 namespace Aiq.Gateway.Endpoints;
 
@@ -27,6 +28,7 @@ public static class AuthEndpoints
     private static async Task<IResult> ExternalLinkAsync(
         ExternalLinkRequest request,
         IUserRepository users,
+        ITenantRepository tenants,
         IJwtTokenService jwt,
         Microsoft.Extensions.Configuration.IConfiguration config,
         HttpContext ctx,
@@ -89,7 +91,8 @@ public static class AuthEndpoints
         }
 
         var roles = await users.GetRolesAsync(user.Id, ct);
-        var token = jwt.Issue(user, roles);
+        var defaultTenantId = await ResolveDefaultTenantAsync(tenants, user.Id, ct);
+        var token = jwt.Issue(user, roles, defaultTenantId);
 
         return Results.Ok(new AuthResponse(
             token.Token, token.ExpiresAt, user.Id, user.Email, roles));
@@ -105,6 +108,7 @@ public static class AuthEndpoints
     private static async Task<IResult> RegisterAsync(
         RegisterRequest request,
         IUserRepository users,
+        ITenantRepository tenants,
         IPasswordHasher hasher,
         IJwtTokenService jwt,
         CancellationToken ct)
@@ -124,8 +128,16 @@ public static class AuthEndpoints
         var user = await users.CreateAsync(request.Email, hash, request.DisplayName, ct);
         await users.AssignRoleAsync(user.Id, "user", ct);
 
+        // Auto-add to default tenant as member so first login has a tenant context
+        var defaultTenant = await tenants.FindByCodeAsync("default", ct);
+        if (defaultTenant is not null)
+        {
+            await tenants.UpsertMembershipAsync(defaultTenant.Id, user.Id, "member", ct);
+        }
+
         var roles = await users.GetRolesAsync(user.Id, ct);
-        var token = jwt.Issue(user, roles);
+        var defaultTenantId = await ResolveDefaultTenantAsync(tenants, user.Id, ct);
+        var token = jwt.Issue(user, roles, defaultTenantId);
 
         return Results.Created($"/users/{user.Id}", new AuthResponse(
             token.Token, token.ExpiresAt, user.Id, user.Email, roles));
@@ -134,6 +146,7 @@ public static class AuthEndpoints
     private static async Task<IResult> LoginAsync(
         LoginRequest request,
         IUserRepository users,
+        ITenantRepository tenants,
         IPasswordHasher hasher,
         IJwtTokenService jwt,
         CancellationToken ct)
@@ -150,10 +163,23 @@ public static class AuthEndpoints
         }
 
         var roles = await users.GetRolesAsync(user.Id, ct);
-        var token = jwt.Issue(user, roles);
+        var defaultTenantId = await ResolveDefaultTenantAsync(tenants, user.Id, ct);
+        var token = jwt.Issue(user, roles, defaultTenantId);
 
         return Results.Ok(new AuthResponse(
             token.Token, token.ExpiresAt, user.Id, user.Email, roles));
+    }
+
+    /// <summary>
+    /// Pick the user's first-joined tenant as the default active tenant for
+    /// the JWT claim. Returns null if the user has no memberships yet (will be
+    /// backfilled by the migration but new users without an invite will lack one).
+    /// </summary>
+    private static async Task<Guid?> ResolveDefaultTenantAsync(
+        ITenantRepository tenants, Guid userId, CancellationToken ct)
+    {
+        var memberships = await tenants.ListMembershipsForUserAsync(userId, ct);
+        return memberships.Count > 0 ? memberships[0].TenantId : (Guid?)null;
     }
 
     private static bool TryValidate(

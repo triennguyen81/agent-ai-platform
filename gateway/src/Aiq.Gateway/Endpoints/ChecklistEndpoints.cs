@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Contracts;
+using Aiq.Gateway.Middleware;
 using Microsoft.AspNetCore.Http;
 
 namespace Aiq.Gateway.Endpoints;
@@ -33,12 +34,10 @@ public static class ChecklistEndpoints
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
+        if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest(new { error = "tenant context missing" });
 
-        var items = await repo.ListAsync(userId, contractId, ct);
+        var items = await repo.ListAsync(tenantId, userId, contractId, ct);
         return Results.Ok(new { items, total = items.Count });
     }
 
@@ -49,14 +48,9 @@ public static class ChecklistEndpoints
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TryValidate(request, out var errors))
-        {
-            return Results.ValidationProblem(errors);
-        }
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
+        if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
+        if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest(new { error = "tenant context missing" });
 
         if (request.Items.Count == 0)
         {
@@ -67,7 +61,7 @@ public static class ChecklistEndpoints
             return Results.BadRequest(new { error = "Tối đa 100 items / lần" });
         }
 
-        var created = await repo.BulkCreateAsync(userId, contractId, request, ct);
+        var created = await repo.BulkCreateAsync(tenantId, userId, contractId, request, ct);
         if (created.Count == 0)
         {
             return Results.NotFound(new { error = "Contract không tồn tại hoặc không thuộc về user" });
@@ -83,10 +77,8 @@ public static class ChecklistEndpoints
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
+        if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest(new { error = "tenant context missing" });
 
         if (request.Status is { Length: > 0 } status
             && status is not ("open" or "in_progress" or "done" or "skipped"))
@@ -94,7 +86,7 @@ public static class ChecklistEndpoints
             return Results.BadRequest(new { error = $"Status không hợp lệ: {status}" });
         }
 
-        var updated = await repo.UpdateAsync(userId, itemId, request, ct);
+        var updated = await repo.UpdateAsync(tenantId, userId, itemId, request, ct);
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
 
@@ -104,12 +96,10 @@ public static class ChecklistEndpoints
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
+        if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest(new { error = "tenant context missing" });
 
-        var deleted = await repo.DeleteAsync(userId, itemId, ct);
+        var deleted = await repo.DeleteAsync(tenantId, userId, itemId, ct);
         return deleted ? Results.NoContent() : Results.NotFound();
     }
 
