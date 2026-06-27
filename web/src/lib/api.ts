@@ -163,6 +163,118 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  // ---------- Governance (G1) ----------
+  listTenants(token: string) {
+    return call(GATEWAY_BASE, "/tenants", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createTenant(token: string, payload: { code: string; name: string }) {
+    return call(GATEWAY_BASE, "/tenants", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  listTenantMembers(token: string, tenantId: string) {
+    return call(GATEWAY_BASE, `/tenants/${tenantId}/members`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  inviteTenantMember(token: string, tenantId: string, payload: { userId: string; role: string }) {
+    return call(GATEWAY_BASE, `/tenants/${tenantId}/members`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  removeTenantMember(token: string, tenantId: string, userId: string) {
+    return call(GATEWAY_BASE, `/tenants/${tenantId}/members/${userId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listMyTenants(token: string) {
+    return call(GATEWAY_BASE, "/me/tenants", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  switchActiveTenant(token: string, tenantId: string) {
+    return call(GATEWAY_BASE, "/me/tenants/switch", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ tenantId }),
+    });
+  },
+  listAgents(token: string, state?: string) {
+    const qs = state ? `?state=${encodeURIComponent(state)}` : "";
+    return call(GATEWAY_BASE, `/agents${qs}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createAgent(token: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, "/agents", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  getAgent(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  updateAgent(token: string, agentId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/agents/${agentId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  transitionAgent(token: string, agentId: string, payload: { toState: string; reason?: string }) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/transitions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  disableAgent(token: string, agentId: string, reason?: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/disable`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ reason: reason ?? null }),
+    });
+  },
+  enableAgent(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/enable`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listAgentLifecycle(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/lifecycle`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listAgentAcl(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/acl`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  grantAgentAcl(token: string, agentId: string, payload: { principalId: string; accessLevel: string }) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/acl`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  revokeAgentAcl(token: string, agentId: string, principalId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/acl/${principalId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // ---------- end Governance ----------
   assignRole(token: string, userId: string, role: string) {
     return call(GATEWAY_BASE, `/users/${userId}/roles`, {
       method: "POST",

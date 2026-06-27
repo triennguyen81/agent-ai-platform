@@ -75,14 +75,14 @@
 
 ### Web (Next.js)
 
-- [ ] `/admin/tenants` — list + create + invite member (super_admin)
-- [ ] `/admin/agents` — list agents trong active tenant
-- [ ] `/admin/agents/[id]` — detail + ACL editor + lifecycle button + kill switch
-- [ ] `/admin/agents/create` — new agent form
-- [ ] `components/tenant-switcher.tsx` — header dropdown khi user thuộc nhiều tenants
-- [ ] `components/agent-lifecycle-button.tsx`
-- [ ] `lib/api.ts` — add tenant/agent helpers
-- [ ] api proxies dưới `/api/tenants/*` và `/api/agents/*`
+- [x] `/admin/tenants` — list + create form (super_admin only)
+- [x] `/admin/agents` — list agents trong active tenant + filter pills + create form
+- [x] `/admin/agents/[id]` — detail + ACL editor + lifecycle transition + kill switch + lifecycle history
+- [x] `components/tenant-switcher.tsx` — header dropdown khi user thuộc ≥ 2 tenants
+- [x] `lib/api.ts` — add tenant/agent helpers (15+ methods)
+- [x] `lib/auth.ts` — add `decodeTenantId` for layout/header
+- [x] api proxies `/api/tenants/*`, `/api/me/tenants/*`, `/api/agents/*` (full CRUD + transitions + ACL)
+- [x] Header layout: thêm "Agents" link (admin) + "Tenants" link (super_admin) + tenant-switcher + bell
 
 ### Deploy + Verify
 

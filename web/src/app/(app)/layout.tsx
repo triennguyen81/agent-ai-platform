@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { gateway } from "@/lib/api";
-import { clearSession, getSession } from "@/lib/auth";
+import { clearSession, decodeTenantId, getSession } from "@/lib/auth";
 import { isClerkConfigured } from "@/lib/env";
 import { Button } from "@/components/ui/button";
 import { NotificationBell } from "@/components/notification-bell";
+import { TenantSwitcher } from "@/components/tenant-switcher";
 
 interface MeResponse {
   sub?: string | null;
@@ -43,6 +44,7 @@ export default async function AppLayout({
   const isSuperAdmin = roles.includes("super_admin");
   // KB contributors: admin OR super_admin.
   const canEditKnowledge = isSuperAdmin || roles.includes("admin");
+  const activeTenantId = decodeTenantId(token);
 
   return (
     <div className="min-h-dvh">
@@ -70,8 +72,16 @@ export default async function AppLayout({
                 <Link href="/contracts">Hợp đồng</Link>
               </Button>
             )}
+            {canEditKnowledge && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/admin/agents">Agents</Link>
+              </Button>
+            )}
             {isSuperAdmin && (
               <>
+                <Button variant="ghost" size="sm" asChild>
+                  <Link href="/admin/tenants">Tenants</Link>
+                </Button>
                 <Button variant="ghost" size="sm" asChild>
                   <Link href="/admin/users">Admin</Link>
                 </Button>
@@ -86,6 +96,7 @@ export default async function AppLayout({
                 </Button>
               </>
             )}
+            <TenantSwitcher activeTenantId={activeTenantId} />
             <NotificationBell />
             <span className="ml-3 text-sm text-[var(--color-muted-fg)]">
               {me.email ?? "you"}
