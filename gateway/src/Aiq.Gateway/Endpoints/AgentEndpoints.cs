@@ -25,7 +25,43 @@ public static class AgentEndpoints
         group.MapPost("/{id:guid}/acl", GrantAclAsync);
         group.MapDelete("/{id:guid}/acl/{principalId:guid}", RevokeAclAsync);
 
+        // Admin flow: list all agents a user has ACL on in the current tenant
+        app.MapGet("/users/{userId:guid}/agents", UserAgentsAsync)
+            .RequireAuthorization("admin")
+            .RequireRateLimiting("default");
+
+        // Any authenticated user: see their own assigned agents (read-only)
+        app.MapGet("/me/agents", MyAgentsAsync)
+            .RequireAuthorization()
+            .RequireRateLimiting("default");
+
         return app;
+    }
+
+    private static async Task<IResult> UserAgentsAsync(
+        Guid userId, IAgentRepository repo, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+        {
+            return Results.BadRequest(new { error = "tenant context missing" });
+        }
+        var items = await repo.ListForPrincipalAsync(tenantId, userId, ct);
+        return Results.Ok(new { items, total = items.Count });
+    }
+
+    private static async Task<IResult> MyAgentsAsync(
+        IAgentRepository repo, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TryGetUserId(ctx, out var userId))
+        {
+            return Results.Unauthorized();
+        }
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+        {
+            return Results.BadRequest(new { error = "tenant context missing" });
+        }
+        var items = await repo.ListForPrincipalAsync(tenantId, userId, ct);
+        return Results.Ok(new { items, total = items.Count });
     }
 
     private static async Task<IResult> ListAsync(

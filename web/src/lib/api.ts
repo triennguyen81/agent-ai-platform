@@ -206,6 +206,16 @@ export const gateway = {
       body: JSON.stringify({ tenantId }),
     });
   },
+  listAgentsForUser(token: string, userId: string) {
+    return call(GATEWAY_BASE, `/users/${userId}/agents`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listMyAgents(token: string) {
+    return call(GATEWAY_BASE, "/me/agents", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
   listAgents(token: string, state?: string) {
     const qs = state ? `?state=${encodeURIComponent(state)}` : "";
     return call(GATEWAY_BASE, `/agents${qs}`, {

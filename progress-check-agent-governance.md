@@ -22,6 +22,13 @@
 
 **Pilot:** 1 tuần thực tế sau G3.
 
+**Extra:** Admin → User agent assignment flow (add-on after G4):
+
+- Backend: `GET /users/{id}/agents` (admin) + `GET /me/agents` (any user)
+- Web: `/admin/users/[id]/agents` (admin assign with access_level dropdown) + `/my-agents` (user read-only view)
+- Nav: "Gán agent" link mỗi user row + "Trợ lý" link cho mọi user role
+- User role không có UI để tự grant/revoke — chỉ admin làm được qua `/admin/users/[id]/agents`
+
 ---
 
 ## 0. Decisions (D1–D8) — chốt 2026-06-27 (user chọn defaults)

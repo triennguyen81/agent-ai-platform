@@ -57,6 +57,9 @@ export default async function AppLayout({
             <Button variant="ghost" size="sm" asChild>
               <Link href="/chat">Chat</Link>
             </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <Link href="/my-agents">Trợ lý</Link>
+            </Button>
             {canEditKnowledge && (
               <Button variant="ghost" size="sm" asChild>
                 <Link href="/knowledge">Knowledge</Link>

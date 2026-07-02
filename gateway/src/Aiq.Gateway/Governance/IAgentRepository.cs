@@ -133,7 +133,29 @@ public interface IAgentRepository
         Guid agentId,
         Guid principalId,
         CancellationToken ct);
+
+    /// <summary>
+    /// Returns the agents in the tenant that the given principal has any
+    /// ACL grant on, along with the grant's access level. Used by the
+    /// "user picks an agent to use" flow and the admin "assign agents"
+    /// screen. Only agents in lifecycle 'production' or 'testing' are
+    /// returned when the caller is not owner/editor.
+    /// </summary>
+    Task<IReadOnlyList<PrincipalAgentRecord>> ListForPrincipalAsync(
+        Guid tenantId,
+        Guid principalId,
+        CancellationToken ct);
 }
+
+public sealed record PrincipalAgentRecord(
+    Guid AgentId,
+    string AgentCode,
+    string AgentName,
+    string AgentType,
+    string LifecycleState,
+    string ActionTier,
+    bool AgentDisabled,
+    string AccessLevel);
 
 public sealed class AgentRepository : IAgentRepository
 {
@@ -472,5 +494,31 @@ public sealed class AgentRepository : IAgentRepository
         await using var conn = await _factory.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<string?>(
             new CommandDefinition(sql, new { agentId, principalId }, cancellationToken: ct));
+    }
+
+    public async Task<IReadOnlyList<PrincipalAgentRecord>> ListForPrincipalAsync(
+        Guid tenantId, Guid principalId, CancellationToken ct)
+    {
+        const string sql = """
+            SELECT
+                a.id              AS AgentId,
+                a.code            AS AgentCode,
+                a.name            AS AgentName,
+                a.type            AS AgentType,
+                a.lifecycle_state AS LifecycleState,
+                a.action_tier     AS ActionTier,
+                (a.disabled_at IS NOT NULL) AS AgentDisabled,
+                acl.access_level  AS AccessLevel
+            FROM agent_acl acl
+            JOIN agents a ON a.id = acl.agent_id
+            WHERE a.tenant_id = @tenantId
+              AND acl.principal_id = @principalId
+              AND acl.principal_type = 'user'
+            ORDER BY a.name
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.QueryAsync<PrincipalAgentRecord>(
+            new CommandDefinition(sql, new { tenantId, principalId }, cancellationToken: ct));
+        return rows.AsList();
     }
 }

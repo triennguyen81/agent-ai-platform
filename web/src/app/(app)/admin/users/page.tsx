@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { gateway } from "@/lib/api";
@@ -209,7 +210,10 @@ export default async function AdminUsersPage({
                         {u.externalProvider ?? "email"}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-1">
+                        <div className="flex flex-wrap items-center gap-1">
+                          <Button size="sm" variant="outline" asChild>
+                            <Link href={`/admin/users/${u.id}/agents`}>Gán agent</Link>
+                          </Button>
                           {VISIBLE_ROLES.map((role) => {
                             const has = u.roles.includes(role);
                             return (
