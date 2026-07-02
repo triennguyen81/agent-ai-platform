@@ -17,6 +17,8 @@ import {
   Trash2,
   User as UserIcon,
   Wand2,
+  Zap,
+  ZapOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MicButton } from "@/components/mic-button";
@@ -62,6 +64,7 @@ function findUrls(text: string): string[] {
 }
 
 const THREAD_KEY = "aiq.chat.thread_id";
+const AUTO_SUBMIT_KEY = "aiq.chat.mic.autoSubmit";
 
 const THINKING_TAG_RE = /<thinking>[\s\S]*?<\/thinking>/gi;
 const ORPHAN_OPEN_RE = /<thinking>/gi;
@@ -111,7 +114,11 @@ export function ChatRoom() {
   const [loadingThread, setLoadingThread] = useState(false);
   const [chatInterim, setChatInterim] = useState("");
   const [mode, setMode] = useState<ChatMode>("chat");
+  const [autoSubmitAfterMic, setAutoSubmitAfterMic] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Latest transcribed text — used to auto-submit after listening ends
+  // without racing React's async state batching (setInput → onListeningChange).
+  const pendingAutoSubmitRef = useRef<string | null>(null);
 
   const detectedUrls = findUrls(input);
 
@@ -162,11 +169,21 @@ export function ChatRoom() {
       window.localStorage.setItem(THREAD_KEY, tid);
     }
     setThreadId(tid);
+    const storedAuto = window.localStorage.getItem(AUTO_SUBMIT_KEY);
+    if (storedAuto === "1") setAutoSubmitAfterMic(true);
     void refreshThreads();
     if (stored) {
       void loadThread(stored);
     }
   }, [refreshThreads, loadThread]);
+
+  const toggleAutoSubmit = useCallback(() => {
+    setAutoSubmitAfterMic((prev) => {
+      const next = !prev;
+      window.localStorage.setItem(AUTO_SUBMIT_KEY, next ? "1" : "0");
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -461,14 +478,48 @@ export function ChatRoom() {
                 }`}
                 disabled={pending}
               />
-              <div className="absolute right-2 top-1/2 -translate-y-1/2">
-                <MicButton
-                  onTranscript={(text) =>
-                    setInput((prev) =>
-                      prev ? `${prev.trimEnd()} ${text}` : text,
-                    )
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={toggleAutoSubmit}
+                  title={
+                    autoSubmitAfterMic
+                      ? "Đang bật: nói xong tự động gửi. Bấm để tắt."
+                      : "Đang tắt: chỉ điền vào ô nhập, phải bấm Send. Bấm để bật auto-gửi."
                   }
+                  aria-pressed={autoSubmitAfterMic}
+                  className={`inline-flex size-7 items-center justify-center rounded-full border transition ${
+                    autoSubmitAfterMic
+                      ? "border-emerald-500 bg-emerald-500 text-white"
+                      : "border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-muted-fg)] hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]"
+                  }`}
+                >
+                  {autoSubmitAfterMic ? (
+                    <Zap className="size-3.5" />
+                  ) : (
+                    <ZapOff className="size-3.5" />
+                  )}
+                </button>
+                <MicButton
+                  onTranscript={(text) => {
+                    setInput((prev) => {
+                      const next = prev ? `${prev.trimEnd()} ${text}` : text;
+                      pendingAutoSubmitRef.current = next;
+                      return next;
+                    });
+                  }}
                   onInterim={setChatInterim}
+                  onListeningChange={(listening) => {
+                    // When user stops recording AND auto-submit is on,
+                    // fire the send immediately with the buffered text.
+                    // sendPrompt already clears the input on its own.
+                    if (!listening && autoSubmitAfterMic) {
+                      const buffered = pendingAutoSubmitRef.current;
+                      pendingAutoSubmitRef.current = null;
+                      const trimmed = buffered?.trim();
+                      if (trimmed) void sendPrompt(trimmed);
+                    }
+                  }}
                   disabled={pending}
                   size="sm"
                 />
@@ -479,6 +530,18 @@ export function ChatRoom() {
               {mode === "agentic" ? "Run" : "Send"}
             </Button>
           </form>
+          <p className="mt-1.5 text-[10px] text-[var(--color-muted-fg)]">
+            {autoSubmitAfterMic ? (
+              <>
+                <Zap className="mr-1 inline size-3 text-emerald-600" />
+                Auto-gửi bật — bấm mic, nói, bấm mic lần nữa để gửi ngay.
+              </>
+            ) : (
+              <>
+                Mẹo: bấm biểu tượng <ZapOff className="inline size-3" /> bên trái mic để bật <strong>Auto-gửi</strong> — nói xong bấm mic dừng là gửi luôn, không cần bấm Send.
+              </>
+            )}
+          </p>
         </div>
       </div>
     </div>
