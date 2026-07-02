@@ -54,6 +54,11 @@ services:
       # Cross-network DNS — point at container_name (same reason as gateway).
       GATEWAY_BASE_URL: "http://aiq-gateway:8080"
       QDRANT_URL: "http://aiq-qdrant:6333"
+      # Chat memory: Postgres so history persists indefinitely (no 24h Redis TTL).
+      # Same container-name reason as gateway — use aiq-postgres to disambiguate
+      # from a potential `postgres` alias on the shared agentic-net.
+      MEMORY_BACKEND: "postgres"
+      MEMORY_POSTGRES_DSN: "postgresql://${POSTGRES_USER:-aiq}:${POSTGRES_PASSWORD:-aiq}@aiq-postgres:5432/${POSTGRES_DB:-aiq}"
     networks:
       - aiq-net
       - agentic-net

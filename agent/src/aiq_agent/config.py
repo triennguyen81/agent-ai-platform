@@ -7,7 +7,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LlmProvider = Literal["ollama", "anthropic"]
-MemoryBackend = Literal["in_memory", "redis"]
+MemoryBackend = Literal["in_memory", "redis", "postgres"]
 
 
 class Settings(BaseSettings):
@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     memory_max_messages: int = Field(default=200, gt=0)
     redis_url: str | None = Field(default=None)
     redis_password: str | None = Field(default=None)
+    # Postgres DSN for memory_backend=postgres. Format:
+    #   postgresql://user:pass@host:5432/dbname
+    memory_postgres_dsn: str | None = Field(default=None)
 
     # ---- Observability ----
     otel_service_name: str = Field(default="aiq-agent")

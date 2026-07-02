@@ -114,6 +114,7 @@ services:
       MEMORY_MAX_MESSAGES: ${MEMORY_MAX_MESSAGES:-200}
       REDIS_URL: ${REDIS_INTERNAL_URL:-redis://redis:6379/0}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-aiq}
+      MEMORY_POSTGRES_DSN: ${MEMORY_POSTGRES_DSN:-}
       GATEWAY_BASE_URL: ${AGENT_GATEWAY_BASE_URL:-http://gateway:8080}
       # M6 — Qdrant top-K embeddings (self-hosted via fastembed)
       QDRANT_URL: ${QDRANT_INTERNAL_URL:-http://qdrant:6333}
