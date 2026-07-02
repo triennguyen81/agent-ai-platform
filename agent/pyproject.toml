@@ -34,6 +34,9 @@ dependencies = [
   # no API cost, ~120 MB model auto-downloaded on first init.
   "qdrant-client>=1.12",
   "fastembed>=0.4",
+  # Postgres async driver — required by PostgresMemoryStore (chat history
+  # persistence) and by the OCR validator's pgvector integration.
+  "asyncpg>=0.30",
 ]
 
 [project.optional-dependencies]
