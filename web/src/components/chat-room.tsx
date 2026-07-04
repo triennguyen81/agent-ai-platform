@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -116,6 +117,11 @@ export function ChatRoom() {
   const [mode, setMode] = useState<ChatMode>("chat");
   const [autoSubmitAfterMic, setAutoSubmitAfterMic] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const searchParams = useSearchParams();
+  // When the URL includes ?agent=..., chat requests will pull RAG context
+  // from that agent's admin-curated knowledge base instead of the caller's
+  // own notes. Users assigned an agent land here via /my-agents.
+  const activeAgentId = searchParams.get("agent");
   // Latest transcribed text — used to auto-submit after listening ends
   // without racing React's async state batching (setInput → onListeningChange).
   const pendingAutoSubmitRef = useRef<string | null>(null);
@@ -209,7 +215,11 @@ export function ChatRoom() {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, thread_id: threadId ?? undefined }),
+          body: JSON.stringify({
+            prompt,
+            thread_id: threadId ?? undefined,
+            agent_id: activeAgentId ?? undefined,
+          }),
         });
 
         if (!res.ok) {
@@ -266,7 +276,7 @@ export function ChatRoom() {
         setPending(false);
       }
     },
-    [pending, threadId, refreshThreads],
+    [pending, threadId, refreshThreads, activeAgentId],
   );
 
   const sendAgenticTask = useCallback(

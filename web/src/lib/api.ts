@@ -206,6 +206,34 @@ export const gateway = {
       body: JSON.stringify({ tenantId }),
     });
   },
+  listAgentKnowledge(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/knowledge`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listAttachableNotes(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/knowledge/attachable`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  attachNoteToAgent(token: string, agentId: string, noteId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/knowledge`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ noteId }),
+    });
+  },
+  detachNoteFromAgent(token: string, agentId: string, noteId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/knowledge/${noteId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  agentKnowledgeContext(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/agents/${agentId}/knowledge/context`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
   listAgentsForUser(token: string, userId: string) {
     return call(GATEWAY_BASE, `/users/${userId}/agents`, {
       headers: { Authorization: `Bearer ${token}` },

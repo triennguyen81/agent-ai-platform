@@ -53,15 +53,40 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "missing prompt" }, { status: 400 });
   }
 
-  // Pull the user's saved notes from Gateway. Failure here is non-fatal —
-  // we still fall back to a vanilla chat without RAG.
+  // Optional agent scope. When present, RAG is pulled from the agent's
+  // curated knowledge base (admin-attached notes) instead of the caller's
+  // personal notes. This is the flow for role=user consumers who don't
+  // own any notes themselves.
+  const agentId = typeof body.agent_id === "string" && body.agent_id.length > 0
+    ? body.agent_id
+    : null;
+
+  // Pull knowledge notes from Gateway. Failure here is non-fatal — we
+  // still fall back to a vanilla chat without RAG.
   let knowledgeBlock = "";
   let allNotes: NoteRecord[] = [];
   try {
-    const notesRes = await gateway.listNotes(token);
-    if (notesRes.ok) {
-      const payload = (await notesRes.json()) as NotesResponse;
-      allNotes = payload.items ?? [];
+    if (agentId) {
+      // Agent-scoped context: notes admin has attached to this specific agent.
+      const ctxRes = await gateway.agentKnowledgeContext(token, agentId);
+      if (ctxRes.ok) {
+        const payload = (await ctxRes.json()) as {
+          items?: { noteId: string; title: string; content: string; tags: string[] }[];
+        };
+        allNotes = (payload.items ?? []).map((n) => ({
+          id: n.noteId,
+          title: n.title,
+          content: n.content,
+          tags: n.tags,
+        }));
+      }
+    } else {
+      // Legacy path: caller's own notes (admin+ direct chat).
+      const notesRes = await gateway.listNotes(token);
+      if (notesRes.ok) {
+        const payload = (await notesRes.json()) as NotesResponse;
+        allNotes = payload.items ?? [];
+      }
     }
   } catch {
     // swallow — RAG is optional, never fail the chat over a notes outage

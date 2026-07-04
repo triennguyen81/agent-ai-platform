@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { AlertOctagon, AlertTriangle, ArrowLeft, FileCheck2, History, Power, Shield, ShieldCheck, UserCheck, Vote, Wrench } from "lucide-react";
+import { AlertOctagon, AlertTriangle, ArrowLeft, BookOpen, FileCheck2, History, Power, Shield, ShieldCheck, UserCheck, Vote, Wrench } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
@@ -85,6 +85,13 @@ interface ReviewRequestRecord {
   approveCount: number;
   rejectCount: number;
   quorum: number;
+}
+
+interface AttachedNote {
+  id: string;
+  title: string;
+  tags: string[];
+  updatedAt: string;
 }
 
 interface HitlGateRecord {
@@ -269,6 +276,34 @@ async function simulateTriggerAction(formData: FormData): Promise<void> {
   redirect(`/admin/hitl-queue?ok=simulated`);
 }
 
+async function attachNoteAction(formData: FormData): Promise<void> {
+  "use server";
+  const agentId = String(formData.get("agentId") ?? "");
+  const noteId = String(formData.get("noteId") ?? "");
+  if (!agentId || !noteId) redirect(`/admin/agents/${agentId}?error=invalid`);
+
+  const token = await requireSession();
+  const res = await gateway.attachNoteToAgent(token, agentId, noteId);
+  if (!res.ok) {
+    const body = await res.text();
+    redirect(`/admin/agents/${agentId}?error=${encodeURIComponent(body.slice(0, 200))}`);
+  }
+  revalidatePath(`/admin/agents/${agentId}`);
+  redirect(`/admin/agents/${agentId}?ok=note-attached`);
+}
+
+async function detachNoteAction(formData: FormData): Promise<void> {
+  "use server";
+  const agentId = String(formData.get("agentId") ?? "");
+  const noteId = String(formData.get("noteId") ?? "");
+  if (!agentId || !noteId) redirect(`/admin/agents/${agentId}`);
+
+  const token = await requireSession();
+  await gateway.detachNoteFromAgent(token, agentId, noteId);
+  revalidatePath(`/admin/agents/${agentId}`);
+  redirect(`/admin/agents/${agentId}?ok=note-detached`);
+}
+
 async function submitReviewAction(formData: FormData): Promise<void> {
   "use server";
   const agentId = String(formData.get("agentId") ?? "");
@@ -355,14 +390,16 @@ export default async function AgentDetailPage({
   const { ok, error } = await searchParams;
 
   const token = await requireSession();
-  const [detailRes, lifecycleRes, grantsRes, allToolsRes, boardsRes, reviewsRes, gatesRes] = await Promise.all([
+  const [detailRes, lifecycleRes, grantsRes, allToolsRes, boardsRes, reviewsRes, gatesRes, knowledgeRes, attachableRes] = await Promise.all([
     gateway.getAgent(token, id),
     gateway.listAgentLifecycle(token, id),
     gateway.listAgentTools(token, id),
-    gateway.listTools(token, true),  // active tools only for the grant dropdown
+    gateway.listTools(token, true),
     gateway.listReviewBoards(token),
     gateway.listAgentReviewRequests(token, id),
     gateway.listAgentGates(token, id),
+    gateway.listAgentKnowledge(token, id),
+    gateway.listAttachableNotes(token, id),
   ]);
 
   if (detailRes.status === 403) redirect("/chat");
@@ -402,6 +439,12 @@ export default async function AgentDetailPage({
 
   const gates: HitlGateRecord[] = gatesRes.ok
     ? ((await gatesRes.json()) as { items: HitlGateRecord[] }).items
+    : [];
+  const attachedNotes: AttachedNote[] = knowledgeRes.ok
+    ? ((await knowledgeRes.json()) as { items: AttachedNote[] }).items
+    : [];
+  const attachableNotes: AttachedNote[] = attachableRes.ok
+    ? ((await attachableRes.json()) as { items: AttachedNote[] }).items
     : [];
 
   const { agent, acl } = detail;
@@ -614,6 +657,96 @@ export default async function AgentDetailPage({
             Grant
           </Button>
         </form>
+      </section>
+
+      <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
+        <h2 className="font-serif text-lg">
+          <BookOpen className="mr-2 inline size-4" /> Kho kiến thức ({attachedNotes.length})
+        </h2>
+        <p className="text-xs text-[var(--color-muted-fg)]">
+          Notes gắn ở đây trở thành ngữ cảnh RAG khi user chat với agent này. User role
+          không thấy/sửa được kho — chỉ admin curate.
+        </p>
+
+        {attachedNotes.length === 0 ? (
+          <p className="text-sm text-[var(--color-muted-fg)]">
+            Chưa có note nào. Gắn note để user có context khi chat với agent này.
+          </p>
+        ) : (
+          <div className="overflow-hidden rounded border">
+            <table className="w-full text-sm">
+              <thead className="bg-[var(--color-muted)] text-xs uppercase tracking-wider text-[var(--color-muted-fg)]">
+                <tr>
+                  <th className="px-3 py-2 text-left">Note</th>
+                  <th className="px-3 py-2 text-left">Tags</th>
+                  <th className="px-3 py-2 text-right">—</th>
+                </tr>
+              </thead>
+              <tbody>
+                {attachedNotes.map((n) => (
+                  <tr key={n.id} className="border-t align-top">
+                    <td className="px-3 py-2 font-medium">{n.title}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-wrap gap-1">
+                        {n.tags.slice(0, 4).map((t) => (
+                          <span
+                            key={t}
+                            className="rounded-full border px-2 py-0.5 text-[10px] text-[var(--color-muted-fg)]"
+                          >
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <form action={detachNoteAction}>
+                        <input type="hidden" name="agentId" value={agent.id} />
+                        <input type="hidden" name="noteId" value={n.id} />
+                        <Button type="submit" size="sm" variant="ghost">
+                          Gỡ
+                        </Button>
+                      </form>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {attachableNotes.length > 0 ? (
+          <form action={attachNoteAction} className="flex flex-wrap items-end gap-2">
+            <input type="hidden" name="agentId" value={agent.id} />
+            <div className="flex-1 space-y-1.5">
+              <Label htmlFor="note-sel">Gắn note</Label>
+              <select
+                id="note-sel"
+                name="noteId"
+                required
+                className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+              >
+                <option value="">— Chọn note —</option>
+                {attachableNotes.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.title}
+                    {n.tags.length > 0 && ` · [${n.tags.slice(0, 3).join(", ")}]`}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Button type="submit" size="sm">
+              Gắn
+            </Button>
+          </form>
+        ) : (
+          <p className="text-xs text-[var(--color-muted-fg)]">
+            Tenant chưa có note nào có thể gắn thêm.{" "}
+            <Link href="/knowledge" className="underline">
+              Tạo note mới
+            </Link>{" "}
+            trong Knowledge trước, sau đó quay lại đây gắn.
+          </p>
+        )}
       </section>
 
       <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
