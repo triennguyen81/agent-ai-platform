@@ -37,8 +37,11 @@ public sealed record AgentAclRecord(
     Guid AgentId,
     Guid PrincipalId,
     string PrincipalType,
+    string? PrincipalEmail,
+    string? PrincipalDisplayName,
     string AccessLevel,
     Guid? GrantedBy,
+    string? GrantedByEmail,
     DateTime GrantedAt);
 
 public sealed record CreateAgentRequest(
@@ -428,17 +431,24 @@ public sealed class AgentRepository : IAgentRepository
 
     public async Task<IReadOnlyList<AgentAclRecord>> ListAclAsync(Guid agentId, CancellationToken ct)
     {
+        // Enrich with principal + grantor email/name so the admin UI shows
+        // human-readable identities instead of raw UUIDs.
         const string sql = """
             SELECT
-                agent_id        AS AgentId,
-                principal_id    AS PrincipalId,
-                principal_type  AS PrincipalType,
-                access_level    AS AccessLevel,
-                granted_by      AS GrantedBy,
-                granted_at      AS GrantedAt
-            FROM agent_acl
-            WHERE agent_id = @agentId
-            ORDER BY granted_at
+                acl.agent_id          AS AgentId,
+                acl.principal_id      AS PrincipalId,
+                acl.principal_type    AS PrincipalType,
+                pu.email              AS PrincipalEmail,
+                pu.display_name       AS PrincipalDisplayName,
+                acl.access_level      AS AccessLevel,
+                acl.granted_by        AS GrantedBy,
+                gu.email              AS GrantedByEmail,
+                acl.granted_at        AS GrantedAt
+            FROM agent_acl acl
+            LEFT JOIN users pu ON pu.id = acl.principal_id AND acl.principal_type = 'user'
+            LEFT JOIN users gu ON gu.id = acl.granted_by
+            WHERE acl.agent_id = @agentId
+            ORDER BY acl.granted_at
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<AgentAclRecord>(

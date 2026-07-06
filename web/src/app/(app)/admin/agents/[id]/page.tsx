@@ -30,8 +30,18 @@ interface AclEntry {
   agentId: string;
   principalId: string;
   principalType: string;
+  principalEmail: string | null;
+  principalDisplayName: string | null;
   accessLevel: string;
+  grantedBy: string | null;
+  grantedByEmail: string | null;
   grantedAt: string;
+}
+
+interface TenantUserOption {
+  id: string;
+  email: string;
+  displayName: string | null;
 }
 
 interface LifecycleEvent {
@@ -390,7 +400,7 @@ export default async function AgentDetailPage({
   const { ok, error } = await searchParams;
 
   const token = await requireSession();
-  const [detailRes, lifecycleRes, grantsRes, allToolsRes, boardsRes, reviewsRes, gatesRes, knowledgeRes, attachableRes] = await Promise.all([
+  const [detailRes, lifecycleRes, grantsRes, allToolsRes, boardsRes, reviewsRes, gatesRes, knowledgeRes, attachableRes, usersRes] = await Promise.all([
     gateway.getAgent(token, id),
     gateway.listAgentLifecycle(token, id),
     gateway.listAgentTools(token, id),
@@ -400,6 +410,7 @@ export default async function AgentDetailPage({
     gateway.listAgentGates(token, id),
     gateway.listAgentKnowledge(token, id),
     gateway.listAttachableNotes(token, id),
+    gateway.listUsers(token),
   ]);
 
   if (detailRes.status === 403) redirect("/chat");
@@ -446,6 +457,11 @@ export default async function AgentDetailPage({
   const attachableNotes: AttachedNote[] = attachableRes.ok
     ? ((await attachableRes.json()) as { items: AttachedNote[] }).items
     : [];
+  const tenantUsers: TenantUserOption[] = usersRes.ok
+    ? ((await usersRes.json()) as { items: TenantUserOption[] }).items ?? []
+    : [];
+  const grantedPrincipalIds = new Set(detail.acl.map((a) => a.principalId));
+  const grantableUsers = tenantUsers.filter((u) => !grantedPrincipalIds.has(u.id));
 
   const { agent, acl } = detail;
   const allowedNext = ALLOWED_NEXT[agent.lifecycleState] ?? [];
@@ -609,7 +625,16 @@ export default async function AgentDetailPage({
               ) : (
                 acl.map((a) => (
                   <tr key={`${a.principalId}-${a.principalType}`} className="border-t">
-                    <td className="px-3 py-2 font-mono text-xs">{a.principalId}</td>
+                    <td className="px-3 py-2">
+                      <div className="font-medium">
+                        {a.principalEmail ?? "(unknown user)"}
+                      </div>
+                      {a.principalDisplayName && (
+                        <div className="text-[10px] text-[var(--color-muted-fg)]">
+                          {a.principalDisplayName}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-3 py-2">
                       <span className="rounded-full border px-2 py-0.5 text-[10px]">
                         {a.accessLevel}
@@ -617,6 +642,9 @@ export default async function AgentDetailPage({
                     </td>
                     <td className="px-3 py-2 text-xs text-[var(--color-muted-fg)]">
                       {formatDateTime(a.grantedAt)}
+                      {a.grantedByEmail && (
+                        <div className="text-[10px]">bởi {a.grantedByEmail}</div>
+                      )}
                     </td>
                     <td className="px-3 py-2 text-right">
                       <form action={revokeAclAction}>
@@ -637,8 +665,26 @@ export default async function AgentDetailPage({
         <form action={grantAclAction} className="flex flex-wrap items-end gap-2">
           <input type="hidden" name="agentId" value={agent.id} />
           <div className="flex-1 space-y-1.5">
-            <Label htmlFor="pid">User ID (UUID)</Label>
-            <Input id="pid" name="principalId" required placeholder="00000000-0000-0000-0000-000000000000" />
+            <Label htmlFor="pid">User</Label>
+            <select
+              id="pid"
+              name="principalId"
+              required
+              disabled={grantableUsers.length === 0}
+              className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+            >
+              <option value="">
+                {grantableUsers.length === 0
+                  ? "— Tất cả users đã có ACL —"
+                  : "— Chọn user —"}
+              </option>
+              {grantableUsers.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.email}
+                  {u.displayName && ` (${u.displayName})`}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="lvl">Level</Label>
