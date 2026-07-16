@@ -38,12 +38,44 @@ router = APIRouter()
 
 _DEFAULT_SYSTEM = """Bạn là trợ lý AI cá nhân thông minh, trả lời người dùng bằng tiếng Việt tự nhiên.
 
+RÀNG BUỘC NGÔN NGỮ (BẮT BUỘC):
+- Toàn bộ câu trả lời PHẢI 100% bằng tiếng Việt (bảng chữ Latin có dấu Việt).
+- TUYỆT ĐỐI KHÔNG dùng ký tự Hán/Trung/Nhật/Hàn (CJK) — kể cả trong từ Hán-Việt.
+- Ví dụ SAI: "tiếp接" (chữ 接 là Hán). Ví dụ ĐÚNG: "tiếp đãi".
+- Nếu định viết một từ Hán-Việt, luôn viết bằng chữ Quốc ngữ (âm La-tinh có dấu), không chèn hanzi.
+- Số + đơn vị tiếng Việt: dùng "triệu / tỷ / VNĐ" thay cho "万 / 亿 / 元".
+
 PHẢI tuân thủ format trả lời:
 1. Bắt đầu bằng <thinking>...</thinking> ngắn (2-4 câu) tóm tắt cách bạn suy luận.
 2. Tiếp theo là câu trả lời chính bằng Markdown (heading, bullet, bảng nếu phù hợp).
 
 Nếu prompt có chứa USER KNOWLEDGE BASE thì luôn ưu tiên trích dẫn thông tin từ đó và ghi rõ tên Note đã tham chiếu (vd "theo Note 3"). Nếu câu hỏi không liên quan knowledge thì trả lời chung như AI thông thường.
 """
+
+
+# CJK code points: Han/Hiragana/Katakana/Hangul + CJK Compatibility.
+# Guardrail against Claude occasionally emitting hanzi in Vietnamese output
+# (mostly for Sino-Vietnamese vocabulary where shared etymology confuses
+# the tokenizer). System prompt already forbids it — this is belt-and-braces.
+_CJK_RE = re.compile(
+    "[一-鿿㐀-䶿぀-ヿ가-힯豈-﫿]+",
+    flags=re.UNICODE,
+)
+
+
+def _strip_cjk(text: str) -> str:
+    """Remove stray CJK characters and tidy surrounding whitespace/punctuation.
+
+    Handles the common failure mode where Claude emits "tiếp接" instead of
+    "tiếp đãi". Dropping the hanzi loses the Sino-Vietnamese word but keeps
+    the sentence readable — better than gibberish for a Vietnamese user.
+    """
+    if not text or not _CJK_RE.search(text):
+        return text
+    cleaned = _CJK_RE.sub("", text)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r" +([,.:;!?])", r"\1", cleaned)
+    return cleaned
 
 
 _THINK_RE = re.compile(r"<thinking>(.*?)</thinking>", flags=re.DOTALL | re.IGNORECASE)
@@ -63,8 +95,12 @@ def _split_thinking(raw: str) -> tuple[str | None, str]:
     # Strip any orphan open/close tags so the answer is fully clean.
     answer = _ORPHAN_OPEN_RE.sub("", answer)
     answer = _ORPHAN_CLOSE_RE.sub("", answer)
+    # Belt-and-braces: strip stray CJK hanzi that occasionally leaks into
+    # Sino-Vietnamese words. System prompt already forbids it.
+    answer = _strip_cjk(answer)
     answer = answer.strip()
-    thinking = "\n\n".join(m.strip() for m in matches if m.strip()) or None
+    thinking_raw = "\n\n".join(m.strip() for m in matches if m.strip())
+    thinking = _strip_cjk(thinking_raw) if thinking_raw else None
     return thinking, answer
 
 
