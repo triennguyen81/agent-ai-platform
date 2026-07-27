@@ -78,6 +78,18 @@ services:
     networks:
       - aiq-net
       - agentic-net
+    # Container hardening added after 2026-07-26 crypto-miner incident:
+    # malware wrote binaries to writable filesystem paths and spawned
+    # background processes. read_only + tmpfs(noexec) blocks the write path;
+    # cap_drop + no-new-privileges narrows what a compromised process can do.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /app/.next/cache:rw,noexec,nosuid,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   caddy:
     profiles: ["edge"]
