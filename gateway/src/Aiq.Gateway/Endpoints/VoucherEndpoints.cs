@@ -38,6 +38,11 @@ public static class VoucherEndpoints
         group.MapPost("/{id:guid}/journal-suggestions", SaveJournalAsync);
         group.MapPost("/{id:guid}/journal-suggestions/{entryId:guid}/decision", DecideJournalAsync);
 
+        // Idempotent "fill in extracted fields on an existing stub row" —
+        // used by the agent's save_voucher tool after OCR + LLM extract so
+        // the upload flow doesn't create a duplicate row.
+        group.MapPatch("/{id:guid}/apply-extraction", ApplyExtractionAsync);
+
         return app;
     }
 
@@ -248,6 +253,41 @@ public static class VoucherEndpoints
         TenantContext.TryGet(ctx, out var tenantId);
 
         var updated = await repo.UpdateAsync(tenantId, userId, id, request, ct);
+        return updated is null ? Results.NotFound() : Results.Ok(updated);
+    }
+
+    // ApplyExtractionAsync — used by the agent's save_voucher tool AFTER
+    // the web upload flow has staged an empty voucher stub. Replaces all
+    // extracted fields + line items on the existing row (via
+    // ReplaceExtractedAsync) and marks it status='extracted'. Body is
+    // the same shape as CreateVoucherRequest, minus source_* fields
+    // which were set at stub time.
+    private static async Task<IResult> ApplyExtractionAsync(
+        Guid id,
+        CreateVoucherRequest request,
+        IVoucherRepository repo,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!TryValidate(request, out var errors))
+        {
+            return Results.ValidationProblem(errors);
+        }
+        if (!TryGetUserId(ctx, out var userId))
+        {
+            return Results.Unauthorized();
+        }
+        TenantContext.TryGet(ctx, out var tenantId);
+
+        // Ownership check — 404 if the caller doesn't own the stub.
+        var existing = await repo.FindAsync(tenantId, userId, id, ct);
+        if (existing is null)
+        {
+            return Results.NotFound();
+        }
+
+        await repo.ReplaceExtractedAsync(id, request, ct);
+        var updated = await repo.FindAsync(tenantId, userId, id, ct);
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
 

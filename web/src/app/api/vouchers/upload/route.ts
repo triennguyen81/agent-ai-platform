@@ -49,17 +49,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(uploadJson, { status: 200 });
   }
 
-  // Step 2 — LLM extract + save via agent
+  // Step 2 — LLM extract + save via agent.
+  // voucher_id is passed to save_voucher so the tool routes to
+  // PATCH /vouchers/{id}/apply-extraction (updates the stub) instead
+  // of POST /vouchers (creates a duplicate row).
   const task = [
-    `Bạn là chuyên viên kế toán. Voucher đã có id=${uploadJson.voucherId} và raw OCR text bên dưới. Thực hiện 3 bước:`,
+    `Voucher stub đã tồn tại với id=${uploadJson.voucherId}. Thực hiện 3 bước:`,
     "",
-    `**Bước 1** — Áp dụng skill \`voucher-invoice-vat\` để trích xuất JSON từ raw text. voucher_type = "${voucherType}".`,
+    `**Bước 1** — Áp dụng skill \`voucher-invoice-vat\` để trích xuất JSON từ raw OCR text bên dưới. voucher_type = "${voucherType}".`,
     "",
     "**Bước 2** — Gọi tool `save_voucher` với:",
+    `  - voucher_id = "${uploadJson.voucherId}"  (BẮT BUỘC — để UPDATE stub, không tạo duplicate)`,
     "  - fields = JSON đã extract (bao gồm voucher_type)",
     "  - raw_text = nguyên văn raw OCR text bên dưới",
     "",
-    "**Bước 3** — Gọi tool `suggest_journal_entry` với voucher_id vừa lưu để lấy bút toán N/C theo TT200. Sau đó reply với summary ngắn:",
+    `**Bước 3** — Gọi tool \`suggest_journal_entry\` với voucher_id="${uploadJson.voucherId}" để lấy bút toán N/C theo TT200. Reply summary ngắn:`,
     "  - Số hoá đơn / ngày / bên bán / tổng tiền",
     "  - Bút toán suggest (Nợ/Có/Số tiền)",
     "  - Cảnh báo nếu có (VD: MST không hợp lệ, thiếu ngày)",

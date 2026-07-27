@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { AlertTriangle, ArrowLeft, Receipt } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
+import { VoucherExtractForm } from "@/components/voucher-extract-form";
 
 interface VoucherRecord {
   id: string;
@@ -151,6 +152,18 @@ export default async function VoucherDetailPage({ params }: PageProps) {
             <p className="text-xs">{v.errorMessage}</p>
           </div>
         </div>
+      )}
+
+      {/* Fallback flow when OCR is unavailable or the voucher hasn't been
+          extracted yet — user can paste raw text and trigger AI extraction. */}
+      {(v.status === "ocr_unavailable" ||
+        v.status === "processing" ||
+        v.status === "ocr_complete") && (
+        <VoucherExtractForm
+          voucherId={v.id}
+          voucherType={v.voucherType}
+          initialRawText={v.rawOcrText}
+        />
       )}
 
       <div className="grid gap-4 lg:grid-cols-2">

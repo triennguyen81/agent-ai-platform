@@ -99,13 +99,16 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
         "Lưu chứng từ đã trích xuất vào DB. fields là JSON object theo schema "
         "voucher-invoice-vat (voucher_type, document_number, document_date, "
         "seller_*, buyer_*, subtotal, vat_*, total_amount, line_items[], ...). "
-        "raw_text và source_path optional để giữ audit trail.",
-        {"fields": dict, "raw_text": str, "source_path": str},
+        "raw_text và source_path optional để giữ audit trail. "
+        "voucher_id: nếu có, UPDATE row đó (dùng khi voucher stub đã tồn tại "
+        "từ upload); nếu KHÔNG có, tạo row mới.",
+        {"fields": dict, "raw_text": str, "source_path": str, "voucher_id": str},
     )
     async def save_voucher(args: dict[str, Any]) -> dict[str, Any]:
         fields = args.get("fields") or {}
         raw_text = str(args.get("raw_text", ""))
         source_path = str(args.get("source_path", "")) or None
+        voucher_id = str(args.get("voucher_id", "")).strip() or None
 
         if not isinstance(fields, dict):
             return {"content": [{"type": "text", "text": "fields phải là dict"}]}
@@ -166,14 +169,20 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
             "lineItems": line_items_out,
         }
 
-        async with httpx.AsyncClient(timeout=20) as client:
-            res = await client.post(
-                f"{gateway_base}/vouchers",
-                headers=auth_headers,
-                json=body,
-            )
+        # Route to update-existing endpoint if caller passed an id.
+        # Prevents duplicate rows when the web upload flow already staged
+        # an empty voucher stub and we're just filling in extracted fields.
+        if voucher_id:
+            url = f"{gateway_base}/vouchers/{voucher_id}/apply-extraction"
+            verb = "PATCH"
+        else:
+            url = f"{gateway_base}/vouchers"
+            verb = "POST"
 
-        if res.status_code not in (200, 201):
+        async with httpx.AsyncClient(timeout=20) as client:
+            res = await client.request(verb, url, headers=auth_headers, json=body)
+
+        if res.status_code not in (200, 201, 204):
             return {
                 "content": [
                     {
@@ -183,16 +192,22 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
                 ]
             }
 
-        saved = res.json()
+        # PATCH may return empty body (204) — fall back to args.
+        try:
+            saved = res.json() if res.text else {}
+        except Exception:
+            saved = {}
         voucher = saved.get("voucher") or saved
+        vid = voucher.get("id") or voucher_id
         return {
             "content": [
                 {
                     "type": "text",
                     "text": (
-                        f"✓ Đã lưu chứng từ id={voucher.get('id')} "
-                        f"số={voucher.get('documentNumber')!r} "
-                        f"tổng tiền={voucher.get('totalAmount')} "
+                        f"✓ Đã {'cập nhật' if voucher_id else 'tạo'} chứng từ "
+                        f"id={vid} "
+                        f"số={fields.get('document_number')!r} "
+                        f"tổng tiền={fields.get('total_amount')} "
                         f"với {len(line_items_out)} dòng."
                     ),
                 }
