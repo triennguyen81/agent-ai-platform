@@ -64,6 +64,9 @@ def _to_response(result: PipelineResult) -> PipelineResponse:
     )
 
 
+_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic")
+
+
 @router.post("/pdf", response_model=PipelineResponse)
 async def run_pdf(
     file: UploadFile = File(...),
@@ -84,6 +87,58 @@ async def run_pdf(
 
     try:
         result = await pipeline.run_pdf(content)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    return _to_response(result)
+
+
+@router.post("/image", response_model=PipelineResponse)
+async def run_image(
+    file: UploadFile = File(...),
+    pipeline: OcrPipeline = Depends(_pipeline),
+) -> PipelineResponse:
+    """Accept a single image (JPG/PNG/WebP/HEIC/BMP/TIFF) → OCR as 1 page.
+
+    Voucher photos come from phone cameras or scanners as standalone images.
+    The endpoint normalizes them to PNG (with EXIF rotation applied) and feeds
+    the pipeline's page-based run_pages() with a single-element list.
+    """
+
+    filename = (file.filename or "").lower()
+    if not filename.endswith(_IMAGE_SUFFIXES):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Only image uploads accepted: {', '.join(_IMAGE_SUFFIXES)}",
+        )
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty image upload.",
+        )
+
+    from aiq_agent.ocr.image import normalize_image_to_png_async
+
+    try:
+        png_bytes = await normalize_image_to_png_async(content)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    try:
+        result = await pipeline.run_pages([png_bytes])
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

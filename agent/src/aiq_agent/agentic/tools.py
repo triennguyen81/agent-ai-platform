@@ -14,6 +14,7 @@ from claude_agent_sdk import tool
 
 from aiq_agent.agentic.accounting_tools import build_accounting_tools
 from aiq_agent.agentic.contract_tools import build_contract_tools
+from aiq_agent.agentic.voucher_tools import build_voucher_tools
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +218,7 @@ def build_tools(*, token: str, gateway_base: str) -> list[Any]:
 
     accounting_tools = build_accounting_tools(token=token, gateway_base=gateway_base)
     contract_tools = build_contract_tools(token=token, gateway_base=gateway_base)
+    voucher_tools = build_voucher_tools(token=token, gateway_base=gateway_base)
     return [
         search_notes,
         get_note,
@@ -224,4 +226,5 @@ def build_tools(*, token: str, gateway_base: str) -> list[Any]:
         fetch_url,
         *accounting_tools,
         *contract_tools,
+        *voucher_tools,
     ]

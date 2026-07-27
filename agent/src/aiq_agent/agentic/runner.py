@@ -48,6 +48,11 @@ DEFAULT_ALLOWED_TOOLS = [
     # Contract module Phase 2
     "mcp__aiq__get_contract",
     "mcp__aiq__save_checklist_items",
+    # Voucher module Phase 1
+    "mcp__aiq__extract_voucher_fields",
+    "mcp__aiq__save_voucher",
+    "mcp__aiq__verify_einvoice_tct",
+    "mcp__aiq__suggest_journal_entry",
 ]
 
 

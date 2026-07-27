@@ -13,6 +13,7 @@ using Aiq.Gateway.Middleware;
 using Aiq.Gateway.Notes;
 using Aiq.Gateway.Observability;
 using Aiq.Gateway.Security;
+using Aiq.Gateway.Vouchers;
 using Hangfire;
 using Hangfire.PostgreSql;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -31,6 +32,8 @@ AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 // `string[]` record fields — without this the notes/users LIST queries
 // throw InvalidOperationException at runtime.
 Dapper.SqlMapper.AddTypeHandler(new Aiq.Gateway.Data.StringArrayTypeHandler());
+Dapper.SqlMapper.AddTypeHandler(new Aiq.Gateway.Data.DateOnlyTypeHandler());
+Dapper.SqlMapper.AddTypeHandler(new Aiq.Gateway.Data.NullableDateOnlyTypeHandler());
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -117,6 +120,7 @@ builder.Services.AddScoped<IBookRepository, BookRepository>();
 builder.Services.AddScoped<INoteRepository, NoteRepository>();
 builder.Services.AddScoped<IContractRepository, ContractRepository>();
 builder.Services.AddScoped<IChecklistRepository, ChecklistRepository>();
+builder.Services.AddScoped<IVoucherRepository, VoucherRepository>();
 builder.Services.AddScoped<INotificationRepository, NotificationRepository>();
 builder.Services.AddScoped<ITenantRepository, TenantRepository>();
 builder.Services.AddScoped<IAgentRepository, AgentRepository>();
@@ -296,6 +300,7 @@ app.MapBookEndpoints();
 app.MapNoteEndpoints();
 app.MapContractEndpoints();
 app.MapChecklistEndpoints();
+app.MapVoucherEndpoints();
 app.MapNotificationEndpoints();
 app.MapTenantEndpoints();
 app.MapAgentEndpoints();

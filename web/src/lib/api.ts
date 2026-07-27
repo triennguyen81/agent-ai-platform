@@ -478,6 +478,83 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  // ---------- Vouchers (kế toán chứng từ) ----------
+  listVouchers(
+    token: string,
+    params?: { voucherType?: string; status?: string; q?: string; limit?: number },
+  ) {
+    const search = new URLSearchParams();
+    if (params?.voucherType) search.set("voucherType", params.voucherType);
+    if (params?.status) search.set("status", params.status);
+    if (params?.q) search.set("q", params.q);
+    if (params?.limit) search.set("limit", String(params.limit));
+    const qs = search.toString();
+    return call(GATEWAY_BASE, `/vouchers${qs ? `?${qs}` : ""}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  getVoucher(token: string, id: string) {
+    return call(GATEWAY_BASE, `/vouchers/${id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createVoucher(token: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, "/vouchers", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateVoucher(token: string, id: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/vouchers/${id}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  deleteVoucher(token: string, id: string) {
+    return call(GATEWAY_BASE, `/vouchers/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  saveVoucherJournal(
+    token: string,
+    id: string,
+    payload: { entries: unknown[]; replaceExisting?: boolean },
+  ) {
+    return call(GATEWAY_BASE, `/vouchers/${id}/journal-suggestions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  decideVoucherJournal(
+    token: string,
+    id: string,
+    entryId: string,
+    payload: { accept: boolean; rejectReason?: string },
+  ) {
+    return call(
+      GATEWAY_BASE,
+      `/vouchers/${id}/journal-suggestions/${entryId}/decision`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      },
+    );
+  },
+  uploadVoucher(token: string, formData: FormData, voucherType: string) {
+    // multipart — do not set Content-Type manually.
+    const qs = new URLSearchParams({ voucherType }).toString();
+    return fetch(`${GATEWAY_BASE}/vouchers/upload?${qs}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+      cache: "no-store",
+    });
+  },
 };
 
 export const agent = {

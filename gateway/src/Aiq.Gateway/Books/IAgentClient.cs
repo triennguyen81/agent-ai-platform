@@ -9,6 +9,12 @@ public interface IAgentClient
         Stream pdfStream,
         string filename,
         CancellationToken ct);
+
+    Task<AgentOcrResponse> RunOcrImageAsync(
+        Stream imageStream,
+        string filename,
+        string contentType,
+        CancellationToken ct);
 }
 
 public sealed class AgentClient : IAgentClient
@@ -39,6 +45,37 @@ public sealed class AgentClient : IAgentClient
             var body = await response.Content.ReadAsStringAsync(ct);
             _logger.LogWarning(
                 "Agent OCR pipeline rejected request: status={Status} body={Body}",
+                (int)response.StatusCode, body);
+            throw new AgentRequestException(
+                $"Agent returned HTTP {(int)response.StatusCode}: {body}",
+                (int)response.StatusCode);
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<AgentOcrResponse>(cancellationToken: ct)
+            ?? throw new AgentRequestException("Agent returned an empty body.", 502);
+
+        return payload;
+    }
+
+    public async Task<AgentOcrResponse> RunOcrImageAsync(
+        Stream imageStream,
+        string filename,
+        string contentType,
+        CancellationToken ct)
+    {
+        using var content = new MultipartFormDataContent();
+        using var fileContent = new StreamContent(imageStream);
+        var mediaType = string.IsNullOrWhiteSpace(contentType) ? "image/jpeg" : contentType;
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
+        content.Add(fileContent, "file", filename);
+
+        using var response = await _http.PostAsync("/ocr/image", content, ct);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogWarning(
+                "Agent OCR image rejected: status={Status} body={Body}",
                 (int)response.StatusCode, body);
             throw new AgentRequestException(
                 $"Agent returned HTTP {(int)response.StatusCode}: {body}",

@@ -111,3 +111,26 @@ WHERE a.code = 'contract-monitor'
     'mcp__aiq__save_checklist_items'
   )
 ON CONFLICT (agent_id, tool_id) DO NOTHING;
+
+-- ----------------------------------------------------------------------------
+-- Voucher module Phase 1 (Vouchers · Kế toán chứng từ)
+-- ----------------------------------------------------------------------------
+INSERT INTO tools (code, name, description, category, risk_tier, min_action_tier)
+VALUES
+    ('mcp__aiq__extract_voucher_fields',
+     'Extract voucher fields',
+     'Parse raw OCR text of a Vietnamese voucher (hoá đơn VAT, phiếu thu/chi, uỷ nhiệm chi, sao kê) into structured JSON.',
+     'read', 'low', 'suggest'),
+    ('mcp__aiq__save_voucher',
+     'Save voucher',
+     'Persist extracted voucher + line items into the vouchers table.',
+     'write', 'medium', 'execute_with_approval'),
+    ('mcp__aiq__verify_einvoice_tct',
+     'Verify e-invoice with TCT',
+     'Look up VAT invoice against Tổng cục Thuế (hoadondientu.gdt.gov.vn). Best-effort — falls back to local MST + format checks.',
+     'read', 'low', 'read_only'),
+    ('mcp__aiq__suggest_journal_entry',
+     'Suggest journal entry',
+     'Propose Nợ/Có journal entries per Vietnamese TT200 chart of accounts for a saved voucher.',
+     'read', 'low', 'suggest')
+ON CONFLICT (code) DO NOTHING;
