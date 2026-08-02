@@ -59,6 +59,20 @@ services:
       # from a potential `postgres` alias on the shared agentic-net.
       MEMORY_BACKEND: "postgres"
       MEMORY_POSTGRES_DSN: "postgresql://${POSTGRES_USER:-aiq}:${POSTGRES_PASSWORD:-aiq}@aiq-postgres:5432/${POSTGRES_DB:-aiq}"
+      # Route /chat + /agent/run through the local `claude` CLI subprocess
+      # so requests bill against a Claude Max/Pro subscription instead of a
+      # pay-per-token API key. Requires `docker exec -it aiq-agent claude login`
+      # once after the volume is mounted (OAuth token persists in the volume).
+      LLM_PROVIDER: ${LLM_PROVIDER:-claude_cli}
+      # Explicitly unset so the CLI falls through to OAuth (subscription)
+      # instead of silently reusing an API key that may have $0 balance.
+      # Comment this line and set ANTHROPIC_API_KEY in .env to switch back.
+      ANTHROPIC_API_KEY: ""
+    volumes:
+      # Persist the OAuth token created by `claude login` across container
+      # recreates. Without this, every `docker compose up -d agent` would
+      # log the user out and break every LLM call.
+      - agent_claude_home:/home/app/.claude
     networks:
       - aiq-net
       - agentic-net
@@ -98,3 +112,9 @@ networks:
   agentic-net:
     external: true
     name: agentic-net
+
+volumes:
+  # OAuth token store for the `claude` CLI running inside aiq-agent.
+  # Once `claude login` has been run inside the container, the token in
+  # here powers every /chat + /agent/run call — no API key needed.
+  agent_claude_home:

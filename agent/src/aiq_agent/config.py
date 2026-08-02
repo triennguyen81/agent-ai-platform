@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-LlmProvider = Literal["ollama", "anthropic"]
+LlmProvider = Literal["ollama", "anthropic", "claude_cli"]
 MemoryBackend = Literal["in_memory", "redis", "postgres"]
 
 
@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = Field(default=None)
     anthropic_model: str = Field(default="claude-sonnet-4-6")
     anthropic_max_tokens: int = Field(default=2048, gt=0)
+
+    # ---- Claude CLI (subscription auth via `claude login`) ----
+    # max_turns caps how many assistant/tool round-trips a single /chat
+    # call can spend before returning. Keep it small — /chat is meant to
+    # be single-turn; multi-turn agentic work goes through /agent/run.
+    claude_cli_max_turns: int = Field(default=4, gt=0, le=20)
 
     # ---- Gateway (for agentic tools that proxy through Gateway) ----
     gateway_base_url: str = Field(default="http://aiq-gateway:8080")
