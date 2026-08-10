@@ -28,6 +28,7 @@ interface VoucherRecord {
   amountInWords?: string | null;
   tctVerified?: boolean;
   tctVerifiedAt?: string | null;
+  sourceFilePath?: string | null;
   sourceFileName?: string | null;
   sourceMimeType?: string | null;
   rawOcrText?: string | null;
@@ -152,6 +153,40 @@ export default async function VoucherDetailPage({ params }: PageProps) {
             <p className="text-xs">{v.errorMessage}</p>
           </div>
         </div>
+      )}
+
+      {/* Uploaded file preview — images inline, PDFs as a download link.
+          The /api/vouchers/{id}/preview route proxies through the gateway
+          which either redirects to a signed MinIO URL (if the file is in
+          S3) or streams from the legacy local upload volume. */}
+      {v.sourceFilePath && (
+        <section className="space-y-2 rounded-[var(--radius)] border p-5">
+          <h2 className="font-serif text-lg">File gốc</h2>
+          {v.sourceMimeType?.startsWith("image/") ? (
+            <a
+              href={`/api/vouchers/${v.id}/preview`}
+              target="_blank"
+              rel="noreferrer"
+              className="block max-w-md"
+            >
+              <img
+                src={`/api/vouchers/${v.id}/preview`}
+                alt={v.sourceFileName ?? "Voucher"}
+                className="rounded-[var(--radius)] border object-contain"
+                style={{ maxHeight: 480 }}
+              />
+            </a>
+          ) : (
+            <a
+              href={`/api/vouchers/${v.id}/preview`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 text-sm text-[var(--color-primary)] hover:underline"
+            >
+              📄 {v.sourceFileName ?? "Download file"}
+            </a>
+          )}
+        </section>
       )}
 
       {/* Fallback flow when OCR is unavailable or the voucher hasn't been

@@ -38,6 +38,12 @@ public static class VoucherEndpoints
         group.MapPost("/{id:guid}/journal-suggestions", SaveJournalAsync);
         group.MapPost("/{id:guid}/journal-suggestions/{entryId:guid}/decision", DecideJournalAsync);
 
+        // Preview: streams the uploaded voucher file through the gateway
+        // so the browser never needs a direct route to MinIO. Signed URLs
+        // would offload the bytes but require MinIO to be publicly
+        // reachable + SSL — more infra work for no MVP-critical gain.
+        group.MapGet("/{id:guid}/preview", GetPreviewAsync);
+
         // Idempotent "fill in extracted fields on an existing stub row" —
         // used by the agent's save_voucher tool after OCR + LLM extract so
         // the upload flow doesn't create a duplicate row.
@@ -273,6 +279,83 @@ public static class VoucherEndpoints
     // ReplaceExtractedAsync) and marks it status='extracted'. Body is
     // the same shape as CreateVoucherRequest, minus source_* fields
     // which were set at stub time.
+    // GET /vouchers/{id}/preview
+    // Streams the uploaded file from MinIO back to the browser. Wraps
+    // the S3 GetObject stream through our own auth layer so voucher
+    // access still goes through the standard ACL check.
+    //
+    // If the row's source_file_path is a legacy local path (not an S3
+    // key), we fall back to reading from the local upload volume so
+    // pre-migration rows still render.
+    private static async Task<IResult> GetPreviewAsync(
+        Guid id,
+        IVoucherRepository repo,
+        IObjectStorage storage,
+        IOptions<S3Options> s3Options,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!TryGetUserId(ctx, out var userId))
+        {
+            return Results.Unauthorized();
+        }
+        TenantContext.TryGet(ctx, out var tenantId);
+
+        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        if (voucher is null)
+        {
+            return Results.NotFound();
+        }
+        var path = voucher.Voucher.SourceFilePath;
+        if (string.IsNullOrEmpty(path))
+        {
+            return Results.NotFound(new { error = "voucher has no source file" });
+        }
+        var contentType = voucher.Voucher.SourceMimeType ?? "application/octet-stream";
+        var downloadName = voucher.Voucher.SourceFileName ?? "voucher";
+
+        // S3-hosted rows use the vouchers/... prefix from the E-4 upload
+        // path. Everything else is a legacy /var/aiq/uploads/... path
+        // from before the migration.
+        if (path.StartsWith("vouchers/", StringComparison.Ordinal))
+        {
+            var signedUrl = await storage.GetSignedUrlAsync(
+                s3Options.Value.VoucherBucket,
+                path,
+                TimeSpan.FromMinutes(2),
+                ct);
+
+            // Redirect the browser to the signed URL directly. Keeps
+            // gateway CPU/memory idle even for large PDFs — MinIO
+            // serves the bytes. Requires Object__PublicUrlPrefix to be
+            // set so the URL is reachable from outside Docker net;
+            // otherwise fall through to streaming.
+            if (!string.IsNullOrEmpty(s3Options.Value.PublicUrlPrefix))
+            {
+                return Results.Redirect(signedUrl, permanent: false);
+            }
+
+            // No public prefix — stream through gateway.
+            using var http = new HttpClient();
+            var res = await http.GetAsync(signedUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                return Results.Problem(
+                    title: "Preview fetch failed",
+                    statusCode: (int)res.StatusCode);
+            }
+            var stream = await res.Content.ReadAsStreamAsync(ct);
+            return Results.File(stream, contentType, downloadName);
+        }
+
+        // Legacy local-file path — read from Docker volume mount.
+        if (!File.Exists(path))
+        {
+            return Results.NotFound(new { error = "local file missing (migrate to S3 or re-upload)" });
+        }
+        return Results.File(File.OpenRead(path), contentType, downloadName);
+    }
+
     private static async Task<IResult> ApplyExtractionAsync(
         Guid id,
         CreateVoucherRequest request,
