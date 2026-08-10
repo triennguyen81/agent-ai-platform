@@ -72,7 +72,6 @@ public sealed class S3ObjectStorage : IObjectStorage, IDisposable
                 Key = key,
                 InputStream = uploadStream,
                 ContentType = contentType,
-                DisablePayloadSigning = true,  // MinIO compatibility
             };
 
             var response = await _client.PutObjectAsync(request, ct);

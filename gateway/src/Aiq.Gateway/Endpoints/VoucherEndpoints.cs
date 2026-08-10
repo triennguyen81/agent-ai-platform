@@ -1,7 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Books;
-using Aiq.Gateway.Configuration;
 using Aiq.Gateway.Middleware;
+using Aiq.Gateway.Storage;
 using Aiq.Gateway.Vouchers;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
@@ -57,7 +57,8 @@ public static class VoucherEndpoints
         IFormFile file,
         IAgentClient agent,
         IVoucherRepository repo,
-        IOptions<JobsOptions> jobsOptions,
+        IObjectStorage storage,
+        IOptions<S3Options> s3Options,
         HttpContext ctx,
         CancellationToken ct,
         string voucherType = "invoice_vat")
@@ -84,26 +85,54 @@ public static class VoucherEndpoints
             return Results.BadRequest(new { error = $"content-type '{contentType}' không hỗ trợ. Dùng image/* hoặc application/pdf." });
         }
 
-        // Stage the file so we can persist source_file_path for audit + user re-preview.
-        var staging = jobsOptions.Value.UploadStagingDirectory;
-        Directory.CreateDirectory(staging);
         var extension = Path.GetExtension(file.FileName);
         if (string.IsNullOrEmpty(extension))
         {
             extension = isImage ? ".jpg" : ".pdf";
         }
-        var stagedPath = Path.Combine(staging, $"voucher-{Guid.NewGuid():N}{extension}");
-        await using (var dest = File.Create(stagedPath))
+
+        // ---------------------------------------------------------------
+        // E-Step 4 — upload to MinIO/S3 instead of the local Docker
+        // volume. Key layout: vouchers/{userId}/{uuid}{ext}. The user
+        // prefix lets us implement "delete all files for user X" cheaply
+        // (S3 list + delete under prefix) for future GDPR-style requests.
+        // Buffer the incoming stream into memory (bounded to 25MB by
+        // MaxUploadBytes above) so we can push it to S3 AND re-read it
+        // for the OCR call without a second network round-trip.
+        // ---------------------------------------------------------------
+        var s3Key = $"vouchers/{userId:N}/{Guid.NewGuid():N}{extension}";
+        var bucket = s3Options.Value.VoucherBucket;
+
+        byte[] fileBytes;
+        await using (var buffer = new MemoryStream(capacity: (int)file.Length))
         {
-            await file.CopyToAsync(dest, ct);
+            await file.CopyToAsync(buffer, ct);
+            fileBytes = buffer.ToArray();
         }
 
-        // Create stub row so callers get a voucherId immediately (in case OCR takes long).
+        try
+        {
+            await using var s3UploadStream = new MemoryStream(fileBytes, writable: false);
+            await storage.PutAsync(bucket, s3Key, s3UploadStream, contentType, ct);
+        }
+        catch (Exception ex)
+        {
+            return Results.Problem(
+                type: "https://aiq.local/problems/storage",
+                title: "Object storage upload failed",
+                statusCode: StatusCodes.Status502BadGateway,
+                detail: ex.Message);
+        }
+
+        // The stub still records `source_file_path` = the S3 key so
+        // downstream code doesn't have to distinguish local vs S3
+        // paths. Migration script + serving layer will parse the
+        // vouchers/... prefix to detect S3-hosted files.
         var voucherId = await repo.CreateStubAsync(
             tenantId,
             userId,
             voucherType,
-            stagedPath,
+            s3Key,
             file.FileName,
             contentType,
             ct);
@@ -119,43 +148,25 @@ public static class VoucherEndpoints
         string? ocrError = null;
         try
         {
-            await using var readStream = File.OpenRead(stagedPath);
+            await using var ocrStream = new MemoryStream(fileBytes, writable: false);
             var ocr = isImage
-                ? await agent.RunOcrImageAsync(readStream, file.FileName, contentType, ct)
-                : await agent.RunOcrPipelineAsync(readStream, file.FileName, ct);
+                ? await agent.RunOcrImageAsync(ocrStream, file.FileName, contentType, ct)
+                : await agent.RunOcrPipelineAsync(ocrStream, file.FileName, ct);
             joinedText = ocr.JoinedText ?? string.Empty;
             avgConfidence = (decimal)ocr.AverageConfidence;
         }
-        catch (AgentRequestException ex) when (ex.UpstreamStatus == 503)
-        {
-            // PaddleOCR not installed / OCR pipeline unavailable
-            responseStatus = "ocr_unavailable";
-            ocrError = "OCR pipeline chưa cài đặt (PaddleOCR). Vui lòng paste raw text tay để extract.";
-        }
         catch (AgentRequestException ex)
         {
-            await repo.UpdateAsync(
-                tenantId,
-                userId,
-                voucherId,
-                new UpdateVoucherRequest(
-                    Status: "rejected",
-                    DocumentNumber: null, DocumentSeries: null, DocumentDate: null,
-                    SellerName: null, SellerMst: null, SellerAddress: null,
-                    BuyerName: null, BuyerMst: null, BuyerAddress: null,
-                    PaymentMethod: null, Subtotal: null, VatRate: null, VatAmount: null,
-                    DiscountAmount: null, TotalAmount: null, Currency: null,
-                    AmountInWords: null,
-                    ErrorMessage: $"OCR failed: {ex.Message}",
-                    Tags: null),
-                ct);
-            return Results.Ok(new
-            {
-                voucherId,
-                status = "rejected",
-                error = ex.Message,
-                stagedPath,
-            });
+            // Any OCR failure (503 = pipeline down, 500 = runtime bug like
+            // PaddleOCR 3.x mkldnn crash) degrades to ocr_unavailable —
+            // the file is safely in S3, the voucher stub is created, and
+            // the web tier's paste-text UI lets the user drive extraction
+            // without OCR. Rejecting the whole upload would waste the
+            // stub row and force the user to re-upload.
+            responseStatus = "ocr_unavailable";
+            ocrError = ex.UpstreamStatus == 503
+                ? "OCR pipeline chưa khả dụng. Vui lòng paste raw text tay để extract."
+                : $"OCR runtime lỗi ({ex.UpstreamStatus}). Vui lòng paste raw text tay để extract.";
         }
         await repo.UpdateAsync(
             tenantId,
