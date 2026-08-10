@@ -335,11 +335,86 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
             ]
         }
 
+    @tool(
+        "save_journal_suggestions",
+        "Persist the journal N/C entries proposed by suggest_journal_entry "
+        "into voucher_journal_suggestions so the web detail page shows "
+        "them and the user can accept/reject. entries is a JSON array of "
+        "objects: {entry_no, debit_account, credit_account, amount, "
+        "description, confidence}. Set replace_existing=true (default) to "
+        "wipe prior AI proposals before writing this batch.",
+        {"voucher_id": str, "entries": list, "replace_existing": bool},
+    )
+    async def save_journal_suggestions(args: dict[str, Any]) -> dict[str, Any]:
+        vid = str(args.get("voucher_id", "")).strip()
+        entries_in = args.get("entries") or []
+        replace = bool(args.get("replace_existing", True))
+
+        if not vid:
+            return {"content": [{"type": "text", "text": "voucher_id required"}]}
+        if not isinstance(entries_in, list) or not entries_in:
+            return {"content": [{"type": "text", "text": "entries must be a non-empty list"}]}
+
+        # Normalize + drop malformed rows so the LLM's shape drift
+        # doesn't fail the whole batch. Skip any entry missing the two
+        # sides of the T-account or a positive amount.
+        normalized: list[dict[str, Any]] = []
+        for idx, raw in enumerate(entries_in, start=1):
+            if not isinstance(raw, dict):
+                continue
+            debit = str(raw.get("debit_account") or "").strip()
+            credit = str(raw.get("credit_account") or "").strip()
+            amount = _to_number(raw.get("amount"))
+            if not debit or not credit or not amount or amount <= 0:
+                continue
+            normalized.append(
+                {
+                    "entryNo": int(raw.get("entry_no", idx)),
+                    "debitAccount": debit,
+                    "creditAccount": credit,
+                    "amount": amount,
+                    "description": raw.get("description"),
+                    "confidence": _to_number(raw.get("confidence")),
+                }
+            )
+
+        if not normalized:
+            return {"content": [{"type": "text", "text": "no valid entries after normalization"}]}
+
+        body = {"entries": normalized, "replaceExisting": replace}
+        async with httpx.AsyncClient(timeout=15) as client:
+            res = await client.post(
+                f"{gateway_base}/vouchers/{vid}/journal-suggestions",
+                headers=auth_headers,
+                json=body,
+            )
+        if res.status_code not in (200, 201):
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Save journal failed ({res.status_code}): {res.text[:200]}",
+                    }
+                ]
+            }
+
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"✓ Đã lưu {len(normalized)} bút toán suggest cho voucher {vid}."
+                    ),
+                }
+            ]
+        }
+
     return [
         extract_voucher_fields,
         save_voucher,
         verify_einvoice_tct,
         suggest_journal_entry,
+        save_journal_suggestions,
     ]
 
 

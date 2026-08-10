@@ -33,12 +33,20 @@ RUN pip install --no-index --find-links /wheels aiq-agent && rm -rf /wheels
 
 # OCR extras — enables /ocr/pdf + /ocr/image endpoints (PaddleOCR VN language
 # model + PIL image normalizer + pypdfium2 PDF renderer). Adds ~500 MB to
-# the image. Pulls from PyPI at build time (not from local wheels) so this
-# stays optional for consumers who don't want the OCR pipeline.
-# Requires libgomp1 + libglib2.0-0 for onnxruntime/OpenCV runtime.
+# the image.
+#
+# Pinned to PaddleOCR 2.9.x / PaddlePaddle 2.6.x on purpose:
+#   - PaddleOCR 3.0 rewrote the API (dropped use_angle_cls, use_gpu, cls=True)
+#     and ships a new paddle static runner that throws
+#     `NotImplementedError: ConvertPirAttribute2RuntimeAttribute` under
+#     oneDNN on CPU (verified in agent logs 2026-08).
+#   - 2.9.1 + paddlepaddle 2.6.2 = last combo with stable, working CPU OCR.
+#   - When paddleocr 3.x + paddlepaddle 3.x ship a fixed CPU path,
+#     unpin here and update agent/src/aiq_agent/ocr/extractor.py to
+#     use the new predict() signature.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libgomp1 libglib2.0-0 libgl1 \
- && pip install "paddleocr>=2.8" "paddlepaddle>=2.6" "pypdfium2>=4.30" "Pillow>=10.4" \
+ && pip install "setuptools>=68" "paddleocr==2.9.1" "paddlepaddle==2.6.2" "pypdfium2>=4.30" "Pillow>=10.4" \
  && rm -rf /var/lib/apt/lists/*
 
 # SKILL.md packages — loaded at app startup, see aiq_agent/main.py.

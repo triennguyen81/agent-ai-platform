@@ -132,5 +132,9 @@ VALUES
     ('mcp__aiq__suggest_journal_entry',
      'Suggest journal entry',
      'Propose Nợ/Có journal entries per Vietnamese TT200 chart of accounts for a saved voucher.',
-     'read', 'low', 'suggest')
+     'read', 'low', 'suggest'),
+    ('mcp__aiq__save_journal_suggestions',
+     'Save journal suggestions',
+     'Persist the AI-proposed Nợ/Có entries into voucher_journal_suggestions so the user can accept/reject on the detail page.',
+     'write', 'medium', 'execute_with_approval')
 ON CONFLICT (code) DO NOTHING;

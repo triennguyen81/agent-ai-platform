@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json.Serialization;
 
 namespace Aiq.Gateway.Books;
 
@@ -100,17 +101,20 @@ public sealed class AgentRequestException : Exception
 }
 
 // Mirrors the agent's PipelineResponse shape (api/ocr_routes.py).
+// Python returns snake_case field names — annotate PascalCase params
+// so System.Text.Json binds them (default policy is camelCase, which
+// left JoinedText / AverageConfidence null / 0 silently).
 public sealed record AgentOcrResponse(
-    int PageCount,
-    double AverageConfidence,
-    Dictionary<string, int> StageDurationsMs,
-    IReadOnlyList<AgentPageReport> Pages,
-    string JoinedText);
+    [property: JsonPropertyName("page_count")] int PageCount,
+    [property: JsonPropertyName("average_confidence")] double AverageConfidence,
+    [property: JsonPropertyName("stage_durations_ms")] Dictionary<string, int> StageDurationsMs,
+    [property: JsonPropertyName("pages")] IReadOnlyList<AgentPageReport> Pages,
+    [property: JsonPropertyName("joined_text")] string JoinedText);
 
 public sealed record AgentPageReport(
-    int PageNumber,
-    string RawText,
-    string CorrectedText,
-    double Confidence,
-    double? Similarity,
-    string? Notes);
+    [property: JsonPropertyName("page_number")] int PageNumber,
+    [property: JsonPropertyName("raw_text")] string RawText,
+    [property: JsonPropertyName("corrected_text")] string CorrectedText,
+    [property: JsonPropertyName("confidence")] double Confidence,
+    [property: JsonPropertyName("similarity")] double? Similarity,
+    [property: JsonPropertyName("notes")] string? Notes);

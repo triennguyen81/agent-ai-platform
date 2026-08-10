@@ -42,18 +42,15 @@ class StubOcrExtractor(OcrExtractor):
 
 
 class PaddleOcrExtractor(OcrExtractor):
-    """PaddleOCR adapter — lazy-imports paddleocr so the base image stays slim.
+    """PaddleOCR 2.9.x adapter (see agent/Dockerfile for the pin rationale).
 
     Install the optional dependency group first:
         pip install '.[ocr]'
-
-    PaddleOCR 3.x dropped `use_gpu` (device selection is auto now); we keep
-    the constructor arg for backwards-compat but do not pass it downstream.
     """
 
     def __init__(self, *, lang: str = "vi", use_gpu: bool = False) -> None:
         self._lang = lang
-        self._use_gpu = use_gpu  # retained for callers; not forwarded
+        self._use_gpu = use_gpu
         self._engine = None
 
     def _ensure_engine(self) -> object:
@@ -67,10 +64,10 @@ class PaddleOcrExtractor(OcrExtractor):
                 "`pip install '.[ocr]'`"
             ) from exc
 
-        # PaddleOCR 3.x signature: only lang + use_angle_cls are stable.
-        # Device auto-detected from CUDA availability; use_gpu was
-        # removed in 3.0 (raises ValueError: "Unknown argument").
-        self._engine = PaddleOCR(use_angle_cls=True, lang=self._lang)
+        # PaddleOCR 2.9.x API — stable + working CPU path with oneDNN.
+        # (3.x drops these args and its CPU runtime throws
+        # NotImplementedError under mkldnn — see Dockerfile comment.)
+        self._engine = PaddleOCR(use_angle_cls=True, lang=self._lang, use_gpu=self._use_gpu)
         return self._engine
 
     async def extract(self, pages: Sequence[bytes]) -> list[OcrPage]:

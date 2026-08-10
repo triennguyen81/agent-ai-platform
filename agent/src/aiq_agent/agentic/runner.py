@@ -53,6 +53,7 @@ DEFAULT_ALLOWED_TOOLS = [
     "mcp__aiq__save_voucher",
     "mcp__aiq__verify_einvoice_tct",
     "mcp__aiq__suggest_journal_entry",
+    "mcp__aiq__save_journal_suggestions",
 ]
 
 
