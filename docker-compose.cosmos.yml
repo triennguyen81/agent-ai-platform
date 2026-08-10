@@ -32,6 +32,13 @@ services:
   grafana:
     ports: []
 
+  # MinIO: even hide the console port on cosmos (base compose binds it
+  # to 127.0.0.1 for local dev; on cosmos we rely on SSH port-forwarding
+  # instead so nothing is on the host directly). Compose merges the
+  # ports LIST unfortunately, so this line is not sufficient by itself —
+  # the base compose file has been tightened to only expose 9001.
+  minio: {}
+
   gateway:
     ports: []
     environment:

@@ -222,6 +222,59 @@ services:
     networks:
       - aiq-net
 
+  # ---------------------------------------------------------------------------
+  # MinIO — S3-compatible object storage for voucher/contract uploads.
+  # Files are addressable by URL (signed, expiring), replicable, and can
+  # migrate to AWS S3 or Cloudflare R2 without app changes (same SDK).
+  # See docs/arch/s3-migration-plan.md for the migration rollout.
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: aiq-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-aiq}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-changeme_min_32_chars_before_prod}
+    volumes:
+      - minio_data:/data
+    # API port 9000 stays internal (aiq-net only) — no host binding.
+    # Local dev users who need the API on the host can add
+    # `MINIO_API_PORT=9000` in a per-user compose override.
+    ports:
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - aiq-net
+
+  # One-shot bucket bootstrap: creates required buckets on first boot and exits.
+  # Runs on `docker compose up`, then stays exited — no ongoing overhead.
+  minio-bootstrap:
+    image: minio/mc:latest
+    container_name: aiq-minio-bootstrap
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-aiq}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-changeme_min_32_chars_before_prod}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set aiq http://aiq-minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
+      mc mb --ignore-existing aiq/voucher-uploads;
+      mc mb --ignore-existing aiq/contract-uploads;
+      mc anonymous set none aiq/voucher-uploads;
+      mc anonymous set none aiq/contract-uploads;
+      echo 'Buckets ready';
+      "
+    networks:
+      - aiq-net
+    restart: "no"
+
   grafana:
     image: grafana/grafana:11.4.0
     container_name: aiq-grafana
@@ -252,6 +305,7 @@ volumes:
   prometheus_data:
   loki_data:
   grafana_data:
+  minio_data:
 
 networks:
   aiq-net:
