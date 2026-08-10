@@ -52,7 +52,20 @@ SELECT
             'ma-board-pack-prep',
             'ma-project-management',
             'ma-data-room-management',
-            'ma-closing-and-integration'
+            'ma-closing-and-integration',
+            -- ib-* pack (English, concise prompt-oriented) — complements
+            -- the deep VN-context ma-* pack. Only the skills that don't
+            -- overlap with ma-* are included here.
+            'ib-committee-qa-prep',
+            'ib-committee-recommendation',
+            'ib-thesis-angle-development',
+            'ib-sector-screen-mapping',
+            'ib-scenario-toggle-design',
+            'ib-sensitivity-tables',
+            'ib-three-statement-build',
+            'ib-model-audit-review',
+            'ib-risk-flag-register',
+            'ib-buyer-qa-management'
         ),
         'model', 'claude-haiku-4-5-20251001',
         'max_turns', 12,
