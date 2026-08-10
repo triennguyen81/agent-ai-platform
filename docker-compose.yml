@@ -83,6 +83,14 @@ services:
       Agent__BaseUrl: ${AGENT_INTERNAL_BASE_URL:-http://agent:8000}
       Agent__TimeoutSeconds: ${AGENT_TIMEOUT_SECONDS:-300}
       ExternalAuth__SharedSecret: ${EXTERNAL_AUTH_SHARED_SECRET:-}
+      # Object storage (MinIO). Gateway talks to it over aiq-net.
+      Object__ServiceUrl: ${OBJECT_SERVICE_URL:-http://aiq-minio:9000}
+      Object__AccessKey: ${MINIO_ROOT_USER:-aiq}
+      Object__SecretKey: ${MINIO_ROOT_PASSWORD:-}
+      Object__ForcePathStyle: "true"
+      Object__VoucherBucket: ${OBJECT_VOUCHER_BUCKET:-voucher-uploads}
+      Object__ContractBucket: ${OBJECT_CONTRACT_BUCKET:-contract-uploads}
+      Object__PublicUrlPrefix: ${OBJECT_PUBLIC_URL_PREFIX:-}
       Jobs__UploadStagingDirectory: /var/aiq/uploads
       Jobs__WorkerCount: ${HANGFIRE_WORKERS:-4}
       Observability__ServiceName: aiq-gateway

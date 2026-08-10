@@ -37,6 +37,8 @@
     <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
     <!-- Pin patched Grpc.Net.Client to resolve transitive vulnerability GHSA-4625-4j76-fww9. -->
     <PackageReference Include="Grpc.Net.Client" Version="2.67.0" />
+    <!-- S3-compatible object storage (MinIO on cosmos, AWS S3 anywhere else). -->
+    <PackageReference Include="AWSSDK.S3" Version="3.7.416" />
   </ItemGroup>
 
 </Project>

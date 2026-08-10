@@ -13,6 +13,7 @@ using Aiq.Gateway.Middleware;
 using Aiq.Gateway.Notes;
 using Aiq.Gateway.Observability;
 using Aiq.Gateway.Security;
+using Aiq.Gateway.Storage;
 using Aiq.Gateway.Vouchers;
 using Hangfire;
 using Hangfire.PostgreSql;
@@ -132,6 +133,13 @@ builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IFileUploadGuard, FileUploadGuard>();
 builder.Services.AddSingleton<IBookAccessControl, BookAccessControl>();
+
+// ---- Object storage (S3-compatible, MinIO on cosmos) ------------------------
+// Registered even before we've refactored voucher upload to use it — lets us
+// smoke-test connectivity via /healthz/ready and stage the migration behind
+// a feature flag (see docs/arch/s3-migration-plan.md).
+builder.Services.Configure<S3Options>(builder.Configuration.GetSection(S3Options.SectionName));
+builder.Services.AddSingleton<IObjectStorage, S3ObjectStorage>();
 
 builder.Services
     .AddHttpClient<IAgentClient, AgentClient>(client =>
