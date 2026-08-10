@@ -54,3 +54,34 @@ async def fetch_allowed_tool_codes(
     except (httpx.RequestError, ValueError) as exc:
         logger.warning("Tool registry lookup failed for agent %s: %s", agent_id, exc)
         return None
+
+
+async def fetch_agent_model(
+    *,
+    gateway_base: str,
+    user_token: str,
+    agent_id: str,
+    timeout: float = 5.0,
+) -> str | None:
+    """Read the per-agent model override from the agents table.
+
+    Returns None on any failure so the runner falls back to the CLI /
+    settings default. The gateway exposes the full config document at
+    GET /agents/{id}; we just pick the `model` field.
+    """
+    url = f"{gateway_base.rstrip('/')}/agents/{agent_id}"
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            res = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+        if res.status_code != 200:
+            return None
+        body = res.json()
+        config = body.get("config") or {}
+        model = config.get("model")
+        return str(model) if model else None
+    except (httpx.RequestError, ValueError) as exc:
+        logger.warning("Agent config lookup failed for %s: %s", agent_id, exc)
+        return None

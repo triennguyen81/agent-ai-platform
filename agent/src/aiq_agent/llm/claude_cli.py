@@ -74,6 +74,10 @@ class ClaudeCliLlmService(LlmService):
         options = ClaudeAgentOptions(
             system_prompt=system_prompt,
             max_turns=self._max_turns,
+            # Pin the model here (rather than letting the CLI default
+            # kick in) so LlmService.chat() actually uses what settings
+            # say — makes swaps like Haiku→Sonnet a settings change.
+            model=self.model,
         )
 
         chunks: list[str] = []

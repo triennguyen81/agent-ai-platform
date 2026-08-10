@@ -20,7 +20,7 @@ from claude_agent_sdk import (
     create_sdk_mcp_server,
 )
 
-from aiq_agent.agentic.registry import fetch_allowed_tool_codes
+from aiq_agent.agentic.registry import fetch_agent_model, fetch_allowed_tool_codes
 from aiq_agent.agentic.tools import build_tools
 
 logger = logging.getLogger(__name__)
@@ -78,12 +78,18 @@ async def run_task(
     skills: list[str] | str | None = "all",
     max_turns: int = 8,
     agent_id: str | None = None,
+    model: str | None = None,
 ) -> AgenticRunResult:
     """Execute `task` agentically.
 
-    When `agent_id` is supplied the allowed tool list is fetched from the
-    governance registry; otherwise the legacy hardcoded list is used so
-    existing chat/notes flows keep working.
+    When `agent_id` is supplied:
+    - allowed tool list is fetched from the governance registry
+    - the per-agent `config.model` override is fetched and passed to the
+      Claude SDK (lets e.g. bsn-ma-advisor run on Sonnet 4.6 while
+      bsn-assistant stays on Haiku 4.5)
+
+    Explicit `model` param takes precedence over the per-agent override.
+    When neither is set, the CLI default applies.
 
     Returns the assistant's final text + a list of intermediate text
     blocks (so the UI can render a step-by-step trace).
@@ -96,6 +102,7 @@ async def run_task(
     )
 
     allowed_tools: list[str] = list(DEFAULT_ALLOWED_TOOLS)
+    resolved_model = model
     if agent_id:
         registry_codes = await fetch_allowed_tool_codes(
             gateway_base=gateway_base,
@@ -115,11 +122,22 @@ async def run_task(
                 agent_id,
             )
 
+        if resolved_model is None:
+            fetched_model = await fetch_agent_model(
+                gateway_base=gateway_base,
+                user_token=user_token,
+                agent_id=agent_id,
+            )
+            if fetched_model:
+                resolved_model = fetched_model
+                logger.info("agent %s: using registered model %s", agent_id, fetched_model)
+
     options = ClaudeAgentOptions(
         mcp_servers={"aiq": mcp_server},
         allowed_tools=allowed_tools,
         skills=skills,
         max_turns=max_turns,
+        model=resolved_model,
         system_prompt=(
             "Bạn là agentic assistant của AIQ. Có quyền dùng tools để search "
             "/ đọc / lưu note vào knowledge base, và fetch URL công khai. "
