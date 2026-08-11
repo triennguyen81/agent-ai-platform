@@ -4,16 +4,147 @@ import { getSession } from "@/lib/auth";
 
 /**
  * Voucher upload flow (Phase 1 — hoá đơn VAT):
- *   1. Web client posts multipart to /api/vouchers/upload with the image file
- *   2. This route forwards to Gateway /vouchers/upload — Gateway stages the
- *      file, runs /ocr/image, and returns { voucherId, rawText, ocrConfidence }
- *   3. This route then calls /agent/run with the raw text + `save_voucher`
- *      tool so the agent extracts + patches the voucher record
- *   4. Response back to client contains voucherId → client redirects to detail
- *
- * The two-hop keeps OCR in Gateway (single upload byte pipe) and LLM
- * extraction in Agent, matching the contract flow.
+ *   1. Web posts multipart to gateway /vouchers/upload → stub row + S3 key
+ *   2. Ask agent to (a) extract JSON per voucher-invoice-vat, then
+ *      (b) suggest N/C entries per journal-entry-formatter. We do NOT
+ *      rely on the model calling save_voucher/save_journal_suggestions
+ *      as MCP tools — Claude subscription CLI doesn't always dispatch
+ *      tool_use blocks reliably, especially when the response fits in
+ *      one text turn. Instead we parse the JSON blocks from the agent's
+ *      text reply and POST them to gateway ourselves. Deterministic.
+ *   3. PATCH /vouchers/{id}/apply-extraction with the extracted fields
+ *      (updates the stub row, no duplicate).
+ *   4. POST /vouchers/{id}/journal-suggestions with the entries array.
+ *   5. Response back to client contains voucherId → client redirects.
  */
+
+interface UploadResponse {
+  voucherId: string;
+  status: string;
+  rawText?: string;
+  ocrConfidence?: number;
+  error?: string;
+}
+
+interface AgentRunResponse {
+  final_answer?: string;
+  steps?: Array<{ text?: string }>;
+}
+
+/**
+ * Pull the first two JSON blocks (```json { ... } ```) from the agent's
+ * markdown reply. The prompt below asks the model for:
+ *   [BLOCK 1] the extracted voucher fields object
+ *   [BLOCK 2] the journal entries array
+ */
+function extractJsonBlocks(text: string): { fields: unknown | null; entries: unknown[] | null } {
+  const blocks: string[] = [];
+  const fence = /```(?:json)?\s*([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+  while ((match = fence.exec(text)) !== null) {
+    blocks.push(match[1].trim());
+  }
+
+  // Fallback: if no fenced blocks, try to find raw JSON `{...}` and `[...]`.
+  if (blocks.length === 0) {
+    const obj = text.match(/\{[\s\S]*?\}(?=\s*(?:\n|$))/);
+    if (obj) blocks.push(obj[0]);
+    const arr = text.match(/\[[\s\S]*?\](?=\s*(?:\n|$))/);
+    if (arr) blocks.push(arr[0]);
+  }
+
+  let fields: unknown | null = null;
+  let entries: unknown[] | null = null;
+
+  for (const raw of blocks) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        entries = parsed;
+      } else if (parsed && typeof parsed === "object") {
+        // Fields object: heuristic — has voucher_type OR document_number.
+        const o = parsed as Record<string, unknown>;
+        if (o.voucher_type !== undefined || o.document_number !== undefined || o.seller_name !== undefined) {
+          fields = parsed;
+        } else if (o.entries && Array.isArray(o.entries)) {
+          entries = o.entries;
+        }
+      }
+    } catch {
+      // Skip malformed block — try the next one.
+    }
+  }
+
+  return { fields, entries };
+}
+
+function toGatewayFieldsPayload(fields: Record<string, unknown>, rawText: string): Record<string, unknown> {
+  const lineItems = Array.isArray(fields.line_items)
+    ? fields.line_items.map((li, idx) => {
+        const l = li as Record<string, unknown>;
+        return {
+          ordinal: Number(l.ordinal ?? idx + 1),
+          itemCode: l.item_code ?? null,
+          description: String(l.description ?? "").slice(0, 500),
+          unit: l.unit ?? null,
+          quantity: l.quantity ?? null,
+          unitPrice: l.unit_price ?? null,
+          subtotal: l.subtotal ?? null,
+          vatRate: l.vat_rate ?? null,
+          vatAmount: l.vat_amount ?? null,
+          totalAmount: l.total_amount ?? null,
+        };
+      })
+    : [];
+
+  return {
+    voucherType: fields.voucher_type ?? "invoice_vat",
+    documentNumber: fields.document_number ?? null,
+    documentSeries: fields.document_series ?? null,
+    documentDate: fields.document_date ?? null,
+    sellerName: fields.seller_name ?? null,
+    sellerMst: fields.seller_mst ?? null,
+    sellerAddress: fields.seller_address ?? null,
+    buyerName: fields.buyer_name ?? null,
+    buyerMst: fields.buyer_mst ?? null,
+    buyerAddress: fields.buyer_address ?? null,
+    paymentMethod: fields.payment_method ?? null,
+    subtotal: fields.subtotal ?? null,
+    vatRate: fields.vat_rate ?? null,
+    vatAmount: fields.vat_amount ?? null,
+    discountAmount: fields.discount_amount ?? null,
+    totalAmount: fields.total_amount ?? null,
+    currency: fields.currency ?? "VND",
+    amountInWords: fields.amount_in_words ?? null,
+    rawOcrText: rawText,
+    extractedFields: fields,
+    tags: Array.isArray(fields.tags) ? fields.tags : [],
+    lineItems,
+  };
+}
+
+function toJournalPayload(entries: unknown[]): { entries: unknown[]; replaceExisting: boolean } {
+  const normalized = entries
+    .map((raw, idx) => {
+      if (!raw || typeof raw !== "object") return null;
+      const e = raw as Record<string, unknown>;
+      const debit = String(e.debit_account ?? "").trim();
+      const credit = String(e.credit_account ?? "").trim();
+      const amount = Number(e.amount ?? 0);
+      if (!debit || !credit || !amount || amount <= 0) return null;
+      return {
+        entryNo: Number(e.entry_no ?? idx + 1),
+        debitAccount: debit,
+        creditAccount: credit,
+        amount,
+        description: e.description ?? null,
+        confidence: e.confidence ?? null,
+      };
+    })
+    .filter((e): e is NonNullable<typeof e> => e !== null);
+  return { entries: normalized, replaceExisting: true };
+}
+
 export async function POST(request: NextRequest) {
   const token = await getSession();
   if (!token) {
@@ -29,7 +160,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "file trống" }, { status: 400 });
   }
 
-  // Step 1 — OCR via Gateway
+  // Step 1 — upload to gateway (S3 + OCR)
   const uploadForm = new FormData();
   uploadForm.append("file", file, file.name);
   const uploadRes = await gateway.uploadVoucher(token, uploadForm, voucherType);
@@ -37,44 +168,30 @@ export async function POST(request: NextRequest) {
     const errText = await uploadRes.text();
     return new NextResponse(errText, { status: uploadRes.status });
   }
-  const uploadJson = (await uploadRes.json()) as {
-    voucherId: string;
-    status: string;
-    rawText?: string;
-    ocrConfidence?: number;
-    error?: string;
-  };
+  const uploadJson = (await uploadRes.json()) as UploadResponse;
 
   if (uploadJson.status === "rejected" || !uploadJson.rawText) {
     return NextResponse.json(uploadJson, { status: 200 });
   }
 
-  // Step 2 — LLM extract + save via agent.
-  // voucher_id is passed to save_voucher so the tool routes to
-  // PATCH /vouchers/{id}/apply-extraction (updates the stub) instead
-  // of POST /vouchers (creates a duplicate row).
+  // Step 2 — ask agent for the 2 JSON blocks in one shot
   const task = [
-    `Voucher stub đã tồn tại với id=${uploadJson.voucherId}. Thực hiện 3 bước:`,
+    "Bạn là chuyên viên kế toán VN. Xử lý raw OCR text của 1 hoá đơn GTGT bên dưới.",
     "",
-    `**Bước 1** — Áp dụng skill \`voucher-invoice-vat\` để trích xuất JSON từ raw OCR text bên dưới. voucher_type = "${voucherType}".`,
+    "**BLOCK 1** — Áp dụng skill `voucher-invoice-vat` để trích xuất fields.",
+    `Trả về JSON object có voucher_type="${voucherType}", document_number, document_series, document_date (YYYY-MM-DD), seller_name, seller_mst, seller_address, buyer_name, buyer_mst, buyer_address, payment_method (CK/TM/MIXED), subtotal, vat_rate, vat_amount, discount_amount, total_amount, currency, amount_in_words, line_items[] (mỗi item: ordinal, description, unit, quantity, unit_price, subtotal, vat_rate, vat_amount, total_amount), tags[].`,
     "",
-    "**Bước 2** — Gọi tool `save_voucher` với:",
-    `  - voucher_id = "${uploadJson.voucherId}"  (BẮT BUỘC — để UPDATE stub, không tạo duplicate)`,
-    "  - fields = JSON đã extract (bao gồm voucher_type)",
-    "  - raw_text = nguyên văn raw OCR text bên dưới",
+    "**BLOCK 2** — Áp dụng skill `journal-entry-formatter` + `accounting-vietnam` để đề xuất bút toán N/C theo TT200.",
+    "Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credit_account, amount, description, confidence}.",
+    "Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331 / Có 331 (công nợ) hoặc 111/112 (trả ngay). Hoá đơn đầu ra (bán) → Nợ 131/111/112 / Có 511 + Có 3331.",
     "",
-    `**Bước 3** — Gọi tool \`suggest_journal_entry\` với voucher_id="${uploadJson.voucherId}" để lấy bút toán N/C theo TT200. Tool này trả prompt hướng dẫn; bạn sinh JSON array các bút toán theo skill journal-entry-formatter.`,
-    "",
-    `**Bước 4** — Gọi tool \`save_journal_suggestions\` với:`,
-    `  - voucher_id="${uploadJson.voucherId}"`,
-    "  - entries=JSON array vừa sinh ở Bước 3 (mỗi entry: entry_no, debit_account, credit_account, amount, description, confidence)",
-    "  - replace_existing=true",
-    "Bước này lưu bút toán vào DB để hiện trên trang detail.",
-    "",
-    "Kết thúc: reply summary ngắn:",
-    "  - Số hoá đơn / ngày / bên bán / tổng tiền",
-    "  - Bút toán N/C đã lưu (không cần liệt kê lại, chỉ số lượng entries)",
-    "  - Cảnh báo nếu có (VD: MST không hợp lệ, thiếu ngày)",
+    "**QUAN TRỌNG**: chỉ trả 2 code block JSON, KHÔNG kèm markdown khác:",
+    "```json",
+    "{ ...fields object... }",
+    "```",
+    "```json",
+    "[ ...entries array... ]",
+    "```",
     "",
     "===== RAW OCR TEXT =====",
     (uploadJson.rawText || "").slice(0, 50_000),
@@ -90,14 +207,50 @@ export async function POST(request: NextRequest) {
       "journal-entry-formatter",
       "vietnamese-style",
     ],
-    max_turns: 8,
+    max_turns: 3,
   });
-  const agentText = await agentRes.text();
+  const agentJson = (await agentRes.json().catch(() => ({}))) as AgentRunResponse;
+  const agentText = agentJson.final_answer ?? "";
+
+  // Step 3 — parse JSON blocks, PATCH voucher + POST journal
+  const { fields, entries } = extractJsonBlocks(agentText);
+
+  let extractedOk = false;
+  let journalCount = 0;
+
+  if (fields && typeof fields === "object") {
+    const payload = toGatewayFieldsPayload(fields as Record<string, unknown>, uploadJson.rawText || "");
+    const applyRes = await fetch(
+      `${process.env.GATEWAY_BASE_URL ?? "http://aiq-gateway:8080"}/vouchers/${uploadJson.voucherId}/apply-extraction`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        cache: "no-store",
+      },
+    );
+    extractedOk = applyRes.ok;
+  }
+
+  if (entries && Array.isArray(entries) && entries.length > 0) {
+    const payload = toJournalPayload(entries);
+    if (payload.entries.length > 0) {
+      const saveRes = await gateway.saveVoucherJournal(token, uploadJson.voucherId, payload);
+      if (saveRes.ok) {
+        journalCount = payload.entries.length;
+      }
+    }
+  }
 
   return NextResponse.json({
     voucherId: uploadJson.voucherId,
-    status: "processed",
+    status: extractedOk ? "extracted" : "ocr_complete",
     ocrConfidence: uploadJson.ocrConfidence,
-    agentResponse: agentText,
+    extractedFieldsOk: extractedOk,
+    journalEntriesSaved: journalCount,
+    agentResponse: agentText.slice(0, 2000),
   });
 }
