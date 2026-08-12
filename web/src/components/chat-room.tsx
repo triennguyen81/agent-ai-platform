@@ -225,28 +225,37 @@ export function ChatRoom() {
         if (!res.ok) {
           const errText = await res.text();
           let message = errText || "request failed";
-          try {
-            const parsed = JSON.parse(errText) as {
-              detail?: unknown;
-              error?: string;
-            };
-            if (typeof parsed.error === "string") {
-              message = parsed.error;
-            } else if (Array.isArray(parsed.detail) && parsed.detail.length > 0) {
-              const first = parsed.detail[0] as { msg?: string };
-              message = first.msg ?? message;
-            } else if (typeof parsed.detail === "string") {
-              message = parsed.detail;
+          const looksLikeHtml = /^\s*<(!doctype|html|head|body)/i.test(errText);
+          if (looksLikeHtml) {
+            // Cloudflare/nginx error pages — never dump raw HTML into the chat.
+            message =
+              res.status === 504
+                ? "Câu hỏi quá phức tạp, hệ thống chưa kịp trả lời trong giới hạn thời gian. Hãy chia nhỏ câu hoặc thử lại sau ít giây."
+                : "Máy chủ tạm thời không phản hồi (proxy trả về trang lỗi). Vui lòng thử lại.";
+          } else {
+            try {
+              const parsed = JSON.parse(errText) as {
+                detail?: unknown;
+                error?: string;
+              };
+              if (typeof parsed.error === "string") {
+                message = parsed.error;
+              } else if (Array.isArray(parsed.detail) && parsed.detail.length > 0) {
+                const first = parsed.detail[0] as { msg?: string };
+                message = first.msg ?? message;
+              } else if (typeof parsed.detail === "string") {
+                message = parsed.detail;
+              }
+            } catch {
+              // fall back to raw text
             }
-          } catch {
-            // fall back to raw text
           }
           setMessages((m) => [
             ...m,
             {
               id: `e-${Date.now()}`,
               role: "system",
-              content: `Error ${res.status}: ${message}`,
+              content: `Lỗi ${res.status}: ${message}`,
             },
           ]);
           return;
@@ -302,22 +311,30 @@ export function ChatRoom() {
         if (!res.ok) {
           const errText = await res.text();
           let message = errText || "agentic request failed";
-          try {
-            const parsed = JSON.parse(errText) as {
-              detail?: unknown;
-              error?: string;
-            };
-            if (typeof parsed.error === "string") message = parsed.error;
-            else if (typeof parsed.detail === "string") message = parsed.detail;
-          } catch {
-            // raw text
+          const looksLikeHtml = /^\s*<(!doctype|html|head|body)/i.test(errText);
+          if (looksLikeHtml) {
+            message =
+              res.status === 504
+                ? "Tác vụ agentic quá dài, hệ thống chưa kịp trả lời. Hãy chia nhỏ task hoặc thử lại."
+                : "Máy chủ tạm thời không phản hồi (proxy trả về trang lỗi). Vui lòng thử lại.";
+          } else {
+            try {
+              const parsed = JSON.parse(errText) as {
+                detail?: unknown;
+                error?: string;
+              };
+              if (typeof parsed.error === "string") message = parsed.error;
+              else if (typeof parsed.detail === "string") message = parsed.detail;
+            } catch {
+              // raw text
+            }
           }
           setMessages((m) => [
             ...m,
             {
               id: `e-${Date.now()}`,
               role: "system",
-              content: `Agent error ${res.status}: ${message}`,
+              content: `Agent lỗi ${res.status}: ${message}`,
             },
           ]);
           return;

@@ -20,9 +20,11 @@ interface NotesResponse {
   items?: NoteRecord[];
 }
 
-// Cap total knowledge size — Claude Haiku handles a lot but no need to
-// ship megabytes on every turn.
-const MAX_NOTES_CHARS = 60_000;
+// Cloudflare edge has a hard 100s timeout on the free plan. Claude subscription
+// CLI cold-start alone is ~20s; each extra 1000 chars of context adds ~2-3s of
+// LLM latency. Cap aggressively so realistic RAG-heavy chats finish under 60s.
+const MAX_NOTES_CHARS = 12_000;
+const MAX_CHARS_PER_NOTE = 2_500;
 
 function buildKnowledgeBlock(notes: NoteRecord[]): string {
   if (notes.length === 0) return "";
@@ -32,7 +34,12 @@ function buildKnowledgeBlock(notes: NoteRecord[]): string {
       const tags = (n.tags ?? []).filter(Boolean).join(", ");
       const header = `### Note ${i + 1}: ${n.title}` +
         (tags ? `  \n_Tags: ${tags}_` : "");
-      return `${header}\n\n${n.content.trim()}`;
+      const body = n.content.trim();
+      const truncated =
+        body.length > MAX_CHARS_PER_NOTE
+          ? body.slice(0, MAX_CHARS_PER_NOTE) + "\n\n_(nội dung đã được cắt ngắn)_"
+          : body;
+      return `${header}\n\n${truncated}`;
     })
     .join("\n\n---\n\n");
 
@@ -107,7 +114,7 @@ export async function POST(request: NextRequest) {
             title: n.title,
             content: n.content,
           })),
-          k: 10,
+          k: 3,
         });
         if (embRes.ok) {
           const embBody = (await embRes.json()) as {
