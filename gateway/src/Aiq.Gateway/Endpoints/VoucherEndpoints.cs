@@ -23,9 +23,12 @@ public static class VoucherEndpoints
 
     public static IEndpointRouteBuilder MapVoucherEndpoints(this IEndpointRouteBuilder app)
     {
+        // Any authenticated tenant member (role >= user) can upload +
+        // work with vouchers — that's the daily job of kế toán viên.
+        // Repository queries are tenant-scoped so no cross-tenant leak.
         var group = app
             .MapGroup("/vouchers")
-            .RequireAuthorization("admin")
+            .RequireAuthorization("user")
             .RequireRateLimiting("default");
 
         group.MapGet("/", ListAsync);
@@ -33,7 +36,9 @@ public static class VoucherEndpoints
         group.MapPost("/upload", UploadAsync).DisableAntiforgery();
         group.MapGet("/{id:guid}", GetAsync);
         group.MapPatch("/{id:guid}", UpdateAsync);
-        group.MapDelete("/{id:guid}", DeleteAsync);
+
+        // Destructive delete stays admin-only.
+        group.MapDelete("/{id:guid}", DeleteAsync).RequireAuthorization("admin");
 
         group.MapPost("/{id:guid}/journal-suggestions", SaveJournalAsync);
         group.MapPost("/{id:guid}/journal-suggestions/{entryId:guid}/decision", DecideJournalAsync);
