@@ -56,7 +56,17 @@ export default function VoucherUploadPage() {
     });
     if (!res.ok) {
       const text = await res.text();
-      return { ...row, status: "error", message: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+      const looksLikeHtml = /^\s*<(!doctype|html|head|body)/i.test(text);
+      let msg: string;
+      if (looksLikeHtml) {
+        msg =
+          res.status === 504
+            ? "Ảnh quá lớn hoặc mạng chậm — hệ thống chưa kịp OCR trong giới hạn thời gian."
+            : "Máy chủ tạm thời không phản hồi. Vui lòng thử lại.";
+      } else {
+        msg = text.slice(0, 200);
+      }
+      return { ...row, status: "error", message: `Lỗi ${res.status}: ${msg}` };
     }
     const body = (await res.json()) as UploadResponse;
     if (body.status === "rejected") {
@@ -71,7 +81,8 @@ export default function VoucherUploadPage() {
       ...row,
       status: "done",
       voucherId: body.voucherId,
-      message: body.agentResponse?.slice(0, 400) ?? "OK",
+      message: body.agentResponse?.slice(0, 400)
+        ?? "OCR xong — AI đang trích fields ở nền, mở trang chi tiết để xem.",
     };
   }
 

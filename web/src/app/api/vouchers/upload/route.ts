@@ -174,83 +174,100 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(uploadJson, { status: 200 });
   }
 
-  // Step 2 — ask agent for the 2 JSON blocks in one shot
-  const task = [
-    "Bạn là chuyên viên kế toán VN. Xử lý raw OCR text của 1 hoá đơn GTGT bên dưới.",
-    "",
-    "**BLOCK 1** — Áp dụng skill `voucher-invoice-vat` để trích xuất fields.",
-    `Trả về JSON object có voucher_type="${voucherType}", document_number, document_series, document_date (YYYY-MM-DD), seller_name, seller_mst, seller_address, buyer_name, buyer_mst, buyer_address, payment_method (CK/TM/MIXED), subtotal, vat_rate, vat_amount, discount_amount, total_amount, currency, amount_in_words, line_items[] (mỗi item: ordinal, description, unit, quantity, unit_price, subtotal, vat_rate, vat_amount, total_amount), tags[].`,
-    "",
-    "**BLOCK 2** — Áp dụng skill `journal-entry-formatter` + `accounting-vietnam` để đề xuất bút toán N/C theo TT200.",
-    "Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credit_account, amount, description, confidence}.",
-    "Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331 / Có 331 (công nợ) hoặc 111/112 (trả ngay). Hoá đơn đầu ra (bán) → Nợ 131/111/112 / Có 511 + Có 3331.",
-    "",
-    "**QUAN TRỌNG**: chỉ trả 2 code block JSON, KHÔNG kèm markdown khác:",
-    "```json",
-    "{ ...fields object... }",
-    "```",
-    "```json",
-    "[ ...entries array... ]",
-    "```",
-    "",
-    "===== RAW OCR TEXT =====",
-    (uploadJson.rawText || "").slice(0, 50_000),
-    "===== END =====",
-  ].join("\n");
-
-  const agentRes = await agent.runTask({
-    task,
-    user_token: token,
-    skills: [
-      "voucher-invoice-vat",
-      "accounting-vietnam",
-      "journal-entry-formatter",
-      "vietnamese-style",
-    ],
-    max_turns: 3,
+  // The agent extraction + PATCH + POST easily takes 60-90s. Cloudflare's
+  // edge cuts off at 100s. Instead of awaiting the whole pipeline here,
+  // return the voucherId immediately with status="processing" and run the
+  // extract-and-save flow as a background promise. The detail page polls
+  // for status transitions (processing → extracted).
+  const rawText = uploadJson.rawText || "";
+  void runExtractionAndSave({
+    voucherId: uploadJson.voucherId,
+    voucherType,
+    rawText,
+    token,
   });
-  const agentJson = (await agentRes.json().catch(() => ({}))) as AgentRunResponse;
-  const agentText = agentJson.final_answer ?? "";
-
-  // Step 3 — parse JSON blocks, PATCH voucher + POST journal
-  const { fields, entries } = extractJsonBlocks(agentText);
-
-  let extractedOk = false;
-  let journalCount = 0;
-
-  if (fields && typeof fields === "object") {
-    const payload = toGatewayFieldsPayload(fields as Record<string, unknown>, uploadJson.rawText || "");
-    const applyRes = await fetch(
-      `${process.env.GATEWAY_BASE_URL ?? "http://aiq-gateway:8080"}/vouchers/${uploadJson.voucherId}/apply-extraction`,
-      {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-        cache: "no-store",
-      },
-    );
-    extractedOk = applyRes.ok;
-  }
-
-  if (entries && Array.isArray(entries) && entries.length > 0) {
-    const payload = toJournalPayload(entries);
-    if (payload.entries.length > 0) {
-      const saveRes = await gateway.saveVoucherJournal(token, uploadJson.voucherId, payload);
-      if (saveRes.ok) {
-        journalCount = payload.entries.length;
-      }
-    }
-  }
 
   return NextResponse.json({
     voucherId: uploadJson.voucherId,
-    status: extractedOk ? "extracted" : "ocr_complete",
+    status: "processing",
     ocrConfidence: uploadJson.ocrConfidence,
-    extractedFieldsOk: extractedOk,
-    journalEntriesSaved: journalCount,
-    agentResponse: agentText.slice(0, 2000),
+    extractedFieldsOk: false,
+    journalEntriesSaved: 0,
   });
+}
+
+// Runs the agent extraction + PATCH + POST after we've already responded
+// to the client. Any failure is logged, not surfaced to the user — the
+// detail page will just keep showing status="processing".
+async function runExtractionAndSave(args: {
+  voucherId: string;
+  voucherType: string;
+  rawText: string;
+  token: string;
+}): Promise<void> {
+  const { voucherId, voucherType, rawText, token } = args;
+  try {
+    const task = [
+      "Bạn là chuyên viên kế toán VN. Xử lý raw OCR text của 1 hoá đơn GTGT bên dưới.",
+      "",
+      "**BLOCK 1** — Áp dụng skill `voucher-invoice-vat` để trích xuất fields.",
+      `Trả về JSON object có voucher_type="${voucherType}", document_number, document_series, document_date (YYYY-MM-DD), seller_name, seller_mst, seller_address, buyer_name, buyer_mst, buyer_address, payment_method (CK/TM/MIXED), subtotal, vat_rate, vat_amount, discount_amount, total_amount, currency, amount_in_words, line_items[] (mỗi item: ordinal, description, unit, quantity, unit_price, subtotal, vat_rate, vat_amount, total_amount), tags[].`,
+      "",
+      "**BLOCK 2** — Áp dụng skill `journal-entry-formatter` + `accounting-vietnam` để đề xuất bút toán N/C theo TT200.",
+      "Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credit_account, amount, description, confidence}.",
+      "Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331 / Có 331 (công nợ) hoặc 111/112 (trả ngay). Hoá đơn đầu ra (bán) → Nợ 131/111/112 / Có 511 + Có 3331.",
+      "",
+      "**QUAN TRỌNG**: chỉ trả 2 code block JSON, KHÔNG kèm markdown khác:",
+      "```json",
+      "{ ...fields object... }",
+      "```",
+      "```json",
+      "[ ...entries array... ]",
+      "```",
+      "",
+      "===== RAW OCR TEXT =====",
+      rawText.slice(0, 20_000),
+      "===== END =====",
+    ].join("\n");
+
+    const agentRes = await agent.runTask({
+      task,
+      user_token: token,
+      skills: [
+        "voucher-invoice-vat",
+        "accounting-vietnam",
+        "journal-entry-formatter",
+        "vietnamese-style",
+      ],
+      max_turns: 3,
+    });
+    const agentJson = (await agentRes.json().catch(() => ({}))) as AgentRunResponse;
+    const agentText = agentJson.final_answer ?? "";
+    const { fields, entries } = extractJsonBlocks(agentText);
+
+    if (fields && typeof fields === "object") {
+      const payload = toGatewayFieldsPayload(fields as Record<string, unknown>, rawText);
+      await fetch(
+        `${process.env.GATEWAY_BASE_URL ?? "http://aiq-gateway:8080"}/vouchers/${voucherId}/apply-extraction`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+          cache: "no-store",
+        },
+      );
+    }
+
+    if (entries && Array.isArray(entries) && entries.length > 0) {
+      const payload = toJournalPayload(entries);
+      if (payload.entries.length > 0) {
+        await gateway.saveVoucherJournal(token, voucherId, payload);
+      }
+    }
+  } catch (err) {
+    console.error(`[voucher ${voucherId}] extraction failed:`, err);
+  }
 }
