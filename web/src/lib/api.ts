@@ -555,6 +555,28 @@ export const gateway = {
       cache: "no-store",
     });
   },
+  customerByMst(token: string, mst: string) {
+    return call(GATEWAY_BASE, `/customers/by-mst/${encodeURIComponent(mst)}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  customerReceivables(token: string, customerId: string) {
+    return call(GATEWAY_BASE, `/customers/${customerId}/receivables`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listCustomers(token: string, params?: { category?: string; q?: string }) {
+    const qs = new URLSearchParams();
+    if (params?.category) qs.set("category", params.category);
+    if (params?.q) qs.set("q", params.q);
+    const url = qs.toString() ? `/customers/?${qs}` : "/customers/";
+    return call(GATEWAY_BASE, url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
 };
 
 export const agent = {

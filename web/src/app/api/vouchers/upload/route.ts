@@ -245,9 +245,23 @@ async function runExtractionAndSave(args: {
     const agentText = agentJson.final_answer ?? "";
     const { fields, entries } = extractJsonBlocks(agentText);
 
+    // UC-ACC-001 §5.4-5.7: enrich fields with customer + A/R context so the
+    // detail page can show current balance / aging / credit limit / risk flags,
+    // and the accountant sees whether this invoice pushes the customer over
+    // their credit limit before approving the suggested journal.
+    let arContext: Record<string, unknown> | null = null;
     if (fields && typeof fields === "object") {
-      const payload = toGatewayFieldsPayload(fields as Record<string, unknown>, rawText);
-      await fetch(
+      const fieldsObj = fields as Record<string, unknown>;
+      const buyerMst = typeof fieldsObj.buyer_mst === "string" ? fieldsObj.buyer_mst.trim() : "";
+      const invoiceTotal = typeof fieldsObj.total_amount === "number" ? fieldsObj.total_amount : 0;
+      if (buyerMst.length > 0) {
+        arContext = await enrichWithCustomerAr(token, buyerMst, invoiceTotal);
+        if (arContext) {
+          fieldsObj.ar_context = arContext;
+        }
+      }
+      const payload = toGatewayFieldsPayload(fieldsObj, rawText);
+      const applyRes = await fetch(
         `${process.env.GATEWAY_BASE_URL ?? "http://aiq-gateway:8080"}/vouchers/${voucherId}/apply-extraction`,
         {
           method: "PATCH",
@@ -259,6 +273,29 @@ async function runExtractionAndSave(args: {
           cache: "no-store",
         },
       );
+      // UC-ACC-001 E2: duplicate — flip this stub to rejected with the
+      // duplicate hint. Skip journal save; the detail page will render the
+      // error_message so the accountant sees the collision.
+      if (applyRes.status === 409) {
+        const body = await applyRes.text();
+        console.warn(`[voucher ${voucherId}] duplicate detected: ${body}`);
+        await fetch(
+          `${process.env.GATEWAY_BASE_URL ?? "http://aiq-gateway:8080"}/vouchers/${voucherId}`,
+          {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              status: "rejected",
+              errorMessage: `Trùng hoá đơn: ${body.slice(0, 400)}`,
+            }),
+            cache: "no-store",
+          },
+        );
+        return; // skip journal save for duplicate
+      }
     }
 
     if (entries && Array.isArray(entries) && entries.length > 0) {
@@ -269,5 +306,92 @@ async function runExtractionAndSave(args: {
     }
   } catch (err) {
     console.error(`[voucher ${voucherId}] extraction failed:`, err);
+  }
+}
+
+interface CustomerLite {
+  id: string;
+  customerCode: string;
+  name: string;
+  creditLimit: number;
+  currentAr: number;
+  category: string;
+}
+
+interface AgingBuckets {
+  current: number;
+  bucket_0_30: number;
+  bucket_31_60: number;
+  bucket_61_90: number;
+  over90: number;
+}
+
+interface ReceivablesReport {
+  customer: CustomerLite;
+  currentBalance131: number;
+  creditLimit: number;
+  creditUsedPercent: number;
+  aging: AgingBuckets;
+  overdueAmount: number;
+  lastPaymentDate: string | null;
+  paymentTermDefault: number;
+  openInvoices: Array<{ documentNumber: string; debit: number; dueDate: string | null; daysOverdue: number }>;
+}
+
+async function enrichWithCustomerAr(
+  token: string,
+  buyerMst: string,
+  invoiceTotal: number,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const custRes = await gateway.customerByMst(token, buyerMst);
+    if (!custRes.ok) {
+      // Unknown MST — UC-ACC-001 A1 alt flow. Frontend can prompt to create.
+      return { status: "customer_not_found", buyer_mst: buyerMst };
+    }
+    const customer = (await custRes.json()) as CustomerLite;
+
+    const arRes = await gateway.customerReceivables(token, customer.id);
+    if (!arRes.ok) {
+      return { status: "ar_lookup_failed", customer };
+    }
+    const report = (await arRes.json()) as ReceivablesReport;
+
+    // UC-ACC-001 §5.7 + BR-5: risk flag rules.
+    const projectedBalance = report.currentBalance131 + invoiceTotal;
+    const projectedCreditUsed = report.creditLimit > 0
+      ? Math.round((projectedBalance / report.creditLimit) * 100)
+      : 0;
+    const flags: string[] = [];
+    if (invoiceTotal > 500_000_000) flags.push("invoice_over_500m_requires_l2_approval");
+    if (report.aging.over90 > 0) flags.push("has_overdue_90d");
+    if (projectedBalance > report.creditLimit && report.creditLimit > 0) {
+      flags.push("would_breach_credit_limit");
+    } else if (projectedCreditUsed >= 80) {
+      flags.push("credit_used_gte_80pct");
+    }
+    if (report.overdueAmount > 0) flags.push("has_overdue_amount");
+
+    return {
+      status: "found",
+      customer,
+      current_balance_131: report.currentBalance131,
+      credit_limit: report.creditLimit,
+      credit_used_percent: report.creditUsedPercent,
+      projected_balance_131: projectedBalance,
+      projected_credit_used_percent: projectedCreditUsed,
+      aging: report.aging,
+      overdue_amount: report.overdueAmount,
+      last_payment_date: report.lastPaymentDate,
+      payment_term_default: report.paymentTermDefault,
+      open_invoices: report.openInvoices,
+      risk_flags: flags,
+      requires_l2_approval: flags.includes("invoice_over_500m_requires_l2_approval")
+        || flags.includes("would_breach_credit_limit")
+        || flags.includes("has_overdue_90d"),
+    };
+  } catch (err) {
+    console.error(`[voucher] enrichWithCustomerAr(${buyerMst}) failed:`, err);
+    return null;
   }
 }

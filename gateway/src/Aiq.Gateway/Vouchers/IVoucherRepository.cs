@@ -62,6 +62,14 @@ public interface IVoucherRepository
         CancellationToken ct);
 
     Task<bool> DeleteAsync(Guid? tenantId, Guid userId, Guid id, CancellationToken ct);
+
+    // UC-ACC-001 E2: dedup by (seller_mst + document_number) within a tenant.
+    Task<VoucherRecord?> FindDuplicateAsync(
+        Guid? tenantId,
+        string sellerMst,
+        string documentNumber,
+        Guid excludeId,
+        CancellationToken ct);
 }
 
 public sealed class VoucherRepository : IVoucherRepository
@@ -104,6 +112,7 @@ public sealed class VoucherRepository : IVoucherRepository
             raw_ocr_text      AS RawOcrText,
             ocr_confidence    AS OcrConfidence,
             error_message     AS ErrorMessage,
+            extracted_fields::text AS ExtractedFieldsJson,
             tags              AS Tags,
             created_at        AS CreatedAt,
             updated_at        AS UpdatedAt
@@ -697,6 +706,31 @@ public sealed class VoucherRepository : IVoucherRepository
         var rows = await conn.ExecuteAsync(
             new CommandDefinition(sql, new { id, tenantId, userId }, cancellationToken: ct));
         return rows > 0;
+    }
+
+    public async Task<VoucherRecord?> FindDuplicateAsync(
+        Guid? tenantId,
+        string sellerMst,
+        string documentNumber,
+        Guid excludeId,
+        CancellationToken ct)
+    {
+        var sql = $"""
+            SELECT {VoucherSelectColumns}
+            FROM vouchers
+            WHERE seller_mst = @sellerMst
+              AND document_number = @documentNumber
+              AND id <> @excludeId
+              AND (@tenantId::uuid IS NULL OR tenant_id = @tenantId)
+              AND status NOT IN ('rejected')
+            LIMIT 1;
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.QueryFirstOrDefaultAsync<VoucherRecord>(
+            new CommandDefinition(
+                sql,
+                new { tenantId, sellerMst, documentNumber, excludeId },
+                cancellationToken: ct));
     }
 
     private static string SerializeExtracted(object? fields)

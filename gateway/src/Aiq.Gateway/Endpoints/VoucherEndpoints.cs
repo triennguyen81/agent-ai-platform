@@ -385,6 +385,26 @@ public static class VoucherEndpoints
             return Results.NotFound();
         }
 
+        // UC-ACC-001 E2: chống kê khai trùng — cùng seller_mst + document_number.
+        // Search hoá đơn khác cùng cặp (loại trừ chính stub này). If found,
+        // don't overwrite; return 409 with the duplicate's ID so web can flag.
+        if (!string.IsNullOrWhiteSpace(request.SellerMst)
+            && !string.IsNullOrWhiteSpace(request.DocumentNumber))
+        {
+            var maybeDup = await repo.FindDuplicateAsync(
+                tenantId, request.SellerMst, request.DocumentNumber, excludeId: id, ct);
+            if (maybeDup is not null)
+            {
+                return Results.Conflict(new
+                {
+                    error = "duplicate_voucher",
+                    message = $"Hoá đơn {request.DocumentNumber} của MST {request.SellerMst} đã tồn tại.",
+                    existingVoucherId = maybeDup.Id,
+                    existingDocumentDate = maybeDup.DocumentDate,
+                });
+            }
+        }
+
         await repo.ReplaceExtractedAsync(id, request, ct);
         var updated = await repo.FindAsync(tenantId, userId, id, ct);
         return updated is null ? Results.NotFound() : Results.Ok(updated);

@@ -37,6 +37,11 @@ public sealed class VoucherRecord
     public string? RawOcrText { get; init; }
     public decimal? OcrConfidence { get; init; }
     public string? ErrorMessage { get; init; }
+    // JSONB blob from `vouchers.extracted_fields`. Materialized as a raw
+    // JSON string by Dapper (we set the AS alias to CAST(... AS TEXT)) and
+    // shipped to the frontend as `extractedFieldsJson` for client-side parse.
+    // Web upload flow stashes ar_context / risk_flags inside this blob.
+    public string? ExtractedFieldsJson { get; init; }
     public string[] Tags { get; init; } = Array.Empty<string>();
     public DateTime CreatedAt { get; init; }
     public DateTime UpdatedAt { get; init; }
