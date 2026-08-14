@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Uỷ nhiệm chi — thanh toán NCC KaVo 30.000 EUR</title>
+<style>
+  @page { size: A4; margin: 15mm; }
+  body { font-family: 'Times New Roman', Georgia, serif; color: #000; max-width: 750px; margin: 20px auto; padding: 20px; background: #fff; line-height: 1.55; }
+  .bank-header { display: flex; align-items: center; gap: 15px; border-bottom: 3px solid #007a3d; padding-bottom: 10px; margin-bottom: 15px; }
+  .bank-logo { width: 60px; height: 60px; border-radius: 50%; background: #007a3d; color: #fff; text-align: center; line-height: 60px; font-weight: bold; font-size: 12px; }
+  .bank-name { font-weight: bold; font-size: 18px; color: #007a3d; }
+  .bank-sub { font-size: 11px; color: #666; font-style: italic; }
+  .header-right { margin-left: auto; text-align: right; font-size: 12px; }
+  .title { text-align: center; font-size: 22px; font-weight: bold; margin: 15px 0; letter-spacing: 2px; }
+  .subtitle { text-align: center; font-style: italic; font-size: 12px; margin-bottom: 15px; }
+  .doc-no { text-align: center; margin: 5px 0 15px; font-size: 13px; }
+  .doc-no b { color: #c00; }
+  .section-box { border: 1px solid #333; padding: 10px; margin: 8px 0; font-size: 13px; }
+  .section-title { font-weight: bold; margin-bottom: 6px; color: #007a3d; }
+  .field { margin: 4px 0; display: flex; }
+  .field .label { min-width: 165px; }
+  .field .value { flex: 1; font-weight: bold; }
+  .amount-box { border: 2px solid #007a3d; padding: 15px; text-align: center; margin: 15px 0; }
+  .amount-box .lbl { font-size: 13px; color: #666; }
+  .amount-box .num { font-size: 24px; font-weight: bold; color: #007a3d; }
+  .amount-box .words { font-style: italic; margin-top: 5px; font-size: 13px; }
+  .fx { text-align: center; font-size: 12px; font-style: italic; }
+  .content-line { margin: 12px 0; padding: 8px; background: #f5f5f5; border-left: 3px solid #007a3d; font-size: 13px; }
+  .signatures { display: flex; justify-content: space-around; margin-top: 30px; font-size: 12px; text-align: center; }
+  .signatures div { width: 30%; }
+  .signatures .role { font-weight: bold; }
+  .signatures .name { margin-top: 60px; font-style: italic; }
+  .footer { font-size: 10px; color: #888; margin-top: 20px; text-align: center; }
+</style>
+</head>
+<body>
+
+<div class="bank-header">
+  <div class="bank-logo">VCB</div>
+  <div>
+    <div class="bank-name">VIETCOMBANK</div>
+    <div class="bank-sub">Ngân hàng TMCP Ngoại thương Việt Nam — CN TP. Hồ Chí Minh</div>
+  </div>
+  <div class="header-right">
+    <div>Ngày lập: <b>12/08/2026</b></div>
+    <div>Chi nhánh xử lý: <b>VCB HCM</b></div>
+  </div>
+</div>
+
+<div class="title">UỶ NHIỆM CHI</div>
+<div class="subtitle">(Payment Order)</div>
+<div class="doc-no">Số chứng từ: <b>UNC-USD-08-001</b></div>
+
+<div class="section-box">
+  <div class="section-title">Bên chuyển tiền (Payer):</div>
+  <div class="field"><div class="label">Tên đơn vị:</div><div class="value">CÔNG TY CỔ PHẦN THIẾT BỊ NHA KHOA VIỆT ĐĂNG</div></div>
+  <div class="field"><div class="label">Mã số thuế:</div><div class="value">0311999999</div></div>
+  <div class="field"><div class="label">Số tài khoản:</div><div class="value">0011370456789 (USD)</div></div>
+  <div class="field"><div class="label">Tại ngân hàng:</div><div class="value">Vietcombank CN TP. HCM</div></div>
+</div>
+
+<div class="section-box">
+  <div class="section-title">Bên thụ hưởng (Beneficiary):</div>
+  <div class="field"><div class="label">Tên đơn vị:</div><div class="value">KAVO DENTAL GMBH</div></div>
+  <div class="field"><div class="label">Địa chỉ:</div><div class="value">Bismarckring 39, 88400 Biberach an der Riss, Germany</div></div>
+  <div class="field"><div class="label">Số tài khoản:</div><div class="value">DE89 3704 0044 0532 0130 00 (IBAN)</div></div>
+  <div class="field"><div class="label">Tại ngân hàng:</div><div class="value">Commerzbank AG — SWIFT: COBADEFFXXX</div></div>
+</div>
+
+<div class="amount-box">
+  <div class="lbl">Số tiền chuyển:</div>
+  <div class="num">30,000.00 EUR</div>
+  <div class="words">(Ba mươi nghìn Euro chẵn)</div>
+</div>
+
+<div class="fx">
+  Tỷ giá quy đổi ngày 12/08/2026: <b>1 EUR = 27,600 VND</b>
+  &nbsp;|&nbsp;
+  Tổng quy đổi: <b>828,000,000 VNĐ</b>
+</div>
+
+<div class="content-line">
+  <b>Nội dung chuyển tiền:</b><br>
+  Thanh toán 50% Purchase Order PO-2026-0032 ký ngày 10/06/2026 — invoice KAV-2026-0812 — nhập khẩu 1 ghế nha khoa KaVo Estetica E80.
+</div>
+
+<div class="field" style="margin: 15px 0; font-size: 13px;">
+  <div class="label"><b>Phí chuyển tiền:</b></div>
+  <div class="value">100 EUR (bên chuyển chịu — OUR)</div>
+</div>
+
+<div class="signatures">
+  <div>
+    <div class="role">Kế toán trưởng</div>
+    <div class="name">Lê Minh Kế</div>
+  </div>
+  <div>
+    <div class="role">Giám đốc</div>
+    <div class="name">Nguyễn Thanh Việt</div>
+  </div>
+  <div>
+    <div class="role">Ngân hàng xác nhận</div>
+    <div class="name">(đã ký số VCB)</div>
+  </div>
+</div>
+
+<div class="footer">
+  Chứng từ điện tử — theo Thông tư 46/2014/TT-NHNN về thanh toán qua ngân hàng
+</div>
+
+</body>
+</html>
