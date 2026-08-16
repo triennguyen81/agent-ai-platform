@@ -602,6 +602,7 @@ export default async function VoucherDetailPage({ params }: PageProps) {
           voucherId={v.id}
           voucherType={v.voucherType}
           initialRawText={v.rawOcrText}
+          voucherStatus={v.status}
         />
       )}
 
