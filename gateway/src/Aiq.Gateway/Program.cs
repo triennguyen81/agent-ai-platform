@@ -22,6 +22,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Logging.Console;
 using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
 using Prometheus;
 
 // Npgsql 8 returns `DateTime` (kind=Utc) for `timestamptz` columns. Our records
@@ -188,6 +189,11 @@ var observabilityOptions = builder.Configuration
 
 builder.Services.AddAiqOpenTelemetry(observabilityOptions);
 
+// Disable .NET's default claim renaming so "sub" stays "sub", "email"
+// stays "email", "role" stays "role" (matches what our /me endpoint +
+// TokenValidationParameters.RoleClaimType expect).
+JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
+
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -202,7 +208,13 @@ builder.Services
             ValidAudience = jwtOptions.Audience,
             IssuerSigningKey = new SymmetricSecurityKey(
                 Encoding.UTF8.GetBytes(jwtOptions.SigningKey)),
-            ClockSkew = TimeSpan.FromSeconds(30)
+            ClockSkew = TimeSpan.FromSeconds(30),
+            // Map JWT claim names to .NET's Claim types. Our login endpoint
+            // emits {"sub":..., "email":..., "role":[...]} — without these
+            // overrides, RequireRole("admin") reads ClaimTypes.Role (a URI)
+            // instead of "role" and every user looks role-less.
+            NameClaimType = "sub",
+            RoleClaimType = "role",
         };
     });
 
@@ -362,11 +374,22 @@ static TimeZoneInfo TryGetVnTimeZone()
 app.MapGet("/me", (HttpContext ctx) =>
 {
     var user = ctx.User;
+    // Robust to both the raw JWT claim names ("sub", "email", "role") and
+    // .NET's legacy inbound-claim-map URIs (used to happen when the Jwt
+    // handler renamed them before we cleared DefaultInboundClaimTypeMap).
+    var sub = user.FindFirst("sub")?.Value
+              ?? user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+    var email = user.FindFirst("email")?.Value
+                ?? user.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value;
+    var roleClaims = user.FindAll("role").Select(c => c.Value)
+        .Concat(user.FindAll(System.Security.Claims.ClaimTypes.Role).Select(c => c.Value))
+        .Distinct()
+        .ToArray();
     return Results.Ok(new
     {
-        sub   = user.FindFirst("sub")?.Value,
-        email = user.FindFirst("email")?.Value,
-        roles = user.FindAll("role").Select(c => c.Value).ToArray()
+        sub,
+        email,
+        roles = roleClaims,
     });
 })
 .RequireAuthorization()

@@ -22,6 +22,7 @@ from aiq_agent.ocr import (
     OcrPipeline,
     PassthroughValidator,
     PaddleOcrExtractor,
+    RapidOcrExtractor,
 )
 from aiq_agent.skills import build_registry as build_skill_registry
 from aiq_agent.tools import default_registry
@@ -34,7 +35,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     llm = RecordedLlmService(build_llm_service(settings))
     memory = build_memory_store(settings)
 
-    extractor = PaddleOcrExtractor(lang="vi")
+    # OCR backend selection — env AIQ_OCR_BACKEND overrides the default.
+    #   rapid   → RapidOCR (ONNX runtime — recommended, no SIGSEGV)
+    #   paddle  → PaddleOCR (legacy — segfaults on some VN images)
+    # Defaults to rapid because it survived the demo-eve stability test.
+    ocr_backend = os.environ.get("AIQ_OCR_BACKEND", "rapid").lower()
+    if ocr_backend == "paddle":
+        extractor = PaddleOcrExtractor(lang="vi")
+    else:
+        extractor = RapidOcrExtractor()
     corrector = DiacriticCorrector(llm)
     validator = PassthroughValidator()
     pipeline = OcrPipeline(extractor=extractor, corrector=corrector, validator=validator)
@@ -97,6 +106,17 @@ app = FastAPI(
 
 app.include_router(router)
 app.include_router(ocr_router)
+
+
+# ------------------------------------------------------------------
+# Cheap liveness probe — used by docker-compose healthcheck to detect
+# a hung uvicorn worker (e.g. after PaddleOCR SIGSEGV corrupted the
+# process). Returns instantly without touching Claude CLI or PaddleOCR
+# so slow LLM calls never affect health.
+# ------------------------------------------------------------------
+@app.get("/healthz/live", include_in_schema=False)
+async def healthz_live() -> dict[str, str]:
+    return {"status": "ok"}
 
 instrument_fastapi(app)
 

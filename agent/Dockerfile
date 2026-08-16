@@ -31,22 +31,28 @@ RUN apt-get update \
 COPY --from=builder /wheels /wheels
 RUN pip install --no-index --find-links /wheels aiq-agent && rm -rf /wheels
 
-# OCR extras — enables /ocr/pdf + /ocr/image endpoints (PaddleOCR VN language
-# model + PIL image normalizer + pypdfium2 PDF renderer). Adds ~500 MB to
-# the image.
+# OCR extras — enables /ocr/pdf + /ocr/image endpoints.
 #
-# Pinned to PaddleOCR 2.9.x / PaddlePaddle 2.6.x on purpose:
-#   - PaddleOCR 3.0 rewrote the API (dropped use_angle_cls, use_gpu, cls=True)
-#     and ships a new paddle static runner that throws
-#     `NotImplementedError: ConvertPirAttribute2RuntimeAttribute` under
-#     oneDNN on CPU (verified in agent logs 2026-08).
-#   - 2.9.1 + paddlepaddle 2.6.2 = last combo with stable, working CPU OCR.
-#   - When paddleocr 3.x + paddlepaddle 3.x ship a fixed CPU path,
-#     unpin here and update agent/src/aiq_agent/ocr/extractor.py to
-#     use the new predict() signature.
+# We ship BOTH PaddleOCR (existing) AND rapidocr-onnxruntime (fallback):
+#   - PaddleOCR 2.9.1 + PaddlePaddle 2.6.2 was the "least broken" combo
+#     for a while but still SIGSEGVs randomly on some VN invoice images,
+#     killing the entire uvicorn process (see agent logs 2026-08).
+#     Root cause is in Paddle's oneDNN reorder primitive path — no fix
+#     upstream as of writing.
+#   - rapidocr-onnxruntime wraps the same PP-OCRv4 models but runs them
+#     on ONNX Runtime instead of PaddlePaddle. No PaddlePaddle framework
+#     → no segfault. Slightly slower CPU inference, same accuracy.
+#     PaddleOcrExtractor stays as primary; RapidOcrExtractor is the
+#     graceful fallback the /ocr endpoints prefer.
+#
+# When PaddleOCR is retired we can drop paddleocr+paddlepaddle and save
+# ~500MB image size.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libgomp1 libglib2.0-0 libgl1 \
- && pip install "setuptools>=68" "paddleocr==2.9.1" "paddlepaddle==2.6.2" "pypdfium2>=4.30" "Pillow>=10.4" \
+ && pip install "setuptools>=68" \
+                "paddleocr==2.9.1" "paddlepaddle==2.6.2" \
+                "rapidocr-onnxruntime>=1.3.24" "onnxruntime>=1.17" \
+                "pypdfium2>=4.30" "Pillow>=10.4" \
  && rm -rf /var/lib/apt/lists/*
 
 # SKILL.md packages — loaded at app startup, see aiq_agent/main.py.
