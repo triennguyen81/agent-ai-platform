@@ -198,6 +198,12 @@ builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        // MapInboundClaims=false stops .NET from rewriting our JWT claim
+        // names ("role", "sub", "email") to ClaimTypes URI equivalents.
+        // Without this, IsInRole("admin") never matches because claims
+        // land as ClaimTypes.Role URI, while RoleClaimType="role" tells
+        // IsInRole to look for the raw "role" name.
+        options.MapInboundClaims = false;
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -374,9 +380,6 @@ static TimeZoneInfo TryGetVnTimeZone()
 app.MapGet("/me", (HttpContext ctx) =>
 {
     var user = ctx.User;
-    // Robust to both the raw JWT claim names ("sub", "email", "role") and
-    // .NET's legacy inbound-claim-map URIs (used to happen when the Jwt
-    // handler renamed them before we cleared DefaultInboundClaimTypeMap).
     var sub = user.FindFirst("sub")?.Value
               ?? user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
     var email = user.FindFirst("email")?.Value
@@ -385,12 +388,7 @@ app.MapGet("/me", (HttpContext ctx) =>
         .Concat(user.FindAll(System.Security.Claims.ClaimTypes.Role).Select(c => c.Value))
         .Distinct()
         .ToArray();
-    return Results.Ok(new
-    {
-        sub,
-        email,
-        roles = roleClaims,
-    });
+    return Results.Ok(new { sub, email, roles = roleClaims });
 })
 .RequireAuthorization()
 .RequireRateLimiting("default");
