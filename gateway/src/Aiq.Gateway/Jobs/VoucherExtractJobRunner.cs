@@ -593,6 +593,15 @@ public interface IVoucherExtractJobScheduler
         string voucherType,
         string userToken,
         string parentJobId);
+
+    // Immediate enqueue — used when user manually retries extraction via
+    // the detail-page button, no parent OCR job to chain on.
+    string EnqueueImmediate(
+        Guid voucherId,
+        Guid userId,
+        Guid? tenantId,
+        string voucherType,
+        string userToken);
 }
 
 public sealed class VoucherExtractJobScheduler : IVoucherExtractJobScheduler
@@ -604,6 +613,21 @@ public sealed class VoucherExtractJobScheduler : IVoucherExtractJobScheduler
     {
         _hangfire = hangfire;
         _logger = logger;
+    }
+
+    public string EnqueueImmediate(
+        Guid voucherId,
+        Guid userId,
+        Guid? tenantId,
+        string voucherType,
+        string userToken)
+    {
+        var jobId = _hangfire.Enqueue<VoucherExtractJobRunner>(
+            runner => runner.RunAsync(voucherId, userId, tenantId, voucherType, userToken, CancellationToken.None));
+        _logger.LogInformation(
+            "Enqueued immediate voucher extract job {JobId} for voucher {VoucherId}",
+            jobId, voucherId);
+        return jobId;
     }
 
     public string Enqueue(

@@ -54,7 +54,64 @@ public static class VoucherEndpoints
         // the upload flow doesn't create a duplicate row.
         group.MapPatch("/{id:guid}/apply-extraction", ApplyExtractionAsync);
 
+        // Manual re-extract: user clicks "Trích xuất" button on detail page
+        // when the automated pipeline failed. Enqueues the same Hangfire
+        // extract job (returns fast) instead of running LLM inline. Optional
+        // rawText body overrides raw_ocr_text for the paste-fallback flow.
+        group.MapPost("/{id:guid}/reextract", ReextractAsync);
+
         return app;
+    }
+
+    private sealed record ReextractRequest(string? RawText, string? VoucherType);
+
+    private static async Task<IResult> ReextractAsync(
+        Guid id,
+        ReextractRequest? request,
+        IVoucherRepository repo,
+        Aiq.Gateway.Jobs.IVoucherExtractJobScheduler extractScheduler,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!TryGetUserId(ctx, out var userId))
+        {
+            return Results.Unauthorized();
+        }
+        TenantContext.TryGet(ctx, out var tenantId);
+
+        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        if (voucher is null)
+        {
+            return Results.NotFound();
+        }
+
+        // If caller provided raw text (paste-fallback flow), stash it into
+        // the voucher first so the extract job reads it from DB just like
+        // OCR-populated rows.
+        var newRawText = request?.RawText?.Trim() ?? "";
+        if (newRawText.Length >= 20)
+        {
+            await repo.UpdateOcrResultAsync(
+                id,
+                status: "ocr_complete",
+                rawText: newRawText,
+                ocrConfidence: 1.0m,   // user-verified text is 100% by definition
+                errorMessage: null,
+                ct);
+        }
+
+        var voucherType = string.IsNullOrWhiteSpace(request?.VoucherType)
+            ? voucher.Voucher.VoucherType
+            : request!.VoucherType!.Trim();
+        var userToken = ExtractBearerToken(ctx);
+        var jobId = extractScheduler.EnqueueImmediate(id, userId, tenantId, voucherType, userToken);
+
+        return Results.Ok(new
+        {
+            voucherId = id,
+            status = "processing",
+            extractJobId = jobId,
+        });
     }
 
     // ------------------------------------------------------------------

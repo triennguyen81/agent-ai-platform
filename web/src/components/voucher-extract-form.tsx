@@ -79,7 +79,21 @@ export function VoucherExtractForm({
       });
       if (!res.ok) {
         const text = await res.text();
-        setError(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+        const looksLikeHtml = /^\s*<(!doctype|html|head|body)/i.test(text);
+        let msg: string;
+        if (looksLikeHtml) {
+          msg = res.status === 504
+            ? "Extract chạy quá 100s — hệ thống chuyển sang chế độ nền, thử refresh trang sau 30-60s."
+            : "Máy chủ tạm thời không phản hồi. Vui lòng thử lại sau ít giây.";
+        } else {
+          try {
+            const parsed = JSON.parse(text) as { error?: string; detail?: string };
+            msg = parsed.error ?? parsed.detail ?? text.slice(0, 300);
+          } catch {
+            msg = text.slice(0, 300);
+          }
+        }
+        setError(`Lỗi ${res.status}: ${msg}`);
         return;
       }
       const body = (await res.json()) as ExtractResponse;
