@@ -81,8 +81,9 @@ export default function VoucherUploadPage() {
       ...row,
       status: "done",
       voucherId: body.voucherId,
-      message: body.agentResponse?.slice(0, 400)
-        ?? "OCR xong — AI đang trích fields ở nền, mở trang chi tiết để xem.",
+      message:
+        body.agentResponse?.slice(0, 400)
+        ?? "Đã tải file lên. OCR + trích xuất chạy nền — mở trang chi tiết để xem tiến trình (auto refresh mỗi vài giây).",
     };
   }
 
@@ -161,8 +162,8 @@ export default function VoucherUploadPage() {
           </Button>
 
           <p className="text-[10px] text-[var(--color-muted-fg)]">
-            Pipeline: image → PaddleOCR → skill <code>voucher-invoice-vat</code> →
-            <code>save_voucher</code> → <code>suggest_journal_entry</code>. Mỗi ảnh ~10-15s.
+            Upload &lt; 5s → OCR + AI extract chạy nền (Hangfire) → detail page tự refresh.
+            Không còn 504 kể cả khi OCR mất 60s+.
           </p>
         </div>
 

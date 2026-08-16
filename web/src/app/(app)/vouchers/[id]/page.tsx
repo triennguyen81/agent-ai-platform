@@ -500,8 +500,18 @@ export default async function VoucherDetailPage({ params }: PageProps) {
     }
   }
 
+  // Auto-refresh while the async OCR + extraction pipeline is still running.
+  // Once we reach 'extracted' the fields + journal are present and refresh
+  // stops. Users who navigated here right after upload see the page update
+  // itself without manual F5.
+  const isPipelineRunning =
+    v.status === "uploading" || v.status === "processing" || v.status === "ocr_complete";
+
   return (
     <div className="space-y-6">
+      {isPipelineRunning && (
+        <meta httpEquiv="refresh" content="5" />
+      )}
       <div>
         <Link
           href="/vouchers"

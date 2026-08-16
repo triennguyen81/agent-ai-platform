@@ -137,6 +137,16 @@ public sealed class S3ObjectStorage : IObjectStorage, IDisposable
         }
     }
 
+    public async Task<Stream> GetAsync(string bucket, string key, CancellationToken ct)
+    {
+        var response = await _client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucket,
+            Key = key,
+        }, ct);
+        return response.ResponseStream;
+    }
+
     public async Task<bool> IsHealthyAsync(CancellationToken ct)
     {
         try

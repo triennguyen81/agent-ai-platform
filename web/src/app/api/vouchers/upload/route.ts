@@ -160,7 +160,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "file trống" }, { status: 400 });
   }
 
-  // Step 1 — upload to gateway (S3 + OCR)
+  // P1 async flow: gateway now returns in <5s (just S3 upload + create stub
+  // + enqueue Hangfire OCR job). OCR + agent extraction all happen in the
+  // background so Cloudflare 100s edge budget is never at risk.
   const uploadForm = new FormData();
   uploadForm.append("file", file, file.name);
   const uploadRes = await gateway.uploadVoucher(token, uploadForm, voucherType);
@@ -170,30 +172,76 @@ export async function POST(request: NextRequest) {
   }
   const uploadJson = (await uploadRes.json()) as UploadResponse;
 
-  if (uploadJson.status === "rejected" || !uploadJson.rawText) {
-    return NextResponse.json(uploadJson, { status: 200 });
-  }
-
-  // The agent extraction + PATCH + POST easily takes 60-90s. Cloudflare's
-  // edge cuts off at 100s. Instead of awaiting the whole pipeline here,
-  // return the voucherId immediately with status="processing" and run the
-  // extract-and-save flow as a background promise. The detail page polls
-  // for status transitions (processing → extracted).
-  const rawText = uploadJson.rawText || "";
-  void runExtractionAndSave({
+  // Kick off polling + extraction as unawaited promise. Client can go to
+  // the detail page immediately; the panel updates as status transitions
+  // uploading → processing → ocr_complete → extracted.
+  void pollAndExtract({
     voucherId: uploadJson.voucherId,
     voucherType,
-    rawText,
     token,
   });
 
   return NextResponse.json({
     voucherId: uploadJson.voucherId,
-    status: "processing",
-    ocrConfidence: uploadJson.ocrConfidence,
+    status: "uploading",
+    ocrConfidence: 0,
     extractedFieldsOk: false,
     journalEntriesSaved: 0,
   });
+}
+
+interface VoucherStatusResponse {
+  voucher?: {
+    status?: string;
+    rawOcrText?: string | null;
+    ocrConfidence?: number | null;
+    errorMessage?: string | null;
+  };
+}
+
+// Poll gateway /vouchers/{id} until OCR completes (max ~5 minutes), then
+// run the LLM extraction + AR enrichment + 3-way match + save. Total wall
+// time is bounded by node process lifetime; failures just leave the row
+// at status='ocr_complete' with no extraction (user can retry manually).
+async function pollAndExtract(args: {
+  voucherId: string;
+  voucherType: string;
+  token: string;
+}): Promise<void> {
+  const { voucherId, voucherType, token } = args;
+  const start = Date.now();
+  const maxWaitMs = 5 * 60 * 1000;
+  const pollIntervalMs = 3_000;
+
+  let rawText = "";
+  while (Date.now() - start < maxWaitMs) {
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    try {
+      const res = await gateway.getVoucher(token, voucherId);
+      if (!res.ok) continue;
+      const body = (await res.json()) as VoucherStatusResponse;
+      const status = body.voucher?.status ?? "";
+      if (status === "ocr_complete" && body.voucher?.rawOcrText) {
+        rawText = body.voucher.rawOcrText;
+        break;
+      }
+      if (status === "ocr_unavailable" || status === "rejected") {
+        console.warn(
+          `[voucher ${voucherId}] OCR job ended in ${status}: ${body.voucher?.errorMessage ?? "?"}`,
+        );
+        return;
+      }
+    } catch (err) {
+      console.error(`[voucher ${voucherId}] poll error:`, err);
+    }
+  }
+
+  if (!rawText) {
+    console.warn(`[voucher ${voucherId}] OCR did not complete within ${maxWaitMs}ms`);
+    return;
+  }
+
+  await runExtractionAndSave({ voucherId, voucherType, rawText, token });
 }
 
 // Runs the agent extraction + PATCH + POST after we've already responded

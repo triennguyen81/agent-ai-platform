@@ -64,11 +64,15 @@ public static class VoucherEndpoints
     // ------------------------------------------------------------------
     private const long MaxUploadBytes = 25L * 1024 * 1024;  // 25 MB per voucher
 
+    // UC-ACC-001 P1: async upload. File goes to S3, Hangfire job runs OCR
+    // in the background. Response returns in <5s so Cloudflare doesn't cut
+    // us off. Web tier polls voucher detail until status='ocr_complete',
+    // then drives the LLM extraction step.
     private static async Task<IResult> UploadAsync(
         IFormFile file,
-        IAgentClient agent,
         IVoucherRepository repo,
         IObjectStorage storage,
+        Aiq.Gateway.Jobs.IVoucherOcrJobScheduler ocrScheduler,
         IOptions<S3Options> s3Options,
         HttpContext ctx,
         CancellationToken ct,
@@ -102,29 +106,15 @@ public static class VoucherEndpoints
             extension = isImage ? ".jpg" : ".pdf";
         }
 
-        // ---------------------------------------------------------------
-        // E-Step 4 — upload to MinIO/S3 instead of the local Docker
-        // volume. Key layout: vouchers/{userId}/{uuid}{ext}. The user
-        // prefix lets us implement "delete all files for user X" cheaply
-        // (S3 list + delete under prefix) for future GDPR-style requests.
-        // Buffer the incoming stream into memory (bounded to 25MB by
-        // MaxUploadBytes above) so we can push it to S3 AND re-read it
-        // for the OCR call without a second network round-trip.
-        // ---------------------------------------------------------------
         var s3Key = $"vouchers/{userId:N}/{Guid.NewGuid():N}{extension}";
         var bucket = s3Options.Value.VoucherBucket;
 
-        byte[] fileBytes;
-        await using (var buffer = new MemoryStream(capacity: (int)file.Length))
-        {
-            await file.CopyToAsync(buffer, ct);
-            fileBytes = buffer.ToArray();
-        }
-
         try
         {
-            await using var s3UploadStream = new MemoryStream(fileBytes, writable: false);
-            await storage.PutAsync(bucket, s3Key, s3UploadStream, contentType, ct);
+            // Stream directly to S3 — no need to buffer the full file in
+            // memory anymore since OCR happens in a separate process later.
+            await using var readStream = file.OpenReadStream();
+            await storage.PutAsync(bucket, s3Key, readStream, contentType, ct);
         }
         catch (Exception ex)
         {
@@ -135,10 +125,6 @@ public static class VoucherEndpoints
                 detail: ex.Message);
         }
 
-        // The stub still records `source_file_path` = the S3 key so
-        // downstream code doesn't have to distinguish local vs S3
-        // paths. Migration script + serving layer will parse the
-        // vouchers/... prefix to detect S3-hosted files.
         var voucherId = await repo.CreateStubAsync(
             tenantId,
             userId,
@@ -148,60 +134,19 @@ public static class VoucherEndpoints
             contentType,
             ct);
 
-        // Run OCR inline (typical <10s for 1 image).
-        // If PaddleOCR isn't installed in the agent runtime we degrade
-        // gracefully: return the staged file's voucherId with status
-        // 'ocr_unavailable' so the web tier can prompt the user to paste
-        // raw text manually and drive extraction that way.
-        string joinedText = string.Empty;
-        decimal avgConfidence = 0m;
-        var responseStatus = "ocr_complete";
-        string? ocrError = null;
-        try
-        {
-            await using var ocrStream = new MemoryStream(fileBytes, writable: false);
-            var ocr = isImage
-                ? await agent.RunOcrImageAsync(ocrStream, file.FileName, contentType, ct)
-                : await agent.RunOcrPipelineAsync(ocrStream, file.FileName, ct);
-            joinedText = ocr.JoinedText ?? string.Empty;
-            avgConfidence = (decimal)ocr.AverageConfidence;
-        }
-        catch (AgentRequestException ex)
-        {
-            // Any OCR failure (503 = pipeline down, 500 = runtime bug like
-            // PaddleOCR 3.x mkldnn crash) degrades to ocr_unavailable —
-            // the file is safely in S3, the voucher stub is created, and
-            // the web tier's paste-text UI lets the user drive extraction
-            // without OCR. Rejecting the whole upload would waste the
-            // stub row and force the user to re-upload.
-            responseStatus = "ocr_unavailable";
-            ocrError = ex.UpstreamStatus == 503
-                ? "OCR pipeline chưa khả dụng. Vui lòng paste raw text tay để extract."
-                : $"OCR runtime lỗi ({ex.UpstreamStatus}). Vui lòng paste raw text tay để extract.";
-        }
-        await repo.UpdateAsync(
-            tenantId,
-            userId,
-            voucherId,
-            new UpdateVoucherRequest(
-                Status: responseStatus,
-                DocumentNumber: null, DocumentSeries: null, DocumentDate: null,
-                SellerName: null, SellerMst: null, SellerAddress: null,
-                BuyerName: null, BuyerMst: null, BuyerAddress: null,
-                PaymentMethod: null, Subtotal: null, VatRate: null, VatAmount: null,
-                DiscountAmount: null, TotalAmount: null, Currency: null,
-                AmountInWords: null,
-                ErrorMessage: ocrError,
-                Tags: null),
-            ct);
+        // Enqueue background OCR. Job will:
+        //   1. status='processing' (currently 'uploading')
+        //   2. Download file from S3, run PaddleOCR
+        //   3. status='ocr_complete' + rawText + confidence
+        // Any OCR failure → status='ocr_unavailable' + errorMessage.
+        var jobId = ocrScheduler.Enqueue(voucherId, s3Key, file.FileName, contentType, isImage);
 
         return Results.Ok(new
         {
             voucherId,
-            status = responseStatus,
-            rawText = joinedText,
-            ocrConfidence = avgConfidence,
-            ocrError,
+            status = "uploading",
+            jobId,
+            // rawText left empty — web tier polls voucher detail until ready.
         });
     }
 

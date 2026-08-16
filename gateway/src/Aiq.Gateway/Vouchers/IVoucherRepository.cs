@@ -70,6 +70,16 @@ public interface IVoucherRepository
         string documentNumber,
         Guid excludeId,
         CancellationToken ct);
+
+    // P1 async OCR: called from Hangfire job (no tenant/user context).
+    // Updates just status + rawText + confidence + errorMessage. Idempotent.
+    Task UpdateOcrResultAsync(
+        Guid id,
+        string status,
+        string? rawText,
+        decimal? ocrConfidence,
+        string? errorMessage,
+        CancellationToken ct);
 }
 
 public sealed class VoucherRepository : IVoucherRepository
@@ -706,6 +716,30 @@ public sealed class VoucherRepository : IVoucherRepository
         var rows = await conn.ExecuteAsync(
             new CommandDefinition(sql, new { id, tenantId, userId }, cancellationToken: ct));
         return rows > 0;
+    }
+
+    public async Task UpdateOcrResultAsync(
+        Guid id,
+        string status,
+        string? rawText,
+        decimal? ocrConfidence,
+        string? errorMessage,
+        CancellationToken ct)
+    {
+        const string sql = """
+            UPDATE vouchers
+            SET status         = @status,
+                raw_ocr_text   = COALESCE(@rawText, raw_ocr_text),
+                ocr_confidence = COALESCE(@ocrConfidence, ocr_confidence),
+                error_message  = @errorMessage,
+                updated_at     = NOW()
+            WHERE id = @id
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            sql,
+            new { id, status, rawText, ocrConfidence, errorMessage },
+            cancellationToken: ct));
     }
 
     public async Task<VoucherRecord?> FindDuplicateAsync(

@@ -44,6 +44,13 @@ public interface IObjectStorage
     Task DeleteAsync(string bucket, string key, CancellationToken ct);
 
     /// <summary>
+    /// Fetch an object as a stream. Caller owns disposal. Used by background
+    /// jobs that need to re-read the file after the original upload request
+    /// has finished (e.g. async OCR).
+    /// </summary>
+    Task<Stream> GetAsync(string bucket, string key, CancellationToken ct);
+
+    /// <summary>
     /// Cheap health check — return true when the backend responds. Used
     /// by /healthz/ready and by tests that want to gate on connectivity.
     /// </summary>
