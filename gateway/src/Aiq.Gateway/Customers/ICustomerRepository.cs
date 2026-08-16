@@ -53,12 +53,52 @@ public sealed record ArAgingBuckets(
     decimal Bucket_61_90,
     decimal Over90);
 
+// UC-ACC-001 §5.6: 3-way match — invoice → sales order → delivery note →
+// (optional) contract milestone. Read-only view.
+public sealed record SalesOrderMatchRow(
+    Guid Id,
+    string OrderNumber,
+    DateOnly OrderDate,
+    string Status,
+    decimal Subtotal,
+    decimal VatAmount,
+    decimal TotalAmount,
+    int PaymentTermsDays,
+    string? InvoicedRef,
+    string? DeliveryNoteRef,
+    string? SalespersonCode,
+    string? Notes);
+
+public sealed record DeliveryNoteRow(
+    string DnNumber,
+    DateOnly DnDate,
+    string WarehouseFrom,
+    string? DeliveredBy,
+    string? ReceivedBy,
+    string Status);
+
+public sealed record ContractMilestoneRow(
+    string ContractNumber,
+    string ContractTitle,
+    decimal ContractValue,
+    int MilestoneNo,
+    string MilestoneDesc,
+    decimal MilestoneAmount,
+    string MilestoneStatus);
+
+public sealed record SalesOrderMatch(
+    SalesOrderMatchRow SalesOrder,
+    DeliveryNoteRow? DeliveryNote,
+    ContractMilestoneRow? Contract,
+    string MatchQuality);   // exact / partial / not_found
+
 public interface ICustomerRepository
 {
     Task<IReadOnlyList<CustomerRecord>> ListAsync(Guid tenantId, string? category, string? search, CancellationToken ct);
     Task<CustomerRecord?> FindByMstAsync(Guid tenantId, string mst, CancellationToken ct);
     Task<CustomerRecord?> FindByIdAsync(Guid tenantId, Guid id, CancellationToken ct);
     Task<CustomerReceivablesReport?> GetReceivablesAsync(Guid tenantId, Guid customerId, CancellationToken ct);
+    Task<SalesOrderMatch?> MatchInvoiceToSalesOrderAsync(Guid tenantId, string documentNumber, CancellationToken ct);
 }
 
 public sealed class CustomerRepository : ICustomerRepository
@@ -179,5 +219,76 @@ public sealed class CustomerRepository : ICustomerRepository
             OverdueAmount: overdue,
             LastPaymentDate: lastPayment,
             PaymentTermDefault: customer.CreditTermsDays);
+    }
+
+    public async Task<SalesOrderMatch?> MatchInvoiceToSalesOrderAsync(
+        Guid tenantId, string documentNumber, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+
+        // 1. Find sales order where invoiced_ref matches. If none, we're done —
+        //    invoice was bán không qua đơn hàng (§5.6 A2).
+        const string soSql = """
+            SELECT id               AS Id,
+                   order_number     AS OrderNumber,
+                   order_date       AS OrderDate,
+                   status           AS Status,
+                   subtotal         AS Subtotal,
+                   vat_amount       AS VatAmount,
+                   total_amount     AS TotalAmount,
+                   payment_terms_days AS PaymentTermsDays,
+                   invoiced_ref     AS InvoicedRef,
+                   delivery_note_ref AS DeliveryNoteRef,
+                   salesperson_code AS SalespersonCode,
+                   notes            AS Notes
+            FROM sim_sales_orders
+            WHERE tenant_id = @tenantId
+              AND invoiced_ref = @documentNumber
+            LIMIT 1
+            """;
+        var so = await conn.QueryFirstOrDefaultAsync<SalesOrderMatchRow>(
+            new CommandDefinition(soSql, new { tenantId, documentNumber }, cancellationToken: ct));
+        if (so is null) return null;
+
+        // 2. Delivery note (if any)
+        DeliveryNoteRow? dn = null;
+        if (!string.IsNullOrWhiteSpace(so.DeliveryNoteRef))
+        {
+            const string dnSql = """
+                SELECT dn_number       AS DnNumber,
+                       dn_date         AS DnDate,
+                       warehouse_from  AS WarehouseFrom,
+                       delivered_by    AS DeliveredBy,
+                       received_by     AS ReceivedBy,
+                       status          AS Status
+                FROM sim_delivery_notes
+                WHERE tenant_id = @tenantId AND dn_number = @dnNumber
+                LIMIT 1
+                """;
+            dn = await conn.QueryFirstOrDefaultAsync<DeliveryNoteRow>(
+                new CommandDefinition(dnSql, new { tenantId, dnNumber = so.DeliveryNoteRef }, cancellationToken: ct));
+        }
+
+        // 3. Contract milestone (if this SO belongs to a contract + milestone
+        //    whose invoice_ref matches).
+        const string ctrSql = """
+            SELECT c.contract_number AS ContractNumber,
+                   c.title           AS ContractTitle,
+                   c.contract_value  AS ContractValue,
+                   m.milestone_no    AS MilestoneNo,
+                   m.description     AS MilestoneDesc,
+                   m.amount          AS MilestoneAmount,
+                   m.status          AS MilestoneStatus
+            FROM sim_sales_orders so
+            JOIN sim_contracts c ON c.id = so.contract_id
+            LEFT JOIN sim_contract_milestones m ON m.contract_id = c.id AND m.invoice_ref = so.invoiced_ref
+            WHERE so.id = @soId
+            LIMIT 1
+            """;
+        var contract = await conn.QueryFirstOrDefaultAsync<ContractMilestoneRow>(
+            new CommandDefinition(ctrSql, new { soId = so.Id }, cancellationToken: ct));
+
+        var quality = dn is null ? "partial" : "exact";
+        return new SalesOrderMatch(so, dn, contract, quality);
     }
 }

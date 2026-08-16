@@ -254,10 +254,18 @@ async function runExtractionAndSave(args: {
       const fieldsObj = fields as Record<string, unknown>;
       const buyerMst = typeof fieldsObj.buyer_mst === "string" ? fieldsObj.buyer_mst.trim() : "";
       const invoiceTotal = typeof fieldsObj.total_amount === "number" ? fieldsObj.total_amount : 0;
+      const documentNumber = typeof fieldsObj.document_number === "string" ? fieldsObj.document_number.trim() : "";
       if (buyerMst.length > 0) {
         arContext = await enrichWithCustomerAr(token, buyerMst, invoiceTotal);
         if (arContext) {
           fieldsObj.ar_context = arContext;
+        }
+      }
+      // UC-ACC-001 §5.6: 3-way match by document_number
+      if (documentNumber.length > 0) {
+        const matchContext = await enrichWith3WayMatch(token, documentNumber);
+        if (matchContext) {
+          fieldsObj.match_context = matchContext;
         }
       }
       const payload = toGatewayFieldsPayload(fieldsObj, rawText);
@@ -392,6 +400,59 @@ async function enrichWithCustomerAr(
     };
   } catch (err) {
     console.error(`[voucher] enrichWithCustomerAr(${buyerMst}) failed:`, err);
+    return null;
+  }
+}
+
+interface SalesOrderMatch {
+  salesOrder: {
+    orderNumber: string;
+    orderDate: string;
+    status: string;
+    totalAmount: number;
+    paymentTermsDays: number;
+    salespersonCode: string | null;
+    notes: string | null;
+  };
+  deliveryNote: {
+    dnNumber: string;
+    dnDate: string;
+    warehouseFrom: string;
+    deliveredBy: string | null;
+    receivedBy: string | null;
+    status: string;
+  } | null;
+  contract: {
+    contractNumber: string;
+    contractTitle: string;
+    contractValue: number;
+    milestoneNo: number;
+    milestoneDesc: string;
+    milestoneAmount: number;
+    milestoneStatus: string;
+  } | null;
+  matchQuality: string;
+}
+
+async function enrichWith3WayMatch(
+  token: string,
+  documentNumber: string,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await gateway.salesOrderByInvoice(token, documentNumber);
+    if (!res.ok) {
+      return { status: "no_match", document_number: documentNumber };
+    }
+    const match = (await res.json()) as SalesOrderMatch;
+    return {
+      status: "found",
+      quality: match.matchQuality,
+      sales_order: match.salesOrder,
+      delivery_note: match.deliveryNote,
+      contract: match.contract,
+    };
+  } catch (err) {
+    console.error(`[voucher] enrichWith3WayMatch(${documentNumber}) failed:`, err);
     return null;
   }
 }

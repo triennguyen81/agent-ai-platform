@@ -567,6 +567,12 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  salesOrderByInvoice(token: string, documentNumber: string) {
+    return call(GATEWAY_BASE, `/sales-orders/by-invoice/${encodeURIComponent(documentNumber)}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
   listCustomers(token: string, params?: { category?: string; q?: string }) {
     const qs = new URLSearchParams();
     if (params?.category) qs.set("category", params.category);

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AlertTriangle, ArrowLeft, Receipt, ShieldAlert, TrendingUp, Users } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, ClipboardCheck, FileText, Package, Receipt, ShieldAlert, TrendingUp, Users } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
 import { VoucherExtractForm } from "@/components/voucher-extract-form";
@@ -84,6 +84,46 @@ interface ArContextNotFound {
 
 type ArContext = ArContextFound | ArContextNotFound;
 
+// UC-ACC-001 §5.6: 3-way match context stored by /api/vouchers/upload in
+// extracted_fields.match_context.
+interface MatchContextFound {
+  status: "found";
+  quality: "exact" | "partial" | string;
+  sales_order: {
+    orderNumber: string;
+    orderDate: string;
+    status: string;
+    totalAmount: number;
+    paymentTermsDays: number;
+    salespersonCode: string | null;
+    notes: string | null;
+  };
+  delivery_note: {
+    dnNumber: string;
+    dnDate: string;
+    warehouseFrom: string;
+    deliveredBy: string | null;
+    receivedBy: string | null;
+    status: string;
+  } | null;
+  contract: {
+    contractNumber: string;
+    contractTitle: string;
+    contractValue: number;
+    milestoneNo: number;
+    milestoneDesc: string;
+    milestoneAmount: number;
+    milestoneStatus: string;
+  } | null;
+}
+
+interface MatchContextNone {
+  status: "no_match";
+  document_number?: string;
+}
+
+type MatchContext = MatchContextFound | MatchContextNone;
+
 const RISK_FLAG_LABELS: Record<string, string> = {
   invoice_over_500m_requires_l2_approval: "Hoá đơn > 500 triệu → cần duyệt cấp 2 (Kế toán trưởng)",
   has_overdue_90d: "Khách có nợ quá hạn > 90 ngày",
@@ -142,6 +182,117 @@ function fmtDate(s: string | null | undefined) {
   } catch {
     return s;
   }
+}
+
+function MatchContextPanel({ match, currency }: { match: MatchContextFound; currency: string }) {
+  const so = match.sales_order;
+  const dn = match.delivery_note;
+  const ctr = match.contract;
+  const isExact = match.quality === "exact";
+
+  return (
+    <section
+      className={`space-y-3 rounded-[var(--radius)] border p-5 ${
+        isExact ? "border-emerald-300 bg-emerald-50/40" : "border-amber-300 bg-amber-50/40"
+      }`}
+    >
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="font-serif text-lg">
+            <ClipboardCheck className="mr-2 inline size-4" /> Đối chiếu 3 chiều
+          </h2>
+          <p className="text-xs text-[var(--color-muted-fg)]">
+            Hoá đơn ↔ Đơn hàng ↔ Phiếu giao {ctr ? "↔ Hợp đồng" : ""}
+          </p>
+        </div>
+        <span
+          className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium ${
+            isExact ? "bg-emerald-600 text-white" : "bg-amber-500 text-white"
+          }`}
+        >
+          {isExact ? <CheckCircle2 className="size-3.5" /> : <AlertTriangle className="size-3.5" />}
+          {isExact ? "Khớp đầy đủ" : "Khớp một phần"}
+        </span>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <div className="rounded-[var(--radius)] border bg-[var(--color-bg)] p-3 text-sm">
+          <div className="mb-1 flex items-center gap-1 text-xs font-medium text-[var(--color-muted-fg)]">
+            <FileText className="size-3.5" /> Đơn hàng (SO)
+          </div>
+          <div className="font-mono font-bold">{so.orderNumber}</div>
+          <div className="mt-1 space-y-0.5 text-xs">
+            <div>Ngày: {fmtDate(so.orderDate)}</div>
+            <div>Trạng thái: <span className="font-medium">{so.status}</span></div>
+            <div>Giá trị: <span className="font-mono">{fmtMoney(so.totalAmount, currency)}</span></div>
+            <div>Điều khoản: <span className="font-medium">Net {so.paymentTermsDays}</span></div>
+            {so.salespersonCode && <div>KDV: <span className="font-mono">{so.salespersonCode}</span></div>}
+          </div>
+          {so.notes && (
+            <div className="mt-2 border-t pt-2 text-[11px] italic text-[var(--color-muted-fg)]">
+              {so.notes}
+            </div>
+          )}
+        </div>
+
+        <div className={`rounded-[var(--radius)] border p-3 text-sm ${dn ? "bg-[var(--color-bg)]" : "bg-amber-100/50"}`}>
+          <div className="mb-1 flex items-center gap-1 text-xs font-medium text-[var(--color-muted-fg)]">
+            <Package className="size-3.5" /> Phiếu xuất kho (DN)
+          </div>
+          {dn ? (
+            <>
+              <div className="font-mono font-bold">{dn.dnNumber}</div>
+              <div className="mt-1 space-y-0.5 text-xs">
+                <div>Ngày: {fmtDate(dn.dnDate)}</div>
+                <div>Kho: <span className="font-medium">{dn.warehouseFrom}</span></div>
+                <div>Trạng thái: <span className="font-medium">{dn.status}</span></div>
+                {dn.deliveredBy && <div>Giao: {dn.deliveredBy}</div>}
+                {dn.receivedBy && <div>Nhận: {dn.receivedBy}</div>}
+              </div>
+            </>
+          ) : (
+            <div className="text-xs text-amber-800">
+              <b>Chưa có phiếu xuất kho.</b> Cần kiểm tra: hàng đã giao chưa? Xuất kho bằng chứng từ khác?
+            </div>
+          )}
+        </div>
+
+        <div className={`rounded-[var(--radius)] border p-3 text-sm ${ctr ? "bg-[var(--color-bg)]" : "bg-gray-50"}`}>
+          <div className="mb-1 flex items-center gap-1 text-xs font-medium text-[var(--color-muted-fg)]">
+            <FileText className="size-3.5" /> Hợp đồng (nếu có)
+          </div>
+          {ctr ? (
+            <>
+              <div className="font-mono font-bold">{ctr.contractNumber}</div>
+              <div className="mt-1 space-y-0.5 text-xs">
+                <div className="truncate" title={ctr.contractTitle}>{ctr.contractTitle}</div>
+                <div>Giá trị HĐ: <span className="font-mono">{fmtMoney(ctr.contractValue, currency)}</span></div>
+                <div className="mt-1.5 rounded border bg-[var(--color-muted)]/30 p-1.5">
+                  <div className="text-[10px] uppercase tracking-wider text-[var(--color-muted-fg)]">
+                    Milestone {ctr.milestoneNo}
+                  </div>
+                  <div className="text-xs">{ctr.milestoneDesc}</div>
+                  <div className="mt-0.5 flex justify-between text-[11px]">
+                    <span className="font-mono">{fmtMoney(ctr.milestoneAmount, currency)}</span>
+                    <span className="font-medium">
+                      {ctr.milestoneStatus === "invoiced" && <span className="text-emerald-700">✓ Đã xuất HĐ</span>}
+                      {ctr.milestoneStatus === "paid" && <span className="text-emerald-700">✓ Đã thanh toán</span>}
+                      {ctr.milestoneStatus === "pending" && <span className="text-amber-700">Đang chờ</span>}
+                      {ctr.milestoneStatus === "delayed" && <span className="text-red-700">Trễ hạn</span>}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="text-xs text-[var(--color-muted-fg)]">
+              Không thuộc hợp đồng dài hạn nào (bán lẻ / đơn hàng đơn lẻ).
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function ArContextPanel({ ar, currency }: { ar: ArContextFound; currency: string }) {
@@ -334,12 +485,18 @@ export default async function VoucherDetailPage({ params }: PageProps) {
 
   // UC-ACC-001 §5.5-5.7: parse A/R context enriched at upload time.
   let arContext: ArContext | null = null;
+  let matchContext: MatchContext | null = null;
   if (v.extractedFieldsJson) {
     try {
-      const parsed = JSON.parse(v.extractedFieldsJson) as { ar_context?: ArContext };
+      const parsed = JSON.parse(v.extractedFieldsJson) as {
+        ar_context?: ArContext;
+        match_context?: MatchContext;
+      };
       arContext = parsed.ar_context ?? null;
+      matchContext = parsed.match_context ?? null;
     } catch {
       arContext = null;
+      matchContext = null;
     }
   }
 
@@ -491,6 +648,25 @@ export default async function VoucherDetailPage({ params }: PageProps) {
               <p className="text-xs">
                 MST <span className="font-mono">{arContext.buyer_mst ?? "?"}</span> không khớp với
                 bất kỳ khách nào. Tạo hồ sơ mới hoặc kiểm tra lại MST trên hoá đơn.
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {matchContext && matchContext.status === "found" && (
+        <MatchContextPanel match={matchContext} currency={currency} />
+      )}
+      {matchContext && matchContext.status === "no_match" && (
+        <section className="rounded-[var(--radius)] border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
+          <div className="flex items-start gap-2">
+            <ClipboardCheck className="mt-0.5 size-4 shrink-0" />
+            <div>
+              <p className="font-medium">Bán hàng không qua đơn hàng (không tìm thấy PO)</p>
+              <p className="text-xs">
+                Hoá đơn số <span className="font-mono">{matchContext.document_number ?? "?"}</span>{" "}
+                không khớp với sales order nào — có thể là bán retail hoặc order verbal chưa
+                nhập hệ thống. Bắt buộc duyệt thủ công (UC-ACC-001 A2).
               </p>
             </div>
           </div>

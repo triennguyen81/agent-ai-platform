@@ -24,7 +24,28 @@ public static class CustomerEndpoints
         group.MapGet("/{id:guid}", GetByIdAsync);
         group.MapGet("/{id:guid}/receivables", GetReceivablesAsync);
 
+        // UC-ACC-001 §5.6: 3-way match — invoice → sales order → delivery note.
+        // Not under /customers by URL semantics but shares the CustomerRepository
+        // service so no separate module needed.
+        app.MapGet("/sales-orders/by-invoice/{documentNumber}", GetSalesOrderMatchAsync)
+            .RequireAuthorization("user")
+            .RequireRateLimiting("default");
+
         return app;
+    }
+
+    private static async Task<IResult> GetSalesOrderMatchAsync(
+        string documentNumber,
+        ICustomerRepository repo,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+        {
+            return Results.BadRequest(new { error = "tenant scope required" });
+        }
+        var match = await repo.MatchInvoiceToSalesOrderAsync(tenantId, documentNumber, ct);
+        return match is null ? Results.NotFound() : Results.Ok(match);
     }
 
     private static async Task<IResult> ListAsync(
