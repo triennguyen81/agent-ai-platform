@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Activity,
   BookOpen,
@@ -144,12 +144,47 @@ function NavDropdown({
   active: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const Icon = group.icon;
+
+  // Small delay before closing so the cursor can cross the gap between
+  // the trigger button and the dropdown panel without the menu vanishing.
+  const scheduleClose = () => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = setTimeout(() => setOpen(false), 200);
+  };
+  const cancelClose = () => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+
+  // Click-outside closes the menu (needed for the tap-to-open path on
+  // touch devices where mouseleave never fires).
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!containerRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  useEffect(() => () => cancelClose(), []);
+
   return (
     <div
+      ref={containerRef}
       className="relative"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
+      onMouseEnter={() => {
+        cancelClose();
+        setOpen(true);
+      }}
+      onMouseLeave={scheduleClose}
     >
       <button
         type="button"
@@ -166,26 +201,30 @@ function NavDropdown({
         <ChevronDown className={`size-3 transition ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-1 w-56 rounded-lg border bg-[var(--color-bg)] p-1 shadow-lg">
-          {group.items.map((item) => {
-            const ItemIcon = item.icon;
-            const isItemActive = isActive(item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setOpen(false)}
-                className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm transition ${
-                  isItemActive
-                    ? "bg-[var(--color-primary)] text-white"
-                    : "text-[var(--color-fg)] hover:bg-[var(--color-muted)]"
-                }`}
-              >
-                <ItemIcon className="size-4" />
-                <span>{item.label}</span>
-              </Link>
-            );
-          })}
+        // top-full puts the panel flush against the button (no gap for the
+        // cursor to fall through). pt-1 inside the panel gives visual room.
+        <div className="absolute right-0 top-full z-30 w-56 pt-1">
+          <div className="rounded-lg border bg-[var(--color-bg)] p-1 shadow-lg">
+            {group.items.map((item) => {
+              const ItemIcon = item.icon;
+              const isItemActive = isActive(item.href);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  onClick={() => setOpen(false)}
+                  className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm transition ${
+                    isItemActive
+                      ? "bg-[var(--color-primary)] text-white"
+                      : "text-[var(--color-fg)] hover:bg-[var(--color-muted)]"
+                  }`}
+                >
+                  <ItemIcon className="size-4" />
+                  <span>{item.label}</span>
+                </Link>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
