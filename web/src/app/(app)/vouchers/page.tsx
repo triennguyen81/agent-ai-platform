@@ -5,6 +5,7 @@ import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { VouchersToolbar } from "@/components/vouchers-toolbar";
+import { SortableTh } from "@/components/sortable-th";
 
 interface VoucherRecord {
   id: string;
@@ -68,6 +69,12 @@ const SORT_OPTIONS = [
   { value: "date_asc", label: "Ngày HĐ cũ nhất" },
   { value: "amount_desc", label: "Số tiền cao nhất" },
   { value: "amount_asc", label: "Số tiền thấp nhất" },
+  { value: "number_desc", label: "Số CT Z→A" },
+  { value: "number_asc", label: "Số CT A→Z" },
+  { value: "seller_desc", label: "Bên bán Z→A" },
+  { value: "seller_asc", label: "Bên bán A→Z" },
+  { value: "status_desc", label: "Trạng thái Z→A" },
+  { value: "status_asc", label: "Trạng thái A→Z" },
 ] as const;
 
 function statusBadge(status: string): string {
@@ -151,6 +158,18 @@ export default async function VouchersListPage({ searchParams }: PageProps) {
         return (b.totalAmount ?? 0) - (a.totalAmount ?? 0);
       case "amount_asc":
         return (a.totalAmount ?? 0) - (b.totalAmount ?? 0);
+      case "number_desc":
+        return (b.documentNumber ?? "").localeCompare(a.documentNumber ?? "");
+      case "number_asc":
+        return (a.documentNumber ?? "").localeCompare(b.documentNumber ?? "");
+      case "seller_desc":
+        return (b.sellerName ?? "").localeCompare(a.sellerName ?? "", "vi");
+      case "seller_asc":
+        return (a.sellerName ?? "").localeCompare(b.sellerName ?? "", "vi");
+      case "status_desc":
+        return b.status.localeCompare(a.status);
+      case "status_asc":
+        return a.status.localeCompare(b.status);
       case "created_desc":
       default:
         return b.createdAt.localeCompare(a.createdAt);
@@ -233,14 +252,14 @@ export default async function VouchersListPage({ searchParams }: PageProps) {
         <>
           <div className="overflow-hidden rounded-[var(--radius)] border">
             <table className="w-full text-sm">
-              <thead className="bg-[var(--color-muted)] text-xs uppercase tracking-wider text-[var(--color-muted-fg)]">
+              <thead className="bg-[var(--color-muted)]">
                 <tr>
-                  <th className="px-4 py-2 text-left">Loại · Số CT</th>
-                  <th className="px-4 py-2 text-left">Ngày HĐ</th>
-                  <th className="px-4 py-2 text-left">Bên bán / Bên mua</th>
-                  <th className="px-4 py-2 text-right">Tổng tiền</th>
-                  <th className="px-4 py-2 text-right">VAT</th>
-                  <th className="px-4 py-2 text-center">Trạng thái</th>
+                  <SortableTh sortKey="number" currentSort={sort}>Loại · Số CT</SortableTh>
+                  <SortableTh sortKey="date" currentSort={sort}>Ngày HĐ</SortableTh>
+                  <SortableTh sortKey="seller" currentSort={sort}>Bên bán / Bên mua</SortableTh>
+                  <SortableTh sortKey="amount" currentSort={sort} align="right">Tổng tiền</SortableTh>
+                  <th className="px-4 py-2 text-right text-xs uppercase tracking-wider text-[var(--color-muted-fg)]">VAT</th>
+                  <SortableTh sortKey="status" currentSort={sort} align="center">Trạng thái</SortableTh>
                 </tr>
               </thead>
               <tbody>
