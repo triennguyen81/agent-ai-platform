@@ -297,10 +297,116 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
         {
             decimal d => d,
             long i => i,
+            int i => i,
             double dbl => (decimal)dbl,
-            string s when decimal.TryParse(s, out var parsed) => parsed,
+            string s => ParseFlexibleDecimal(s),
             _ => null,
         };
+    }
+
+    // Agent may return numbers as VN-formatted strings like "15.000.000",
+    // "15,000,000", "15 000 000" or "15tr". Strip separators + suffix
+    // before parsing. Fails soft to null so caller can decide.
+    private static decimal? ParseFlexibleDecimal(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var s = raw.Trim();
+
+        // Handle "1.5tr" / "1,5 triệu" — multiplier suffix.
+        decimal multiplier = 1m;
+        var lower = s.ToLowerInvariant();
+        if (lower.EndsWith("tr") || lower.EndsWith("triệu") || lower.EndsWith("trieu"))
+        {
+            multiplier = 1_000_000m;
+            s = Regex.Replace(s, @"\s*(tr|triệu|trieu)\s*$", "", RegexOptions.IgnoreCase);
+        }
+        else if (lower.EndsWith("k") || lower.EndsWith("nghìn") || lower.EndsWith("nghin"))
+        {
+            multiplier = 1_000m;
+            s = Regex.Replace(s, @"\s*(k|nghìn|nghin)\s*$", "", RegexOptions.IgnoreCase);
+        }
+        else if (lower.EndsWith("tỷ") || lower.EndsWith("ty"))
+        {
+            multiplier = 1_000_000_000m;
+            s = Regex.Replace(s, @"\s*(tỷ|ty)\s*$", "", RegexOptions.IgnoreCase);
+        }
+
+        // Strip currency symbols + spaces.
+        s = Regex.Replace(s, @"[₫\s]|VND|VNĐ|USD|EUR|JPY", "", RegexOptions.IgnoreCase).Trim();
+        if (s.Length == 0) return null;
+
+        // Decide decimal separator by heuristics:
+        //  - "1.234.567,89" → VN → drop dots, replace comma with dot
+        //  - "1,234,567.89" → US → drop commas
+        //  - "1234567.89"   → already US
+        //  - "1234567,89"   → EU → replace comma with dot
+        //  - "1234567"      → integer
+        var hasDot = s.Contains('.');
+        var hasComma = s.Contains(',');
+        if (hasDot && hasComma)
+        {
+            var lastDot = s.LastIndexOf('.');
+            var lastComma = s.LastIndexOf(',');
+            if (lastDot > lastComma)
+            {
+                // US: 1,234,567.89 — drop commas
+                s = s.Replace(",", "");
+            }
+            else
+            {
+                // VN/EU: 1.234.567,89 — drop dots, comma → dot
+                s = s.Replace(".", "").Replace(",", ".");
+            }
+        }
+        else if (hasComma)
+        {
+            // Could be thousands separator "1,234,567" OR EU decimal "1234,89".
+            // Heuristic: if there are ≥ 2 commas OR the group after last comma
+            // is exactly 3 digits, treat as thousands separator.
+            var parts = s.Split(',');
+            if (parts.Length > 2 || (parts.Length == 2 && parts[1].Length == 3))
+            {
+                s = s.Replace(",", "");
+            }
+            else
+            {
+                s = s.Replace(",", ".");
+            }
+        }
+        else if (hasDot)
+        {
+            // "1.234.567" (VN thousands) vs "1234.89" (US decimal).
+            var parts = s.Split('.');
+            if (parts.Length > 2 || (parts.Length == 2 && parts[1].Length == 3))
+            {
+                s = s.Replace(".", "");
+            }
+        }
+
+        return decimal.TryParse(s, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
+            ? parsed * multiplier
+            : null;
+    }
+
+    // Accept alternate keys the model sometimes returns.
+    private static string? ReadStringAny(Dictionary<string, object?> obj, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            var v = ReadString(obj, key);
+            if (!string.IsNullOrWhiteSpace(v)) return v;
+        }
+        return null;
+    }
+
+    private static decimal? ReadDecimalAny(Dictionary<string, object?> obj, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            var v = ReadDecimal(obj, key);
+            if (v is not null) return v;
+        }
+        return null;
     }
 
     private static DateOnly? ReadDate(Dictionary<string, object?> obj, string key)
@@ -367,24 +473,34 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
             LineItems: lineItems);
     }
 
-    private static List<SaveJournalSuggestionDto> NormalizeEntries(List<Dictionary<string, object?>> entries)
+    private List<SaveJournalSuggestionDto> NormalizeEntries(List<Dictionary<string, object?>> entries)
     {
         var list = new List<SaveJournalSuggestionDto>();
         int idx = 0;
         foreach (var e in entries)
         {
             idx++;
-            var debit = ReadString(e, "debit_account") ?? "";
-            var credit = ReadString(e, "credit_account") ?? "";
-            var amount = ReadDecimal(e, "amount") ?? 0m;
-            if (string.IsNullOrWhiteSpace(debit) || string.IsNullOrWhiteSpace(credit) || amount <= 0m) continue;
+            var debit = ReadStringAny(e, "debit_account", "debit", "tk_no", "no");
+            var credit = ReadStringAny(e, "credit_account", "credit", "tk_co", "co");
+            var amount = ReadDecimalAny(e, "amount", "value", "so_tien") ?? 0m;
+
+            if (string.IsNullOrWhiteSpace(debit) || string.IsNullOrWhiteSpace(credit) || amount <= 0m)
+            {
+                // Log each drop so we can see agent output format quirks.
+                _logger.LogWarning(
+                    "Journal entry #{Idx} dropped: debit='{Debit}' credit='{Credit}' amount={Amount} raw={Raw}",
+                    idx, debit ?? "?", credit ?? "?", amount,
+                    System.Text.Json.JsonSerializer.Serialize(e));
+                continue;
+            }
+
             list.Add(new SaveJournalSuggestionDto(
-                EntryNo: (int)(ReadDecimal(e, "entry_no") ?? idx),
+                EntryNo: (int)(ReadDecimalAny(e, "entry_no", "no", "stt") ?? idx),
                 DebitAccount: debit,
                 CreditAccount: credit,
                 Amount: amount,
-                Description: ReadString(e, "description"),
-                Confidence: ReadDecimal(e, "confidence")));
+                Description: ReadStringAny(e, "description", "desc", "dien_giai"),
+                Confidence: ReadDecimalAny(e, "confidence")));
         }
         return list;
     }
