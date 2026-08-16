@@ -481,13 +481,20 @@ export const gateway = {
   // ---------- Vouchers (kế toán chứng từ) ----------
   listVouchers(
     token: string,
-    params?: { voucherType?: string; status?: string; q?: string; limit?: number },
+    params?: {
+      voucherType?: string;
+      status?: string;
+      q?: string;
+      limit?: number;
+      offset?: number;
+    },
   ) {
     const search = new URLSearchParams();
     if (params?.voucherType) search.set("voucherType", params.voucherType);
     if (params?.status) search.set("status", params.status);
     if (params?.q) search.set("q", params.q);
     if (params?.limit) search.set("limit", String(params.limit));
+    if (params?.offset) search.set("offset", String(params.offset));
     const qs = search.toString();
     return call(GATEWAY_BASE, `/vouchers${qs ? `?${qs}` : ""}`, {
       headers: { Authorization: `Bearer ${token}` },
