@@ -160,9 +160,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "file trống" }, { status: 400 });
   }
 
-  // P1 async flow: gateway now returns in <5s (just S3 upload + create stub
-  // + enqueue Hangfire OCR job). OCR + agent extraction all happen in the
-  // background so Cloudflare 100s edge budget is never at risk.
+  // P1 (part 2): gateway chains OCR job → extract job (both Hangfire).
+  // Web just relays the fast response — no polling, no bg promise, no
+  // Next.js lifecycle risk. Detail page auto-refreshes while pipeline
+  // runs and stops once status='extracted'.
   const uploadForm = new FormData();
   uploadForm.append("file", file, file.name);
   const uploadRes = await gateway.uploadVoucher(token, uploadForm, voucherType);
@@ -171,15 +172,6 @@ export async function POST(request: NextRequest) {
     return new NextResponse(errText, { status: uploadRes.status });
   }
   const uploadJson = (await uploadRes.json()) as UploadResponse;
-
-  // Kick off polling + extraction as unawaited promise. Client can go to
-  // the detail page immediately; the panel updates as status transitions
-  // uploading → processing → ocr_complete → extracted.
-  void pollAndExtract({
-    voucherId: uploadJson.voucherId,
-    voucherType,
-    token,
-  });
 
   return NextResponse.json({
     voucherId: uploadJson.voucherId,

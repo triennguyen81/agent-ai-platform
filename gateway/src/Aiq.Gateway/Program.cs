@@ -168,8 +168,10 @@ builder.Services.AddHangfireServer(server =>
 
 builder.Services.AddScoped<OcrJobRunner>();
 builder.Services.AddScoped<Aiq.Gateway.Jobs.VoucherOcrJobRunner>();
+builder.Services.AddScoped<Aiq.Gateway.Jobs.VoucherExtractJobRunner>();
 builder.Services.AddScoped<IOcrJobScheduler, OcrJobScheduler>();
 builder.Services.AddScoped<Aiq.Gateway.Jobs.IVoucherOcrJobScheduler, Aiq.Gateway.Jobs.VoucherOcrJobScheduler>();
+builder.Services.AddScoped<Aiq.Gateway.Jobs.IVoucherExtractJobScheduler, Aiq.Gateway.Jobs.VoucherExtractJobScheduler>();
 builder.Services.AddScoped<ContractDeadlineJob>();
 
 builder.Services.AddScoped<IAuditLogger, PostgresAuditLogger>();

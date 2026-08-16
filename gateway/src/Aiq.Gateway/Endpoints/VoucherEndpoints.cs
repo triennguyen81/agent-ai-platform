@@ -73,6 +73,7 @@ public static class VoucherEndpoints
         IVoucherRepository repo,
         IObjectStorage storage,
         Aiq.Gateway.Jobs.IVoucherOcrJobScheduler ocrScheduler,
+        Aiq.Gateway.Jobs.IVoucherExtractJobScheduler extractScheduler,
         IOptions<S3Options> s3Options,
         HttpContext ctx,
         CancellationToken ct,
@@ -139,15 +140,33 @@ public static class VoucherEndpoints
         //   2. Download file from S3, run PaddleOCR
         //   3. status='ocr_complete' + rawText + confidence
         // Any OCR failure → status='ocr_unavailable' + errorMessage.
-        var jobId = ocrScheduler.Enqueue(voucherId, s3Key, file.FileName, contentType, isImage);
+        var ocrJobId = ocrScheduler.Enqueue(voucherId, s3Key, file.FileName, contentType, isImage);
+
+        // Chain the extraction job so LLM + AR + 3-way match run
+        // automatically after OCR succeeds. Uses ContinueJobWith so the
+        // extract runner sees rawOcrText in DB. We forward the caller's
+        // JWT so /agent/run accepts the request.
+        var userToken = ExtractBearerToken(ctx);
+        var extractJobId = extractScheduler.Enqueue(
+            voucherId, userId, tenantId, voucherType, userToken, ocrJobId);
 
         return Results.Ok(new
         {
             voucherId,
             status = "uploading",
-            jobId,
-            // rawText left empty — web tier polls voucher detail until ready.
+            ocrJobId,
+            extractJobId,
         });
+    }
+
+    private static string ExtractBearerToken(HttpContext ctx)
+    {
+        var auth = ctx.Request.Headers.Authorization.ToString();
+        if (auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        {
+            return auth.Substring("Bearer ".Length).Trim();
+        }
+        return string.Empty;
     }
 
     private static async Task<IResult> ListAsync(
