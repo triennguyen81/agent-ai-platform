@@ -93,20 +93,42 @@ public sealed class VoucherExtractJobRunner
         }
 
         // Enrich AR + 3-way match — both require tenant context.
-        var buyerMst = ReadString(fields, "buyer_mst");
-        var invoiceTotal = ReadDecimal(fields, "total_amount") ?? 0m;
+        //
+        // For receipts (phiếu thu), the payer MST lives in `payer_mst` or
+        // `buyer_mst` (LLM inconsistency), and the amount is `amount` /
+        // `total_amount`. Fall back through both keys so cash-receipt
+        // flow reuses the same customer + AR lookup as sales invoices.
+        var isReceipt = voucherType.Equals("receipt", StringComparison.OrdinalIgnoreCase);
+        var partnerMst = isReceipt
+            ? ReadStringAny(fields, "payer_mst", "buyer_mst", "customer_mst")
+            : ReadString(fields, "buyer_mst");
+        var voucherAmount = isReceipt
+            ? (ReadDecimalAny(fields, "amount", "total_amount", "so_tien") ?? 0m)
+            : (ReadDecimal(fields, "total_amount") ?? 0m);
         var documentNumber = ReadString(fields, "document_number");
+
         if (tenantId is Guid t)
         {
-            if (!string.IsNullOrWhiteSpace(buyerMst))
+            object? arContext = null;
+            if (!string.IsNullOrWhiteSpace(partnerMst))
             {
-                var arContext = await BuildArContextAsync(t, buyerMst, invoiceTotal, ct);
+                arContext = await BuildArContextAsync(t, partnerMst, voucherAmount, ct);
                 if (arContext is not null)
                 {
                     fields["ar_context"] = arContext;
                 }
             }
-            if (!string.IsNullOrWhiteSpace(documentNumber))
+
+            if (isReceipt && arContext is not null && voucherAmount > 0m)
+            {
+                var matching = BuildReceiptMatching(arContext, voucherAmount);
+                if (matching is not null)
+                {
+                    fields["receipt_matching"] = matching;
+                }
+            }
+
+            if (!isReceipt && !string.IsNullOrWhiteSpace(documentNumber))
             {
                 var matchContext = await BuildMatchContextAsync(t, documentNumber, ct);
                 if (matchContext is not null)
@@ -556,6 +578,150 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
             _logger.LogWarning(ex, "AR enrichment failed for MST {Mst}", buyerMst);
             return null;
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Deterministic receipt matching (FIFO oldest-first) + discount detection.
+    //
+    // Runs *after* AR lookup so we have the customer's open invoices with
+    // due dates. Applies the receipt amount to invoices in due-date order,
+    // returning the per-invoice application breakdown plus a discount hint
+    // when the receipt is slightly less than the target invoice (< 3%
+    // shortfall on a fully-applied line → likely chiết khấu thanh toán sớm).
+    //
+    // No LLM call — the customer's open A/R is authoritative, so this is
+    // a plain accounting rule with no variance.
+    // ------------------------------------------------------------------
+    private static object? BuildReceiptMatching(object arContext, decimal receiptAmount)
+    {
+        // arContext is the anonymous object produced by BuildArContextAsync.
+        // We reflect over it (or serialize→parse) to get open_invoices.
+        var json = System.Text.Json.JsonSerializer.Serialize(arContext);
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object)
+        {
+            return null;
+        }
+        if (!doc.RootElement.TryGetProperty("open_invoices", out var openEl)
+            || openEl.ValueKind != System.Text.Json.JsonValueKind.Array
+            || openEl.GetArrayLength() == 0)
+        {
+            return new
+            {
+                status = "no_open_invoices",
+                receipt_amount = receiptAmount,
+                message = "Khách hàng không có hoá đơn chưa thu — thu vào 511/711 (không phải giảm 131).",
+            };
+        }
+
+        // Snapshot to a mutable list ordered by due date (oldest first).
+        var invoices = new List<(string DocumentNumber, DateOnly DocumentDate, DateOnly? DueDate, decimal Remaining)>();
+        foreach (var item in openEl.EnumerateArray())
+        {
+            var docNum = item.TryGetProperty("DocumentNumber", out var dn) ? dn.GetString() ?? "?" : "?";
+            var docDate = item.TryGetProperty("DocumentDate", out var dd) && dd.ValueKind == System.Text.Json.JsonValueKind.String
+                ? DateOnly.Parse(dd.GetString()!) : DateOnly.MinValue;
+            DateOnly? dueDate = null;
+            if (item.TryGetProperty("DueDate", out var due) && due.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                dueDate = DateOnly.Parse(due.GetString()!);
+            }
+            var debit = item.TryGetProperty("Debit", out var deb) ? deb.GetDecimal() : 0m;
+            if (debit > 0m)
+            {
+                invoices.Add((docNum, docDate, dueDate, debit));
+            }
+        }
+        invoices.Sort((a, b) =>
+        {
+            var byDue = (a.DueDate ?? DateOnly.MaxValue).CompareTo(b.DueDate ?? DateOnly.MaxValue);
+            return byDue != 0 ? byDue : a.DocumentDate.CompareTo(b.DocumentDate);
+        });
+
+        var applications = new List<object>();
+        var remaining = receiptAmount;
+        decimal totalApplied = 0m;
+        decimal? discount = null;
+        string? discountReason = null;
+        foreach (var (docNum, docDate, dueDate, invRemaining) in invoices)
+        {
+            if (remaining <= 0m) break;
+            decimal applied;
+            decimal invAfter;
+            var shortfall = invRemaining - remaining;
+            var shortfallPct = invRemaining > 0m ? shortfall / invRemaining : 0m;
+
+            // Chiết khấu thanh toán sớm heuristic: shortfall ≤ 3% AND
+            // receipt at least covers 97% AND invoice not yet overdue.
+            // Apply full invoice value + book discount as 5211 line.
+            var withinDiscountWindow = dueDate is null || DateOnly.FromDateTime(DateTime.UtcNow) <= dueDate;
+            if (shortfall > 0m && shortfallPct <= 0.03m && withinDiscountWindow && applications.Count == 0)
+            {
+                applied = invRemaining;
+                invAfter = 0m;
+                discount = shortfall;
+                discountReason = $"Chiết khấu thanh toán sớm cho HĐ {docNum} ({shortfallPct:P1}).";
+                remaining -= remaining;
+                totalApplied += invRemaining;
+            }
+            else
+            {
+                applied = Math.Min(remaining, invRemaining);
+                invAfter = invRemaining - applied;
+                remaining -= applied;
+                totalApplied += applied;
+            }
+            applications.Add(new
+            {
+                document_number = docNum,
+                document_date = docDate,
+                due_date = dueDate,
+                invoice_remaining_before = invRemaining,
+                applied,
+                invoice_remaining_after = invAfter,
+            });
+        }
+
+        // If receipt exceeds all open A/R, remainder goes to prepayment (131+).
+        string status;
+        string message;
+        if (remaining > 0m)
+        {
+            status = "overpaid";
+            message = $"Thu dư {remaining:N0} VNĐ — treo vào TK 3387 (KH trả trước) hoặc trả lại.";
+        }
+        else if (discount is not null)
+        {
+            status = "matched_with_discount";
+            message = discountReason ?? "Áp có chiết khấu.";
+        }
+        else if (applications.Count == 1 && ((dynamic)applications[0]).invoice_remaining_after == 0m)
+        {
+            status = "matched_full";
+            message = "Thu đủ 1 hoá đơn.";
+        }
+        else if (applications.Count > 1)
+        {
+            status = "matched_multiple";
+            message = $"Áp cho {applications.Count} hoá đơn (thứ tự due-date).";
+        }
+        else
+        {
+            status = "matched_partial";
+            message = "Thu 1 phần hoá đơn.";
+        }
+
+        return new
+        {
+            status,
+            receipt_amount = receiptAmount,
+            total_applied = totalApplied,
+            remaining_overpayment = Math.Max(remaining, 0m),
+            discount,
+            discount_reason = discountReason,
+            applications,
+            message,
+        };
     }
 
     private async Task<object?> BuildMatchContextAsync(Guid tenantId, string documentNumber, CancellationToken ct)

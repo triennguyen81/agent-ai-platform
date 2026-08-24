@@ -124,6 +124,36 @@ interface MatchContextNone {
 
 type MatchContext = MatchContextFound | MatchContextNone;
 
+// Receipt matching context — deterministic FIFO built in gateway when
+// voucher_type=receipt AND payer has open A/R.
+interface ReceiptApplication {
+  document_number: string;
+  document_date: string;
+  due_date: string | null;
+  invoice_remaining_before: number;
+  applied: number;
+  invoice_remaining_after: number;
+}
+
+interface ReceiptMatchingFound {
+  status:
+    | "matched_full"
+    | "matched_partial"
+    | "matched_multiple"
+    | "matched_with_discount"
+    | "overpaid"
+    | "no_open_invoices";
+  receipt_amount: number;
+  total_applied: number;
+  remaining_overpayment: number;
+  discount: number | null;
+  discount_reason: string | null;
+  applications: ReceiptApplication[];
+  message: string;
+}
+
+type ReceiptMatching = ReceiptMatchingFound;
+
 const RISK_FLAG_LABELS: Record<string, string> = {
   invoice_over_500m_requires_l2_approval: "Hoá đơn > 500 triệu → cần duyệt cấp 2 (Kế toán trưởng)",
   has_overdue_90d: "Khách có nợ quá hạn > 90 ngày",
@@ -182,6 +212,105 @@ function fmtDate(s: string | null | undefined) {
   } catch {
     return s;
   }
+}
+
+function ReceiptMatchingPanel({
+  matching,
+  currency,
+}: {
+  matching: ReceiptMatchingFound;
+  currency: string;
+}) {
+  const tone =
+    matching.status === "matched_with_discount"
+      ? "border-emerald-300 bg-emerald-50/40"
+      : matching.status === "overpaid"
+        ? "border-amber-300 bg-amber-50/40"
+        : matching.status === "no_open_invoices"
+          ? "border-blue-200 bg-blue-50/40"
+          : "border-emerald-300 bg-emerald-50/40";
+  return (
+    <section className={`space-y-3 rounded-[var(--radius)] border p-5 ${tone}`}>
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="font-serif text-lg">
+            <ClipboardCheck className="mr-2 inline size-4" /> Áp thu vào công nợ
+          </h2>
+          <p className="text-xs text-[var(--color-muted-fg)]">{matching.message}</p>
+        </div>
+        <div className="text-right">
+          <div className="text-xs text-[var(--color-muted-fg)]">Số tiền thu</div>
+          <div className="font-mono text-lg font-bold">
+            {fmtMoney(matching.receipt_amount, currency)}
+          </div>
+        </div>
+      </div>
+
+      {matching.applications.length > 0 && (
+        <div className="overflow-hidden rounded-[var(--radius)] border bg-[var(--color-bg)]">
+          <table className="w-full text-sm">
+            <thead className="bg-[var(--color-muted)]/60 text-xs uppercase tracking-wider text-[var(--color-muted-fg)]">
+              <tr>
+                <th className="px-3 py-2 text-left">Số HĐ</th>
+                <th className="px-3 py-2 text-left">Hạn TT</th>
+                <th className="px-3 py-2 text-right">Còn nợ trước</th>
+                <th className="px-3 py-2 text-right">Áp thu</th>
+                <th className="px-3 py-2 text-right">Còn nợ sau</th>
+              </tr>
+            </thead>
+            <tbody>
+              {matching.applications.map((app) => (
+                <tr key={app.document_number} className="border-t">
+                  <td className="px-3 py-2 font-mono">{app.document_number}</td>
+                  <td className="px-3 py-2 text-xs">{fmtDate(app.due_date)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-xs">
+                    {fmtMoney(app.invoice_remaining_before, currency)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-emerald-700">
+                    {fmtMoney(app.applied, currency)}
+                  </td>
+                  <td
+                    className={`px-3 py-2 text-right font-mono text-xs ${
+                      app.invoice_remaining_after === 0 ? "text-emerald-700 font-bold" : ""
+                    }`}
+                  >
+                    {fmtMoney(app.invoice_remaining_after, currency)}
+                    {app.invoice_remaining_after === 0 && " ✓"}
+                  </td>
+                </tr>
+              ))}
+              <tr className="border-t bg-[var(--color-muted)]/30">
+                <td colSpan={3} className="px-3 py-2 text-right text-xs font-medium">
+                  Tổng áp thu:
+                </td>
+                <td className="px-3 py-2 text-right font-mono font-bold text-emerald-800">
+                  {fmtMoney(matching.total_applied, currency)}
+                </td>
+                <td className="px-3 py-2" />
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {matching.discount !== null && matching.discount > 0 && (
+        <div className="rounded-[var(--radius)] border border-emerald-300 bg-emerald-100 px-3 py-2 text-sm text-emerald-900">
+          <b>Chiết khấu thanh toán sớm:</b> {fmtMoney(matching.discount, currency)}
+          <div className="mt-0.5 text-xs">
+            Bút toán bổ sung: <span className="font-mono">Nợ 5211 / Có 131</span>{" "}
+            {fmtMoney(matching.discount, currency)}
+          </div>
+        </div>
+      )}
+
+      {matching.remaining_overpayment > 0 && (
+        <div className="rounded-[var(--radius)] border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <b>Thu dư:</b> {fmtMoney(matching.remaining_overpayment, currency)} — treo vào
+          TK 3387 (khách trả trước) hoặc trả lại.
+        </div>
+      )}
+    </section>
+  );
 }
 
 function MatchContextPanel({ match, currency }: { match: MatchContextFound; currency: string }) {
@@ -486,17 +615,21 @@ export default async function VoucherDetailPage({ params }: PageProps) {
   // UC-ACC-001 §5.5-5.7: parse A/R context enriched at upload time.
   let arContext: ArContext | null = null;
   let matchContext: MatchContext | null = null;
+  let receiptMatching: ReceiptMatching | null = null;
   if (v.extractedFieldsJson) {
     try {
       const parsed = JSON.parse(v.extractedFieldsJson) as {
         ar_context?: ArContext;
         match_context?: MatchContext;
+        receipt_matching?: ReceiptMatching;
       };
       arContext = parsed.ar_context ?? null;
       matchContext = parsed.match_context ?? null;
+      receiptMatching = parsed.receipt_matching ?? null;
     } catch {
       arContext = null;
       matchContext = null;
+      receiptMatching = null;
     }
   }
 
@@ -663,6 +796,10 @@ export default async function VoucherDetailPage({ params }: PageProps) {
             </div>
           </div>
         </section>
+      )}
+
+      {receiptMatching && (
+        <ReceiptMatchingPanel matching={receiptMatching} currency={currency} />
       )}
 
       {matchContext && matchContext.status === "found" && (
