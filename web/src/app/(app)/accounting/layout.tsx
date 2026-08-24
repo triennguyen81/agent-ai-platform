@@ -1,6 +1,4 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
-import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
 
 const NAV_ITEMS: { href: string; label: string }[] = [
@@ -17,15 +15,9 @@ export default async function AccountingLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const token = await requireSession();
-  const meRes = await gateway.me(token);
-  if (meRes.ok) {
-    const me = (await meRes.json()) as { roles?: string[] };
-    const roles = me.roles ?? [];
-    if (!roles.includes("super_admin") && !roles.includes("admin")) {
-      redirect("/chat");
-    }
-  }
+  // Kế toán viên (role=user) uses the accounting tools daily.
+  // Access gated only by an authenticated session.
+  await requireSession();
 
   return (
     <div className="space-y-6">

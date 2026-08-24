@@ -122,14 +122,9 @@ interface PageProps {
 export default async function VouchersListPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const token = await requireSession();
-  const meRes = await gateway.me(token);
-  if (meRes.ok) {
-    const me = (await meRes.json()) as { roles?: string[] };
-    const roles = me.roles ?? [];
-    if (!roles.includes("super_admin") && !roles.includes("admin")) {
-      redirect("/chat");
-    }
-  }
+  // Kế toán viên (role=user) can also manage vouchers — that's their
+  // primary daily job. Gateway policy is 'user' (all authenticated
+  // tenant members) so we don't need a role check here.
 
   const status = params.status && params.status !== "all" ? params.status : undefined;
   const q = params.q?.trim() || undefined;

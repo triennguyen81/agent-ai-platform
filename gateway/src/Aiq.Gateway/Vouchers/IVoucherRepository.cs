@@ -454,11 +454,14 @@ public sealed class VoucherRepository : IVoucherRepository
         Guid id,
         CancellationToken ct)
     {
+        // Voucher visibility is tenant-scoped: every kế toán viên at the
+        // tenant needs to see the same set of chứng từ so admin uploads
+        // and kế toán actions share one queue. The user_id column is
+        // retained for audit ("who uploaded") but no longer gates reads.
         var voucherSql = $"""
             SELECT {VoucherSelectColumns}
             FROM vouchers
             WHERE id = @id
-              AND user_id = @userId
               AND (@tenantId::uuid IS NULL OR tenant_id = @tenantId);
             """;
 
@@ -506,11 +509,12 @@ public sealed class VoucherRepository : IVoucherRepository
         var hasStatus = !string.IsNullOrWhiteSpace(statusFilter);
         var hasSearch = !string.IsNullOrWhiteSpace(search);
 
+        // Tenant-scoped list (same as FindAsync). userId retained on
+        // command for audit logging but not filtered on.
         var sql = $"""
             SELECT {VoucherSelectColumns}
             FROM vouchers
-            WHERE user_id = @userId
-              AND (@tenantId::uuid IS NULL OR tenant_id = @tenantId)
+            WHERE (@tenantId::uuid IS NULL OR tenant_id = @tenantId)
               {(hasType ? "AND voucher_type = @voucherType" : "")}
               {(hasStatus ? "AND status = @statusFilter" : "")}
               {(hasSearch ? "AND (document_number ILIKE @searchPattern OR seller_name ILIKE @searchPattern OR seller_mst ILIKE @searchPattern)" : "")}
@@ -566,7 +570,6 @@ public sealed class VoucherRepository : IVoucherRepository
                 error_message   = COALESCE(@errorMessage, error_message),
                 tags            = COALESCE(@tags, tags)
             WHERE id = @id
-              AND user_id = @userId
               AND (@tenantId::uuid IS NULL OR tenant_id = @tenantId)
             RETURNING {VoucherSelectColumns};
             """;
@@ -706,10 +709,11 @@ public sealed class VoucherRepository : IVoucherRepository
 
     public async Task<bool> DeleteAsync(Guid? tenantId, Guid userId, Guid id, CancellationToken ct)
     {
+        // Delete is admin-only at the endpoint layer (RequireAuthorization
+        // "admin"), so any admin in the tenant can remove any voucher.
         const string sql = """
             DELETE FROM vouchers
             WHERE id = @id
-              AND user_id = @userId
               AND (@tenantId::uuid IS NULL OR tenant_id = @tenantId);
             """;
         await using var conn = await _factory.OpenAsync(ct);

@@ -45,7 +45,11 @@ interface AppNavProps {
 export function AppNav({ roles }: AppNavProps) {
   const pathname = usePathname();
   const isSuperAdmin = roles.includes("super_admin");
-  const canEditKnowledge = isSuperAdmin || roles.includes("admin");
+  const isAdmin = isSuperAdmin || roles.includes("admin");
+  // Kế toán viên (role=user) is the daily-driver persona for the
+  // business modules — they upload chứng từ, look up KH, view kế toán
+  // tools. Everyone with any authenticated session gets these.
+  const isAuthenticated = roles.length > 0;
 
   // Primary — always visible.
   const primary: NavItem[] = [
@@ -53,8 +57,10 @@ export function AppNav({ roles }: AppNavProps) {
     { href: "/my-agents", label: "Trợ lý", icon: Bot },
   ];
 
-  // Nghiệp vụ — visible to admins (KB contributors).
-  const business: NavGroup | null = canEditKnowledge
+  // Nghiệp vụ — daily accounting work. Available to kế toán viên (user)
+  // AND above. Hợp đồng moved out to Workspace (admin-only) because
+  // signing contracts is a manager task.
+  const business: NavGroup | null = isAuthenticated
     ? {
         label: "Nghiệp vụ",
         icon: Calculator,
@@ -62,18 +68,19 @@ export function AppNav({ roles }: AppNavProps) {
           { href: "/accounting", label: "Kế toán", icon: Calculator },
           { href: "/vouchers", label: "Chứng từ", icon: Receipt },
           { href: "/customers", label: "Khách hàng", icon: Building2 },
-          { href: "/contracts", label: "Hợp đồng", icon: FileSignature },
         ],
       }
     : null;
 
-  // Kiến thức + Agent config.
-  const workspace: NavGroup | null = canEditKnowledge
+  // Workspace — knowledge base + agent config + contract management.
+  // Admin persona: kế toán trưởng / trưởng phòng.
+  const workspace: NavGroup | null = isAdmin
     ? {
         label: "Workspace",
         icon: BookOpen,
         items: [
           { href: "/knowledge", label: "Kiến thức", icon: BookOpen },
+          { href: "/contracts", label: "Hợp đồng", icon: FileSignature },
           { href: "/admin/agents", label: "Agents", icon: Bot },
           { href: "/admin/review-queue", label: "Reviews", icon: ClipboardCheck },
           { href: "/admin/hitl-queue", label: "HITL", icon: ShieldAlert },
