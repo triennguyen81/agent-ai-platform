@@ -60,10 +60,128 @@ public static class VoucherEndpoints
         // rawText body overrides raw_ocr_text for the paste-fallback flow.
         group.MapPost("/{id:guid}/reextract", ReextractAsync);
 
+        // Kế toán viên bấm "Chấp nhận thu" trên phiếu thu detail page:
+        // reads receipt_matching from extracted_fields, inserts credit
+        // rows in sim_ar_ledger (one per application + optional discount),
+        // updates sim_customers.current_ar, marks voucher status='verified'.
+        group.MapPost("/{id:guid}/apply-receipt", ApplyReceiptAsync);
+
         return app;
     }
 
     private sealed record ReextractRequest(string? RawText, string? VoucherType);
+
+    private static async Task<IResult> ApplyReceiptAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Customers.ICustomerRepository customers,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!TryGetUserId(ctx, out var userId))
+        {
+            return Results.Unauthorized();
+        }
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+        {
+            return Results.BadRequest(new { error = "tenant scope required" });
+        }
+
+        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        if (voucher.Voucher.VoucherType != "receipt")
+        {
+            return Results.BadRequest(new { error = "apply-receipt chỉ áp dụng cho phiếu thu" });
+        }
+        if (voucher.Voucher.Status == "verified")
+        {
+            return Results.Ok(new { voucherId = id, status = "already_applied", message = "Đã áp trước đó." });
+        }
+
+        var extractedJson = voucher.Voucher.ExtractedFieldsJson ?? "{}";
+        using var doc = System.Text.Json.JsonDocument.Parse(extractedJson);
+        var root = doc.RootElement;
+
+        if (!root.TryGetProperty("receipt_matching", out var matchEl))
+        {
+            return Results.BadRequest(new { error = "voucher chưa có receipt_matching — chạy trích xuất lại trước" });
+        }
+        if (!root.TryGetProperty("ar_context", out var arEl)
+            || !arEl.TryGetProperty("customer", out var custEl)
+            || !custEl.TryGetProperty("Id", out var custIdEl))
+        {
+            return Results.BadRequest(new { error = "voucher chưa có ar_context.customer" });
+        }
+        var customerId = custIdEl.GetGuid();
+
+        var apps = new List<Aiq.Gateway.Customers.ReceiptApplicationInput>();
+        if (matchEl.TryGetProperty("applications", out var appsEl) && appsEl.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var a in appsEl.EnumerateArray())
+            {
+                var docNum = a.GetProperty("document_number").GetString() ?? "?";
+                var applied = a.GetProperty("applied").GetDecimal();
+                if (applied > 0m) apps.Add(new Aiq.Gateway.Customers.ReceiptApplicationInput(docNum, applied));
+            }
+        }
+        decimal discount = 0m;
+        string? discountReason = null;
+        if (matchEl.TryGetProperty("discount", out var discEl) && discEl.ValueKind == System.Text.Json.JsonValueKind.Number)
+        {
+            discount = discEl.GetDecimal();
+        }
+        if (matchEl.TryGetProperty("discount_reason", out var drEl) && drEl.ValueKind == System.Text.Json.JsonValueKind.String)
+        {
+            discountReason = drEl.GetString();
+        }
+
+        if (apps.Count == 0 && discount == 0m)
+        {
+            return Results.BadRequest(new { error = "không có khoản nào để áp thu" });
+        }
+
+        var receiptDocumentNumber = voucher.Voucher.DocumentNumber ?? $"PT-{id:N}";
+        var receiptDate = voucher.Voucher.DocumentDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+
+        var result = await customers.ApplyReceiptAsync(
+            tenantId,
+            customerId,
+            id,
+            receiptDocumentNumber,
+            receiptDate,
+            apps,
+            discount,
+            discountReason,
+            ct);
+
+        // Flip voucher to verified so the Accept button hides.
+        await repo.UpdateAsync(
+            tenantId,
+            userId,
+            id,
+            new UpdateVoucherRequest(
+                Status: "verified",
+                DocumentNumber: null, DocumentSeries: null, DocumentDate: null,
+                SellerName: null, SellerMst: null, SellerAddress: null,
+                BuyerName: null, BuyerMst: null, BuyerAddress: null,
+                PaymentMethod: null, Subtotal: null, VatRate: null, VatAmount: null,
+                DiscountAmount: null, TotalAmount: null, Currency: null,
+                AmountInWords: null,
+                ErrorMessage: null,
+                Tags: null),
+            ct);
+
+        return Results.Ok(new
+        {
+            voucherId = id,
+            status = "applied",
+            previous_balance = result.PreviousBalance,
+            new_balance = result.NewBalance,
+            total_applied = result.TotalApplied,
+            discount_amount = result.DiscountAmount,
+            ledger_rows_inserted = result.LedgerRowsInserted,
+        });
+    }
 
     private static async Task<IResult> ReextractAsync(
         Guid id,

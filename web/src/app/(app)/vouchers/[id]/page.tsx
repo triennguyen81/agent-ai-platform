@@ -4,6 +4,7 @@ import { AlertTriangle, ArrowLeft, CheckCircle2, ClipboardCheck, FileText, Packa
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
 import { VoucherExtractForm } from "@/components/voucher-extract-form";
+import { AcceptReceiptButton } from "@/components/accept-receipt-button";
 
 interface VoucherRecord {
   id: string;
@@ -217,9 +218,13 @@ function fmtDate(s: string | null | undefined) {
 function ReceiptMatchingPanel({
   matching,
   currency,
+  voucherId,
+  voucherStatus,
 }: {
   matching: ReceiptMatchingFound;
   currency: string;
+  voucherId: string;
+  voucherStatus: string;
 }) {
   const tone =
     matching.status === "matched_with_discount"
@@ -309,8 +314,28 @@ function ReceiptMatchingPanel({
           TK 3387 (khách trả trước) hoặc trả lại.
         </div>
       )}
+
+      {/* Accept button — writes the credit rows + updates customer.current_ar */}
+      {voucherStatus !== "verified" && matching.status !== "no_open_invoices" && (
+        <div className="border-t pt-3">
+          <AcceptReceiptButton voucherId={voucherId} />
+          <p className="mt-2 text-[11px] italic text-[var(--color-muted-fg)]">
+            Bấm để ghi credit rows vào sổ AR + giảm công nợ khách trong hệ thống. Idempotent
+            — bấm nhiều lần cũng chỉ áp 1 lần.
+          </p>
+        </div>
+      )}
+      {voucherStatus === "verified" && (
+        <div className="rounded-[var(--radius)] border border-emerald-300 bg-emerald-100 px-3 py-2 text-sm text-emerald-900">
+          ✓ Đã áp thu vào công nợ. Xem lịch sử trong <a href={arContextLink(matching)} className="underline">/customers</a>.
+        </div>
+      )}
     </section>
   );
+}
+
+function arContextLink(_matching: ReceiptMatchingFound): string {
+  return "/customers";
 }
 
 function MatchContextPanel({ match, currency }: { match: MatchContextFound; currency: string }) {
@@ -799,7 +824,12 @@ export default async function VoucherDetailPage({ params }: PageProps) {
       )}
 
       {receiptMatching && (
-        <ReceiptMatchingPanel matching={receiptMatching} currency={currency} />
+        <ReceiptMatchingPanel
+          matching={receiptMatching}
+          currency={currency}
+          voucherId={v.id}
+          voucherStatus={v.status}
+        />
       )}
 
       {matchContext && matchContext.status === "found" && (

@@ -92,6 +92,17 @@ public sealed record SalesOrderMatch(
     ContractMilestoneRow? Contract,
     string MatchQuality);   // exact / partial / not_found
 
+public sealed record ReceiptApplicationInput(
+    string DocumentNumber,
+    decimal AppliedAmount);
+
+public sealed record ReceiptApplyResult(
+    decimal PreviousBalance,
+    decimal NewBalance,
+    decimal TotalApplied,
+    decimal DiscountAmount,
+    int LedgerRowsInserted);
+
 public interface ICustomerRepository
 {
     Task<IReadOnlyList<CustomerRecord>> ListAsync(Guid tenantId, string? category, string? search, CancellationToken ct);
@@ -99,6 +110,23 @@ public interface ICustomerRepository
     Task<CustomerRecord?> FindByIdAsync(Guid tenantId, Guid id, CancellationToken ct);
     Task<CustomerReceivablesReport?> GetReceivablesAsync(Guid tenantId, Guid customerId, CancellationToken ct);
     Task<SalesOrderMatch?> MatchInvoiceToSalesOrderAsync(Guid tenantId, string documentNumber, CancellationToken ct);
+
+    // Apply a receipt (phiếu thu) to a customer's open invoices in a
+    // single transaction:
+    //   1. Insert a credit row in sim_ar_ledger per application (reduces AR).
+    //   2. Insert a discount row if provided (Nợ 5211 / Có 131).
+    //   3. Update sim_customers.current_ar (subtract totalApplied + discount).
+    // Idempotent by voucherId — subsequent calls with same voucherId are no-ops.
+    Task<ReceiptApplyResult> ApplyReceiptAsync(
+        Guid tenantId,
+        Guid customerId,
+        Guid voucherId,
+        string receiptDocumentNumber,
+        DateOnly receiptDate,
+        IReadOnlyList<ReceiptApplicationInput> applications,
+        decimal discountAmount,
+        string? discountReason,
+        CancellationToken ct);
 }
 
 public sealed class CustomerRepository : ICustomerRepository
@@ -290,5 +318,131 @@ public sealed class CustomerRepository : ICustomerRepository
 
         var quality = dn is null ? "partial" : "exact";
         return new SalesOrderMatch(so, dn, contract, quality);
+    }
+
+    public async Task<ReceiptApplyResult> ApplyReceiptAsync(
+        Guid tenantId,
+        Guid customerId,
+        Guid voucherId,
+        string receiptDocumentNumber,
+        DateOnly receiptDate,
+        IReadOnlyList<ReceiptApplicationInput> applications,
+        decimal discountAmount,
+        string? discountReason,
+        CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // Idempotency guard: if a credit row already tags this voucher, we
+        // already applied it. Detected via reference_note = "voucher:{id}".
+        const string dupSql = "SELECT COUNT(*) FROM sim_ar_ledger WHERE customer_id = @customerId AND reference_note LIKE @tag";
+        var existing = await conn.ExecuteScalarAsync<int>(
+            new CommandDefinition(dupSql,
+                new { customerId, tag = $"voucher:{voucherId:N}%" },
+                transaction: tx,
+                cancellationToken: ct));
+        if (existing > 0)
+        {
+            await tx.RollbackAsync(ct);
+            var customer = await FindByIdAsync(tenantId, customerId, ct)
+                ?? throw new InvalidOperationException("Customer not found");
+            return new ReceiptApplyResult(
+                PreviousBalance: customer.CurrentAr,
+                NewBalance: customer.CurrentAr,
+                TotalApplied: 0m,
+                DiscountAmount: 0m,
+                LedgerRowsInserted: 0);
+        }
+
+        var prevBalance = await conn.ExecuteScalarAsync<decimal>(
+            new CommandDefinition(
+                "SELECT current_ar FROM sim_customers WHERE tenant_id = @tenantId AND id = @customerId FOR UPDATE",
+                new { tenantId, customerId },
+                transaction: tx,
+                cancellationToken: ct));
+
+        decimal totalApplied = 0m;
+        int rowsInserted = 0;
+
+        // Snapshot rolling balance so we can compute balance_after per row.
+        var runningBalance = prevBalance;
+
+        foreach (var app in applications)
+        {
+            if (app.AppliedAmount <= 0m) continue;
+            runningBalance -= app.AppliedAmount;
+            const string insertSql = """
+                INSERT INTO sim_ar_ledger
+                    (tenant_id, customer_id, document_date, document_number, document_type,
+                     debit, credit, balance_after, due_date, reference_note)
+                VALUES
+                    (@tenantId, @customerId, @receiptDate, @receiptDocumentNumber, 'receipt',
+                     0, @credit, @balanceAfter, NULL, @refNote)
+                """;
+            await conn.ExecuteAsync(new CommandDefinition(
+                insertSql,
+                new
+                {
+                    tenantId,
+                    customerId,
+                    receiptDate,
+                    receiptDocumentNumber,
+                    credit = app.AppliedAmount,
+                    balanceAfter = runningBalance,
+                    refNote = $"voucher:{voucherId:N}|apply:{app.DocumentNumber}",
+                },
+                transaction: tx,
+                cancellationToken: ct));
+            totalApplied += app.AppliedAmount;
+            rowsInserted++;
+        }
+
+        // Discount line reduces A/R further and books to 5211 in the journal
+        // (already suggested to the user via ReceiptMatchingPanel).
+        if (discountAmount > 0m)
+        {
+            runningBalance -= discountAmount;
+            const string discountSql = """
+                INSERT INTO sim_ar_ledger
+                    (tenant_id, customer_id, document_date, document_number, document_type,
+                     debit, credit, balance_after, due_date, reference_note)
+                VALUES
+                    (@tenantId, @customerId, @receiptDate, @discountDoc, 'discount',
+                     0, @credit, @balanceAfter, NULL, @refNote)
+                """;
+            await conn.ExecuteAsync(new CommandDefinition(
+                discountSql,
+                new
+                {
+                    tenantId,
+                    customerId,
+                    receiptDate,
+                    discountDoc = $"CK-{receiptDocumentNumber}",
+                    credit = discountAmount,
+                    balanceAfter = runningBalance,
+                    refNote = $"voucher:{voucherId:N}|discount:{discountReason ?? "auto"}",
+                },
+                transaction: tx,
+                cancellationToken: ct));
+            rowsInserted++;
+        }
+
+        // Update the denormalized current_ar snapshot on the customer row.
+        var newBalance = prevBalance - totalApplied - discountAmount;
+        await conn.ExecuteAsync(new CommandDefinition(
+            "UPDATE sim_customers SET current_ar = @newBalance WHERE tenant_id = @tenantId AND id = @customerId",
+            new { newBalance, tenantId, customerId },
+            transaction: tx,
+            cancellationToken: ct));
+
+        await tx.CommitAsync(ct);
+
+        return new ReceiptApplyResult(
+            PreviousBalance: prevBalance,
+            NewBalance: newBalance,
+            TotalApplied: totalApplied,
+            DiscountAmount: discountAmount,
+            LedgerRowsInserted: rowsInserted);
     }
 }
