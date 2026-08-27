@@ -473,12 +473,15 @@ export default async function AgentDetailPage({
         href="/admin/agents"
         className="inline-flex items-center gap-1 text-sm text-[var(--color-muted-fg)] hover:text-[var(--color-fg)]"
       >
-        <ArrowLeft className="size-3.5" /> Tất cả agents
+        <ArrowLeft className="size-3.5" /> Trợ lý AI
       </Link>
 
       <header className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="font-serif text-3xl">{agent.name}</h1>
+          <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border)] bg-[var(--color-muted)] px-2 py-0.5 text-xs text-[var(--color-muted-fg)]">
+            legacy
+          </span>
           <span
             className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${
               LIFECYCLE_BADGES[agent.lifecycleState] ?? "border-gray-300"
@@ -495,6 +498,13 @@ export default async function AgentDetailPage({
         </div>
         <p className="font-mono text-xs text-[var(--color-muted-fg)]">{agent.code}</p>
         {agent.description && <p className="text-sm">{agent.description}</p>}
+        <p className="text-xs text-[var(--color-muted-fg)]">
+          Agent tạo trước Agent Builder — dùng ACL/lifecycle riêng, không có system prompt/provider/version. Để tạo trợ lý mới, dùng{" "}
+          <Link href="/admin/agent-builder" className="text-[var(--color-primary)] hover:underline">
+            Agent Builder
+          </Link>
+          .
+        </p>
       </header>
 
       {ok && (

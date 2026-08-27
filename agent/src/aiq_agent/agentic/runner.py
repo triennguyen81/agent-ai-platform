@@ -118,9 +118,8 @@ async def run_task(
                 len(registry_codes),
             )
         else:
-            logger.warning(
-                "agent %s: registry lookup failed, falling back to default list",
-                agent_id,
+            raise PermissionError(
+                f"Tool authorization lookup failed for agent {agent_id}; refusing fail-open execution"
             )
 
         if resolved_model is None:

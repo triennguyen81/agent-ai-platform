@@ -1,4 +1,5 @@
 using Aiq.Gateway.Contracts;
+using Aiq.Gateway.Middleware;
 
 namespace Aiq.Gateway.Endpoints;
 
@@ -28,7 +29,7 @@ public static class NotificationEndpoints
     {
         if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
 
-        var items = await repo.ListForUserAsync(userId, unread, limit, ct);
+        var items = await repo.ListForUserAsync(TenantContext.Require(ctx), userId, unread, limit, ct);
         return Results.Ok(new { items, total = items.Count });
     }
 
@@ -38,7 +39,7 @@ public static class NotificationEndpoints
         CancellationToken ct)
     {
         if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
-        var count = await repo.UnreadCountAsync(userId, ct);
+        var count = await repo.UnreadCountAsync(TenantContext.Require(ctx), userId, ct);
         return Results.Ok(new { count });
     }
 
@@ -49,7 +50,7 @@ public static class NotificationEndpoints
         CancellationToken ct)
     {
         if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
-        var ok = await repo.MarkReadAsync(userId, id, ct);
+        var ok = await repo.MarkReadAsync(TenantContext.Require(ctx), userId, id, ct);
         return ok ? Results.NoContent() : Results.NotFound();
     }
 
@@ -59,7 +60,7 @@ public static class NotificationEndpoints
         CancellationToken ct)
     {
         if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
-        var n = await repo.MarkAllReadAsync(userId, ct);
+        var n = await repo.MarkAllReadAsync(TenantContext.Require(ctx), userId, ct);
         return Results.Ok(new { updated = n });
     }
 

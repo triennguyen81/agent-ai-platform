@@ -1,5 +1,6 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { BookOpen, Trash2 } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { clearSession, requireSession } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
@@ -78,52 +79,51 @@ export default async function KnowledgePage() {
     <div className="grid gap-8 lg:grid-cols-[1fr_360px]">
       <section className="space-y-4">
         <header>
-          <h1 className="font-serif text-3xl">Your knowledge</h1>
+          <h1 className="font-serif text-3xl">Kiến thức</h1>
           <p className="text-sm text-[var(--color-muted-fg)]">
-            Notes, snippets, anything you want the assistant to know.
+            Ghi chú, đoạn trích, bất cứ điều gì bạn muốn trợ lý biết. Tổng {body.items.length} ghi chú.
           </p>
         </header>
 
         {body.items.length === 0 ? (
-          <p className="rounded-[var(--radius)] border border-dashed p-8 text-center text-sm text-[var(--color-muted-fg)]">
-            No notes yet. Add your first one on the right →
-          </p>
+          <div className="flex flex-col items-center gap-2 rounded-[var(--radius)] border border-dashed p-10 text-center">
+            <BookOpen className="size-6 text-[var(--color-muted-fg)]" />
+            <p className="text-sm text-[var(--color-muted-fg)]">
+              Chưa có ghi chú nào. Thêm ghi chú đầu tiên ở khung bên phải.
+            </p>
+          </div>
         ) : (
           <ul className="space-y-3">
             {body.items.map((n) => (
-              <li
-                key={n.id}
-                className="rounded-[var(--radius)] border bg-[var(--color-muted)] p-4"
-              >
+              <li key={n.id} className="rounded-[var(--radius)] border bg-[var(--color-bg)] p-4">
                 <header className="flex items-baseline justify-between gap-4">
                   <h2 className="font-serif text-lg">{n.title}</h2>
-                  <span className="shrink-0 text-xs text-[var(--color-muted-fg)]">
-                    {formatDate(n.updated_at)}
-                  </span>
+                  <span className="shrink-0 text-xs text-[var(--color-muted-fg)]">{formatDate(n.updated_at)}</span>
                 </header>
                 {n.content && (
                   <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-sm text-[var(--color-muted-fg)]">
                     {n.content}
                   </p>
                 )}
-                {n.tags?.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {n.tags.map((t) => (
-                      <span
-                        key={t}
-                        className="rounded-full border px-2 py-0.5 text-xs text-[var(--color-muted-fg)]"
-                      >
-                        {t}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <form action={deleteNoteAction} className="mt-3">
-                  <input type="hidden" name="id" value={n.id} />
-                  <Button variant="ghost" size="sm" type="submit">
-                    Delete
-                  </Button>
-                </form>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  {n.tags?.length > 0 ? (
+                    <div className="flex flex-wrap gap-1">
+                      {n.tags.map((t) => (
+                        <span key={t} className="rounded-full border px-2 py-0.5 text-[10px] text-[var(--color-muted-fg)]">
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <span />
+                  )}
+                  <form action={deleteNoteAction}>
+                    <input type="hidden" name="id" value={n.id} />
+                    <Button variant="ghost" size="sm" type="submit">
+                      <Trash2 className="size-3.5" /> Xoá
+                    </Button>
+                  </form>
+                </div>
               </li>
             ))}
           </ul>
@@ -133,22 +133,22 @@ export default async function KnowledgePage() {
       <aside className="space-y-4">
         <BulkMarkdownUpload />
 
-        <h2 className="font-serif text-xl">Add a note</h2>
+        <h2 className="font-serif text-xl">Thêm ghi chú</h2>
         <form action={createNoteAction} className="space-y-3">
           <div className="space-y-1.5">
-            <Label htmlFor="title">Title</Label>
+            <Label htmlFor="title">Tiêu đề</Label>
             <Input id="title" name="title" required maxLength={300} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="content">Content (markdown ok)</Label>
+            <Label htmlFor="content">Nội dung (hỗ trợ markdown)</Label>
             <TextareaWithMic id="content" name="content" rows={8} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="tags">Tags (comma-separated)</Label>
-            <Input id="tags" name="tags" placeholder="grammar, vietnamese" />
+            <Label htmlFor="tags">Tags (phân cách bằng dấu phẩy)</Label>
+            <Input id="tags" name="tags" placeholder="ngữ pháp, tiếng việt" />
           </div>
           <Button type="submit" className="w-full">
-            Save
+            Lưu
           </Button>
         </form>
       </aside>

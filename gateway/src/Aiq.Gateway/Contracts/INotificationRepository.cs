@@ -5,6 +5,7 @@ namespace Aiq.Gateway.Contracts;
 
 public sealed record NotificationRecord(
     Guid Id,
+    Guid TenantId,
     Guid UserId,
     string Kind,
     string? RefType,
@@ -26,16 +27,16 @@ public sealed record InsertNotificationDto(
 public interface INotificationRepository
 {
     Task<IReadOnlyList<NotificationRecord>> ListForUserAsync(
-        Guid userId,
+        Guid tenantId, Guid userId,
         bool unreadOnly,
         int limit,
         CancellationToken ct);
 
-    Task<int> UnreadCountAsync(Guid userId, CancellationToken ct);
+    Task<int> UnreadCountAsync(Guid tenantId, Guid userId, CancellationToken ct);
 
-    Task<bool> MarkReadAsync(Guid userId, Guid notificationId, CancellationToken ct);
+    Task<bool> MarkReadAsync(Guid tenantId, Guid userId, Guid notificationId, CancellationToken ct);
 
-    Task<int> MarkAllReadAsync(Guid userId, CancellationToken ct);
+    Task<int> MarkAllReadAsync(Guid tenantId, Guid userId, CancellationToken ct);
 
     /// <summary>
     /// Bulk-insert with ON CONFLICT DO NOTHING — safe for the daily cron to
@@ -55,6 +56,7 @@ public sealed class NotificationRepository : INotificationRepository
 
     private const string SelectColumns = """
             id          AS Id,
+            tenant_id   AS TenantId,
             user_id     AS UserId,
             kind        AS Kind,
             ref_type    AS RefType,
@@ -66,61 +68,61 @@ public sealed class NotificationRepository : INotificationRepository
         """;
 
     public async Task<IReadOnlyList<NotificationRecord>> ListForUserAsync(
-        Guid userId, bool unreadOnly, int limit, CancellationToken ct)
+        Guid tenantId, Guid userId, bool unreadOnly, int limit, CancellationToken ct)
     {
         var sql = unreadOnly
             ? $"""
               SELECT {SelectColumns}
               FROM notifications
-              WHERE user_id = @userId AND read_at IS NULL
+              WHERE tenant_id = @tenantId AND user_id = @userId AND read_at IS NULL
               ORDER BY created_at DESC
               LIMIT @limit
               """
             : $"""
               SELECT {SelectColumns}
               FROM notifications
-              WHERE user_id = @userId
+              WHERE tenant_id = @tenantId AND user_id = @userId
               ORDER BY created_at DESC
               LIMIT @limit
               """;
 
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<NotificationRecord>(
-            new CommandDefinition(sql, new { userId, limit = Math.Clamp(limit, 1, 200) }, cancellationToken: ct));
+            new CommandDefinition(sql, new { tenantId, userId, limit = Math.Clamp(limit, 1, 200) }, cancellationToken: ct));
         return rows.AsList();
     }
 
-    public async Task<int> UnreadCountAsync(Guid userId, CancellationToken ct)
+    public async Task<int> UnreadCountAsync(Guid tenantId, Guid userId, CancellationToken ct)
     {
-        const string sql = "SELECT COUNT(*)::int FROM notifications WHERE user_id = @userId AND read_at IS NULL";
+        const string sql = "SELECT COUNT(*)::int FROM notifications WHERE tenant_id = @tenantId AND user_id = @userId AND read_at IS NULL";
         await using var conn = await _factory.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<int>(
-            new CommandDefinition(sql, new { userId }, cancellationToken: ct));
+            new CommandDefinition(sql, new { tenantId, userId }, cancellationToken: ct));
     }
 
-    public async Task<bool> MarkReadAsync(Guid userId, Guid notificationId, CancellationToken ct)
+    public async Task<bool> MarkReadAsync(Guid tenantId, Guid userId, Guid notificationId, CancellationToken ct)
     {
         const string sql = """
             UPDATE notifications
             SET read_at = NOW()
-            WHERE id = @notificationId AND user_id = @userId AND read_at IS NULL
+            WHERE id = @notificationId AND tenant_id = @tenantId AND user_id = @userId AND read_at IS NULL
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.ExecuteAsync(
-            new CommandDefinition(sql, new { userId, notificationId }, cancellationToken: ct));
+            new CommandDefinition(sql, new { tenantId, userId, notificationId }, cancellationToken: ct));
         return rows > 0;
     }
 
-    public async Task<int> MarkAllReadAsync(Guid userId, CancellationToken ct)
+    public async Task<int> MarkAllReadAsync(Guid tenantId, Guid userId, CancellationToken ct)
     {
         const string sql = """
             UPDATE notifications
             SET read_at = NOW()
-            WHERE user_id = @userId AND read_at IS NULL
+            WHERE tenant_id = @tenantId AND user_id = @userId AND read_at IS NULL
             """;
         await using var conn = await _factory.OpenAsync(ct);
         return await conn.ExecuteAsync(
-            new CommandDefinition(sql, new { userId }, cancellationToken: ct));
+            new CommandDefinition(sql, new { tenantId, userId }, cancellationToken: ct));
     }
 
     public async Task<int> InsertManyAsync(IReadOnlyList<InsertNotificationDto> rows, CancellationToken ct)
@@ -130,7 +132,7 @@ public sealed class NotificationRepository : INotificationRepository
         const string sql = """
             INSERT INTO notifications (tenant_id, user_id, kind, ref_type, ref_id, title, body)
             VALUES (@TenantId, @UserId, @Kind, @RefType, @RefId, @Title, @Body)
-            ON CONFLICT (user_id, kind, ref_id) WHERE ref_id IS NOT NULL DO NOTHING
+            ON CONFLICT (tenant_id, user_id, kind, ref_id) WHERE ref_id IS NOT NULL DO NOTHING
             """;
 
         await using var conn = await _factory.OpenAsync(ct);

@@ -107,6 +107,7 @@ services:
     build:
       context: ./agent
       dockerfile: Dockerfile
+      target: runtime
     container_name: aiq-agent
     restart: unless-stopped
     environment:
@@ -137,10 +138,18 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    ports:
-      - "${AGENT_PORT:-8001}:8000"
+    expose:
+      - "8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      # Persists Claude Code CLI OAuth/subscription login state across
+      # restarts. Never populated by this repo or the image — empty until an
+      # operator runs an interactive login inside the running container.
+      # Production default should be ANTHROPIC_API_KEY (above) instead: no
+      # login step, no per-container session state, no subscription rate
+      # limit. See README for the full production auth decision.
+      - agent_claude_home:/home/app/.claude
     networks:
       - aiq-net
 
@@ -314,6 +323,7 @@ volumes:
   loki_data:
   grafana_data:
   minio_data:
+  agent_claude_home:
 
 networks:
   aiq-net:

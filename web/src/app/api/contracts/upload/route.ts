@@ -51,9 +51,8 @@ export async function POST(request: NextRequest) {
     "===== END =====",
   ].join("\n");
 
-  const res = await agent.runTask({
+  const res = await agent.runTask(token, {
     task,
-    user_token: token,
     skills: ["contract-extractor", "vietnamese-style"],
     max_turns: 6,
   });

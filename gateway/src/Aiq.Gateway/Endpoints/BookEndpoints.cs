@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Books;
 using Aiq.Gateway.Jobs;
+using Aiq.Gateway.Middleware;
 using Aiq.Gateway.Security;
 using Hangfire;
 using Hangfire.Storage;
@@ -50,8 +51,10 @@ public static class BookEndpoints
             return Results.Unauthorized();
         }
 
+        var tenantId = TenantContext.Require(ctx);
+
         var language = string.IsNullOrWhiteSpace(request.Language) ? "vi" : request.Language;
-        var record = await books.CreateAsync(request.Title, request.Author, language, userId, ct);
+        var record = await books.CreateAsync(tenantId, request.Title, request.Author, language, userId, ct);
         return Results.Created($"/books/{record.Id}", record);
     }
 
@@ -61,27 +64,31 @@ public static class BookEndpoints
         [FromQuery] int? limit,
         [FromQuery] int? offset,
         IBookRepository books,
+        HttpContext ctx,
         CancellationToken ct)
     {
         var safeLimit = Math.Clamp(limit ?? 20, 1, 100);
         var safeOffset = Math.Max(offset ?? 0, 0);
 
-        var (items, total) = await books.ListAsync(status, query, safeLimit, safeOffset, ct);
+        var tenantId = TenantContext.Require(ctx);
+        var (items, total) = await books.ListAsync(tenantId, status, query, safeLimit, safeOffset, ct);
         return Results.Ok(new BookListResponse(items, total, safeLimit, safeOffset));
     }
 
     private static async Task<IResult> GetAsync(
         Guid id,
         IBookRepository books,
+        HttpContext ctx,
         CancellationToken ct)
     {
-        var book = await books.FindByIdAsync(id, ct);
+        var tenantId = TenantContext.Require(ctx);
+        var book = await books.FindByIdAsync(tenantId, id, ct);
         if (book is null)
         {
             return Results.NotFound();
         }
 
-        var pages = await books.GetPagesAsync(id, ct);
+        var pages = await books.GetPagesAsync(tenantId, id, ct);
         return Results.Ok(new BookDetailsResponse(book, pages));
     }
 
@@ -95,7 +102,8 @@ public static class BookEndpoints
         HttpContext ctx,
         CancellationToken ct)
     {
-        var book = await books.FindByIdAsync(id, ct);
+        var tenantId = TenantContext.Require(ctx);
+        var book = await books.FindByIdAsync(tenantId, id, ct);
         if (book is null)
         {
             return Results.NotFound();
@@ -127,10 +135,10 @@ public static class BookEndpoints
             }
         }
 
-        await books.UpdateStatusAndPageCountAsync(id, "queued", book.PageCount ?? 0, ct);
+        await books.UpdateStatusAndPageCountAsync(tenantId, id, "queued", book.PageCount ?? 0, ct);
 
         await using var uploadStream = file.OpenReadStream();
-        var jobId = await scheduler.EnqueueAsync(id, uploadStream, file.FileName, ct);
+        var jobId = await scheduler.EnqueueAsync(tenantId, id, uploadStream, file.FileName, ct);
 
         return Results.Accepted(
             uri: $"/books/{id}/jobs/{jobId}",
@@ -142,12 +150,15 @@ public static class BookEndpoints
             });
     }
 
-    private static IResult GetJobStatusAsync(
+    private static async Task<IResult> GetJobStatusAsync(
         Guid id,
         string jobId,
         IBookRepository books,
+        HttpContext ctx,
         CancellationToken ct)
     {
+        var tenantId = TenantContext.Require(ctx);
+        if (await books.FindByIdAsync(tenantId, id, ct) is null) return Results.NotFound();
         using var connection = JobStorage.Current.GetConnection();
         var data = connection.GetJobData(jobId);
 

@@ -7,13 +7,13 @@ namespace Aiq.Gateway.Vouchers;
 public interface IVoucherRepository
 {
     Task<VoucherDetail> CreateAsync(
-        Guid? tenantId,
+        Guid tenantId,
         Guid userId,
         CreateVoucherRequest request,
         CancellationToken ct);
 
     Task<Guid> CreateStubAsync(
-        Guid? tenantId,
+        Guid tenantId,
         Guid userId,
         string voucherType,
         string sourceFilePath,
@@ -22,13 +22,13 @@ public interface IVoucherRepository
         CancellationToken ct);
 
     Task<VoucherDetail?> FindAsync(
-        Guid? tenantId,
+        Guid tenantId,
         Guid userId,
         Guid id,
         CancellationToken ct);
 
     Task<IReadOnlyList<VoucherRecord>> ListAsync(
-        Guid? tenantId,
+        Guid tenantId,
         Guid userId,
         string? voucherType,
         string? statusFilter,
@@ -38,30 +38,30 @@ public interface IVoucherRepository
         CancellationToken ct);
 
     Task<VoucherRecord?> UpdateAsync(
-        Guid? tenantId,
+        Guid tenantId,
         Guid userId,
         Guid id,
         UpdateVoucherRequest request,
         CancellationToken ct);
 
     Task ReplaceExtractedAsync(
-        Guid id,
+        Guid tenantId, Guid userId, Guid id,
         CreateVoucherRequest request,
         CancellationToken ct);
 
     Task<IReadOnlyList<VoucherJournalRecord>> SaveJournalSuggestionsAsync(
-        Guid voucherId,
+        Guid tenantId, Guid userId, Guid voucherId,
         SaveJournalSuggestionsRequest request,
         CancellationToken ct);
 
     Task<VoucherJournalRecord?> AcceptJournalAsync(
-        Guid voucherId,
+        Guid tenantId, Guid voucherId,
         Guid entryId,
         Guid userId,
         AcceptJournalRequest request,
         CancellationToken ct);
 
-    Task<bool> DeleteAsync(Guid? tenantId, Guid userId, Guid id, CancellationToken ct);
+    Task<bool> DeleteAsync(Guid tenantId, Guid userId, Guid id, CancellationToken ct);
 }
 
 public sealed class VoucherRepository : IVoucherRepository
@@ -142,7 +142,7 @@ public sealed class VoucherRepository : IVoucherRepository
         """;
 
     public async Task<Guid> CreateStubAsync(
-        Guid? tenantId,
+        Guid tenantId,
         Guid userId,
         string voucherType,
         string sourceFilePath,
@@ -178,7 +178,7 @@ public sealed class VoucherRepository : IVoucherRepository
     }
 
     public async Task<VoucherDetail> CreateAsync(
-        Guid? tenantId,
+        Guid tenantId,
         Guid userId,
         CreateVoucherRequest request,
         CancellationToken ct)
@@ -197,8 +197,7 @@ public sealed class VoucherRepository : IVoucherRepository
                 payment_method, subtotal, vat_rate, vat_amount,
                 discount_amount, total_amount, currency, amount_in_words,
                 source_file_path, source_file_name, source_mime_type,
-                raw_ocr_text, ocr_confidence, extracted_fields, tags,
-                status
+                raw_ocr_text, ocr_confidence, extracted_fields, tags
             ) VALUES (
                 @tenantId, @userId, @voucherType, 'extracted',
                 @documentNumber, @documentSeries, @documentDate,
@@ -207,10 +206,13 @@ public sealed class VoucherRepository : IVoucherRepository
                 @paymentMethod, @subtotal, @vatRate, @vatAmount,
                 @discountAmount, @totalAmount, @currency, @amountInWords,
                 @sourceFilePath, @sourceFileName, @sourceMimeType,
-                @rawOcrText, @ocrConfidence, @extractedJson::jsonb, @tags,
-                'extracted'
+                @rawOcrText, @ocrConfidence, @extractedJson::jsonb, @tags
             )
-            ON CONFLICT (seller_mst, document_number, document_date)
+            ON CONFLICT (tenant_id, seller_mst, document_number, document_date)
+            WHERE tenant_id IS NOT NULL
+              AND seller_mst IS NOT NULL
+              AND document_number IS NOT NULL
+              AND document_date IS NOT NULL
             DO UPDATE SET
                 status           = 'extracted',
                 document_series  = COALESCE(EXCLUDED.document_series, vouchers.document_series),
@@ -318,7 +320,7 @@ public sealed class VoucherRepository : IVoucherRepository
     }
 
     public async Task ReplaceExtractedAsync(
-        Guid id,
+        Guid tenantId, Guid userId, Guid id,
         CreateVoucherRequest request,
         CancellationToken ct)
     {
@@ -349,7 +351,7 @@ public sealed class VoucherRepository : IVoucherRepository
                 ocr_confidence   = @ocrConfidence,
                 extracted_fields = @extractedJson::jsonb,
                 tags             = @tags
-            WHERE id = @id;
+            WHERE id = @id AND tenant_id = @tenantId AND user_id = @userId;
             """;
 
         await using var conn = await _factory.OpenAsync(ct);
@@ -359,7 +361,7 @@ public sealed class VoucherRepository : IVoucherRepository
             updateSql,
             new
             {
-                id,
+                id, tenantId, userId,
                 documentNumber = request.DocumentNumber,
                 documentSeries = request.DocumentSeries,
                 documentDate = request.DocumentDate,
@@ -386,8 +388,8 @@ public sealed class VoucherRepository : IVoucherRepository
             cancellationToken: ct));
 
         await conn.ExecuteAsync(new CommandDefinition(
-            "DELETE FROM voucher_line_items WHERE voucher_id = @id;",
-            new { id },
+            "DELETE FROM voucher_line_items li WHERE voucher_id = @id AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=li.voucher_id AND v.tenant_id=@tenantId AND v.user_id=@userId);",
+            new { id, tenantId, userId },
             transaction: tx,
             cancellationToken: ct));
 
@@ -397,10 +399,10 @@ public sealed class VoucherRepository : IVoucherRepository
                 INSERT INTO voucher_line_items (
                     voucher_id, ordinal, item_code, description, unit,
                     quantity, unit_price, subtotal, vat_rate, vat_amount, total_amount
-                ) VALUES (
+                ) SELECT
                     @voucherId, @ordinal, @itemCode, @description, @unit,
                     @quantity, @unitPrice, @subtotal, @vatRate, @vatAmount, @totalAmount
-                );
+                WHERE EXISTS (SELECT 1 FROM vouchers WHERE id=@voucherId AND tenant_id=@tenantId AND user_id=@userId);
                 """;
 
             foreach (var li in request.LineItems)
@@ -409,7 +411,7 @@ public sealed class VoucherRepository : IVoucherRepository
                     insertLine,
                     new
                     {
-                        voucherId = id,
+                        voucherId = id, tenantId, userId,
                         li.Ordinal,
                         itemCode = li.ItemCode,
                         li.Description,
@@ -430,7 +432,7 @@ public sealed class VoucherRepository : IVoucherRepository
     }
 
     public async Task<VoucherDetail?> FindAsync(
-        Guid? tenantId,
+        Guid tenantId,
         Guid userId,
         Guid id,
         CancellationToken ct)
@@ -440,7 +442,7 @@ public sealed class VoucherRepository : IVoucherRepository
             FROM vouchers
             WHERE id = @id
               AND user_id = @userId
-              AND (@tenantId::uuid IS NULL OR tenant_id = @tenantId);
+              AND tenant_id = @tenantId;
             """;
 
         var lineSql = $"""
@@ -474,7 +476,7 @@ public sealed class VoucherRepository : IVoucherRepository
     }
 
     public async Task<IReadOnlyList<VoucherRecord>> ListAsync(
-        Guid? tenantId,
+        Guid tenantId,
         Guid userId,
         string? voucherType,
         string? statusFilter,
@@ -491,7 +493,7 @@ public sealed class VoucherRepository : IVoucherRepository
             SELECT {VoucherSelectColumns}
             FROM vouchers
             WHERE user_id = @userId
-              AND (@tenantId::uuid IS NULL OR tenant_id = @tenantId)
+              AND tenant_id = @tenantId
               {(hasType ? "AND voucher_type = @voucherType" : "")}
               {(hasStatus ? "AND status = @statusFilter" : "")}
               {(hasSearch ? "AND (document_number ILIKE @searchPattern OR seller_name ILIKE @searchPattern OR seller_mst ILIKE @searchPattern)" : "")}
@@ -518,7 +520,7 @@ public sealed class VoucherRepository : IVoucherRepository
     }
 
     public async Task<VoucherRecord?> UpdateAsync(
-        Guid? tenantId,
+        Guid tenantId,
         Guid userId,
         Guid id,
         UpdateVoucherRequest request,
@@ -548,7 +550,7 @@ public sealed class VoucherRepository : IVoucherRepository
                 tags            = COALESCE(@tags, tags)
             WHERE id = @id
               AND user_id = @userId
-              AND (@tenantId::uuid IS NULL OR tenant_id = @tenantId)
+              AND tenant_id = @tenantId
             RETURNING {VoucherSelectColumns};
             """;
 
@@ -586,7 +588,7 @@ public sealed class VoucherRepository : IVoucherRepository
     }
 
     public async Task<IReadOnlyList<VoucherJournalRecord>> SaveJournalSuggestionsAsync(
-        Guid voucherId,
+        Guid tenantId, Guid userId, Guid voucherId,
         SaveJournalSuggestionsRequest request,
         CancellationToken ct)
     {
@@ -596,8 +598,8 @@ public sealed class VoucherRepository : IVoucherRepository
         if (request.ReplaceExisting)
         {
             await conn.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM voucher_journal_suggestions WHERE voucher_id = @voucherId;",
-                new { voucherId },
+                "DELETE FROM voucher_journal_suggestions j WHERE voucher_id = @voucherId AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=j.voucher_id AND v.tenant_id=@tenantId AND v.user_id=@userId);",
+                new { voucherId, tenantId, userId },
                 transaction: tx,
                 cancellationToken: ct));
         }
@@ -607,10 +609,10 @@ public sealed class VoucherRepository : IVoucherRepository
             INSERT INTO voucher_journal_suggestions (
                 voucher_id, entry_no, debit_account, credit_account,
                 amount, description, confidence
-            ) VALUES (
+            ) SELECT
                 @voucherId, @entryNo, @debitAccount, @creditAccount,
                 @amount, @description, @confidence
-            )
+            WHERE EXISTS (SELECT 1 FROM vouchers WHERE id=@voucherId AND tenant_id=@tenantId AND user_id=@userId)
             ON CONFLICT (voucher_id, entry_no) DO UPDATE SET
                 debit_account  = EXCLUDED.debit_account,
                 credit_account = EXCLUDED.credit_account,
@@ -627,7 +629,7 @@ public sealed class VoucherRepository : IVoucherRepository
                     insertSql,
                     new
                     {
-                        voucherId,
+                        voucherId, tenantId, userId,
                         entryNo = e.EntryNo,
                         debitAccount = e.DebitAccount,
                         creditAccount = e.CreditAccount,
@@ -645,7 +647,7 @@ public sealed class VoucherRepository : IVoucherRepository
     }
 
     public async Task<VoucherJournalRecord?> AcceptJournalAsync(
-        Guid voucherId,
+        Guid tenantId, Guid voucherId,
         Guid entryId,
         Guid userId,
         AcceptJournalRequest request,
@@ -659,6 +661,7 @@ public sealed class VoucherRepository : IVoucherRepository
                     rejected_at = NULL,
                     reject_reason = NULL
                 WHERE id = @entryId AND voucher_id = @voucherId
+                  AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=voucher_id AND v.tenant_id=@tenantId AND v.user_id=@userId)
                 RETURNING {JournalSelectColumns};
                 """
             : $"""
@@ -668,6 +671,7 @@ public sealed class VoucherRepository : IVoucherRepository
                     accepted_by = NULL,
                     accepted_at = NULL
                 WHERE id = @entryId AND voucher_id = @voucherId
+                  AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=voucher_id AND v.tenant_id=@tenantId AND v.user_id=@userId)
                 RETURNING {JournalSelectColumns};
                 """;
 
@@ -677,7 +681,7 @@ public sealed class VoucherRepository : IVoucherRepository
                 sql,
                 new
                 {
-                    voucherId,
+                    tenantId, voucherId,
                     entryId,
                     userId,
                     rejectReason = request.RejectReason,
@@ -685,13 +689,13 @@ public sealed class VoucherRepository : IVoucherRepository
                 cancellationToken: ct));
     }
 
-    public async Task<bool> DeleteAsync(Guid? tenantId, Guid userId, Guid id, CancellationToken ct)
+    public async Task<bool> DeleteAsync(Guid tenantId, Guid userId, Guid id, CancellationToken ct)
     {
         const string sql = """
             DELETE FROM vouchers
             WHERE id = @id
               AND user_id = @userId
-              AND (@tenantId::uuid IS NULL OR tenant_id = @tenantId);
+              AND tenant_id = @tenantId;
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.ExecuteAsync(

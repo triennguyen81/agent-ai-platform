@@ -19,15 +19,25 @@ public static class TenantEndpoints
         superAdmin.MapGet("/{id:guid}/members", ListMembersAsync);
         superAdmin.MapPost("/{id:guid}/members", InviteMemberAsync);
         superAdmin.MapDelete("/{id:guid}/members/{userId:guid}", RemoveMemberAsync);
+        superAdmin.MapGet("/{id:guid}/quota", GetQuotaAsync);
+        superAdmin.MapPatch("/{id:guid}/quota", UpdateQuotaAsync);
 
-        // Any authenticated user — list own memberships + switch active tenant
+        // Any authenticated user may inspect their single canonical membership.
         var me = app
             .MapGroup("/me/tenants")
             .RequireAuthorization()
             .RequireRateLimiting("default");
 
         me.MapGet("/", ListMyMembershipsAsync);
-        me.MapPost("/switch", SwitchActiveTenantAsync);
+        // ADMIN and USER are bound to users.tenant_id. Tenant switching is
+        // intentionally no longer exposed as an ordinary authenticated flow.
+
+        // Tenant ADMIN: quota/status for their OWN tenant only. tenantId
+        // comes from server-side auth context — there is no id in this URL
+        // for a client to substitute.
+        app.MapGet("/tenant/quota", GetMyQuotaAsync)
+            .RequireAuthorization("admin")
+            .RequireRateLimiting("default");
 
         return app;
     }
@@ -80,6 +90,29 @@ public static class TenantEndpoints
         return ok ? Results.NoContent() : Results.NotFound();
     }
 
+    private static async Task<IResult> GetQuotaAsync(Guid id, ITenantRepository repo, CancellationToken ct)
+    {
+        var status = await repo.GetQuotaStatusAsync(id, ct);
+        return status is null ? Results.NotFound() : Results.Ok(status);
+    }
+
+    private static async Task<IResult> UpdateQuotaAsync(
+        Guid id, UpdateTenantQuotaRequest request, ITenantRepository repo, CancellationToken ct)
+    {
+        if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
+        var updated = await repo.UpdateQuotaAsync(id, request, ct);
+        return updated is null ? Results.NotFound() : Results.Ok(updated);
+    }
+
+    private static async Task<IResult> GetMyQuotaAsync(
+        ITenantRepository repo, HttpContext ctx, CancellationToken ct)
+    {
+        if (!Aiq.Gateway.Middleware.TenantContext.TryGet(ctx, out var tenantId))
+            return Results.BadRequest(new { error = "tenant_context_missing" });
+        var status = await repo.GetQuotaStatusAsync(tenantId, ct);
+        return status is null ? Results.NotFound() : Results.Ok(status);
+    }
+
     private static async Task<IResult> ListMyMembershipsAsync(
         ITenantRepository repo, HttpContext ctx, CancellationToken ct)
     {
@@ -87,34 +120,6 @@ public static class TenantEndpoints
         var memberships = await repo.ListMembershipsForUserAsync(uid, ct);
         return Results.Ok(new { items = memberships, total = memberships.Count });
     }
-
-    /// <summary>
-    /// Switches the user's active tenant by re-issuing a JWT with the new
-    /// tenant_id claim. The client must replace its stored token.
-    /// </summary>
-    private static async Task<IResult> SwitchActiveTenantAsync(
-        SwitchTenantRequest request,
-        ITenantRepository tenants,
-        Aiq.Gateway.Data.IUserRepository users,
-        Aiq.Gateway.Auth.IJwtTokenService jwt,
-        HttpContext ctx,
-        CancellationToken ct)
-    {
-        if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
-        if (!TryGetUserId(ctx, out var uid)) return Results.Unauthorized();
-
-        var role = await tenants.GetMemberRoleAsync(request.TenantId, uid, ct);
-        if (role is null) return Results.Forbid();
-
-        var user = await users.FindByIdAsync(uid, ct);
-        if (user is null) return Results.Unauthorized();
-
-        var userRoles = await users.GetRolesAsync(uid, ct);
-        var token = jwt.Issue(user, userRoles, request.TenantId);
-        return Results.Ok(new { token = token.Token, expiresAt = token.ExpiresAt, tenantId = request.TenantId });
-    }
-
-    public sealed record SwitchTenantRequest([Required] Guid TenantId);
 
     private static bool TryGetUserId(HttpContext ctx, out Guid userId)
     {

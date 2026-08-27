@@ -35,7 +35,7 @@ public sealed class PostgresAuditLogger : IAuditLogger
             INSERT INTO audit_log
                 (actor_id, action, resource_type, resource_id, payload, ip_address, user_agent)
             VALUES
-                (@actorId, @action, @resourceType, @resourceId, @payload::jsonb, @ip, @userAgent);
+                (@actorId, @action, @resourceType, @resourceId, @payload::jsonb, @ip::inet, @userAgent);
             """;
 
         try
@@ -52,7 +52,7 @@ public sealed class PostgresAuditLogger : IAuditLogger
                     payload = entry.Payload is null
                         ? null
                         : System.Text.Json.JsonSerializer.Serialize(entry.Payload),
-                    ip = entry.IpAddress,
+                    ip = entry.IpAddress?.ToString(),
                     userAgent = entry.UserAgent,
                 },
                 cancellationToken: ct));

@@ -32,12 +32,6 @@ aiq.example.com {
         reverse_proxy aiq-gateway:8080
     }
 
-    handle_path /agent/* {
-        reverse_proxy aiq-agent:8000 {
-            header_up Host {upstream_hostport}
-        }
-    }
-
     handle {
         reverse_proxy aiq-gateway:8080 {
             header_up X-Forwarded-Proto https

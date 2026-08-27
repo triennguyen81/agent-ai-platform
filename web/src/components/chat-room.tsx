@@ -305,7 +305,7 @@ export function ChatRoom() {
         const res = await fetch("/api/agent/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ task, max_turns: 8 }),
+          body: JSON.stringify({ task, max_turns: 8, agent_id: activeAgentId ?? undefined }),
         });
 
         if (!res.ok) {

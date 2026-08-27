@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { ArrowRight } from "lucide-react";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { gateway } from "@/lib/api";
@@ -11,6 +13,14 @@ interface TenantRecord {
   name: string;
   status: string;
   createdAt: string;
+}
+
+interface TenantQuotaStatus {
+  tenantId: string;
+  maxUsers: number | null;
+  currentUsers: number;
+  maxAgents: number | null;
+  currentAgents: number;
 }
 
 async function createTenantAction(formData: FormData): Promise<void> {
@@ -28,6 +38,31 @@ async function createTenantAction(formData: FormData): Promise<void> {
   }
   revalidatePath("/admin/tenants");
   redirect("/admin/tenants?ok=created");
+}
+
+function parseLimit(formData: FormData, field: string): number | null {
+  const raw = String(formData.get(field) ?? "").trim();
+  return raw === "" ? null : Number(raw);
+}
+
+async function updateQuotaAction(formData: FormData): Promise<void> {
+  "use server";
+  const tenantId = String(formData.get("tenantId") ?? "").trim();
+  if (!tenantId) redirect("/admin/tenants?error=missing-tenant");
+  const maxUsers = parseLimit(formData, "maxUsers");
+  const maxAgents = parseLimit(formData, "maxAgents");
+  if ((maxUsers !== null && (!Number.isInteger(maxUsers) || maxUsers < 0)) ||
+      (maxAgents !== null && (!Number.isInteger(maxAgents) || maxAgents < 0))) {
+    redirect("/admin/tenants?error=quota-must-be-a-non-negative-integer-or-blank-for-unlimited");
+  }
+  const token = await requireSession();
+  const res = await gateway.updateTenantQuota(token, tenantId, { maxUsers, maxAgents });
+  if (!res.ok) {
+    const body = await res.text();
+    redirect(`/admin/tenants?error=${encodeURIComponent(body.slice(0, 200))}`);
+  }
+  revalidatePath("/admin/tenants");
+  redirect("/admin/tenants?ok=quota-updated");
 }
 
 function formatDate(s: string): string {
@@ -52,6 +87,11 @@ export default async function AdminTenantsPage({
     : { items: [], total: 0 };
   const { ok, error } = await searchParams;
 
+  const quotaResults = await Promise.all(
+    body.items.map((t) => gateway.getTenantQuota(token, t.id).then((r) => (r.ok ? (r.json() as Promise<TenantQuotaStatus>) : null))),
+  );
+  const quotaByTenant = new Map(body.items.map((t, i) => [t.id, quotaResults[i]]));
+
   return (
     <div className="grid gap-8 lg:grid-cols-[1fr_360px]">
       <section className="space-y-4">
@@ -70,28 +110,75 @@ export default async function AdminTenantsPage({
                 <th className="px-4 py-2 text-left">Tên</th>
                 <th className="px-4 py-2 text-left">Status</th>
                 <th className="px-4 py-2 text-left">Tạo</th>
+                <th className="px-4 py-2 text-left">Quota (users / agents)</th>
+                <th className="px-4 py-2 text-right">—</th>
               </tr>
             </thead>
             <tbody>
               {body.items.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-6 text-center text-[var(--color-muted-fg)]">
+                  <td colSpan={6} className="px-4 py-6 text-center text-[var(--color-muted-fg)]">
                     Chưa có tenant nào.
                   </td>
                 </tr>
               ) : (
-                body.items.map((t) => (
-                  <tr key={t.id} className="border-t align-top">
-                    <td className="px-4 py-3 font-mono text-xs">{t.code}</td>
-                    <td className="px-4 py-3 font-medium">{t.name}</td>
-                    <td className="px-4 py-3">
-                      <span className="rounded-full border px-2 py-0.5 text-[10px]">{t.status}</span>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-[var(--color-muted-fg)]">
-                      {formatDate(t.createdAt)}
-                    </td>
-                  </tr>
-                ))
+                body.items.map((t) => {
+                  const q = quotaByTenant.get(t.id);
+                  return (
+                    <tr key={t.id} className="border-t align-top">
+                      <td className="px-4 py-3 font-mono text-xs">{t.code}</td>
+                      <td className="px-4 py-3">
+                        <Link href={`/admin/tenants/${t.id}`} className="font-medium hover:underline">
+                          {t.name}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="rounded-full border px-2 py-0.5 text-[10px]">{t.status}</span>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-[var(--color-muted-fg)]">
+                        {formatDate(t.createdAt)}
+                      </td>
+                      <td className="px-4 py-3">
+                        {q ? (
+                          <form action={updateQuotaAction} className="flex items-center gap-2">
+                            <input type="hidden" name="tenantId" value={t.id} />
+                            <span className="text-xs text-[var(--color-muted-fg)]">{q.currentUsers}/</span>
+                            <input
+                              name="maxUsers"
+                              type="number"
+                              min={0}
+                              defaultValue={q.maxUsers ?? ""}
+                              placeholder="∞"
+                              className="w-14 rounded border bg-[var(--color-bg)] px-1 py-0.5 text-xs"
+                            />
+                            <span className="text-xs text-[var(--color-muted-fg)]">· {q.currentAgents}/</span>
+                            <input
+                              name="maxAgents"
+                              type="number"
+                              min={0}
+                              defaultValue={q.maxAgents ?? ""}
+                              placeholder="∞"
+                              className="w-14 rounded border bg-[var(--color-bg)] px-1 py-0.5 text-xs"
+                            />
+                            <Button type="submit" size="sm" variant="ghost">
+                              Lưu
+                            </Button>
+                          </form>
+                        ) : (
+                          <span className="text-xs text-[var(--color-muted-fg)]">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <Link
+                          href={`/admin/tenants/${t.id}`}
+                          className="inline-flex items-center gap-1 text-xs text-[var(--color-muted-fg)] hover:text-[var(--color-fg)]"
+                        >
+                          Chi tiết <ArrowRight className="size-3" />
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -106,7 +193,7 @@ export default async function AdminTenantsPage({
 
         {ok && (
           <p className="rounded-[var(--radius)] border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            Đã tạo tenant.
+            {ok === "quota-updated" ? "Đã cập nhật quota." : "Đã tạo tenant."}
           </p>
         )}
         {error && (

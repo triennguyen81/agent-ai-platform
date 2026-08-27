@@ -6,6 +6,7 @@ interface AgentRunBody {
   task?: string;
   skills?: string[];
   max_turns?: number;
+  agent_id?: string;
 }
 
 export async function POST(request: NextRequest) {
@@ -20,9 +21,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "task is required" }, { status: 400 });
   }
 
-  const res = await agent.runTask({
+  const res = await agent.runTask(token, {
     task,
-    user_token: token,
+    agent_id: body.agent_id,
     skills: body.skills,
     max_turns: body.max_turns ?? 8,
   });

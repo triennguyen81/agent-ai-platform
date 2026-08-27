@@ -10,7 +10,32 @@ public sealed record TenantRecord(
     string Name,
     string Status,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt,
+    int? MaxUsers,
+    int? MaxAgents);
+
+public sealed record TenantQuotaStatus(
+    Guid TenantId,
+    string Code,
+    string Name,
+    string Status,
+    int? MaxUsers,
+    int CurrentUsers,
+    int? MaxAgents,
+    int CurrentAgents);
+
+public sealed record UpdateTenantQuotaRequest(
+    [Range(0, int.MaxValue)] int? MaxUsers,
+    [Range(0, int.MaxValue)] int? MaxAgents);
+
+/// <summary>
+/// Pure comparison so the "is this tenant at capacity" rule is unit-testable
+/// without a database. NULL limit means unlimited.
+/// </summary>
+public static class TenantQuotaPolicy
+{
+    public static bool HasRoomFor(int? max, int current) => max is null || current < max;
+}
 
 public sealed record TenantMembershipRecord(
     Guid TenantId,
@@ -39,6 +64,16 @@ public interface ITenantRepository
     Task<bool> UpsertMembershipAsync(Guid tenantId, Guid userId, string role, CancellationToken ct);
     Task<bool> RemoveMembershipAsync(Guid tenantId, Guid userId, CancellationToken ct);
     Task<string?> GetMemberRoleAsync(Guid tenantId, Guid userId, CancellationToken ct);
+
+    /// <summary>
+    /// Real, derived-at-read-time quota status for one tenant: current
+    /// active-user and active-agent-assignment counts against the
+    /// configured (nullable = unlimited) caps. tenantId must come from
+    /// server-side auth context for the tenant-scoped caller; SUPER_ADMIN
+    /// may pass any tenant id.
+    /// </summary>
+    Task<TenantQuotaStatus?> GetQuotaStatusAsync(Guid tenantId, CancellationToken ct);
+    Task<TenantRecord?> UpdateQuotaAsync(Guid tenantId, UpdateTenantQuotaRequest request, CancellationToken ct);
 }
 
 public sealed class TenantRepository : ITenantRepository
@@ -49,7 +84,9 @@ public sealed class TenantRepository : ITenantRepository
             name        AS Name,
             status      AS Status,
             created_at  AS CreatedAt,
-            updated_at  AS UpdatedAt
+            updated_at  AS UpdatedAt,
+            max_users   AS MaxUsers,
+            max_agents  AS MaxAgents
         """;
 
     private readonly NpgsqlConnectionFactory _factory;
@@ -167,5 +204,42 @@ public sealed class TenantRepository : ITenantRepository
         await using var conn = await _factory.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<string?>(
             new CommandDefinition(sql, new { tenantId, userId }, cancellationToken: ct));
+    }
+
+    public async Task<TenantQuotaStatus?> GetQuotaStatusAsync(Guid tenantId, CancellationToken ct)
+    {
+        // Counts are derived live from the tables that already own the
+        // truth (users.tenant_id + is_active; agent_tenant_assignments +
+        // status='active') rather than cached, so nothing can drift.
+        const string sql = """
+            SELECT
+                t.id         AS TenantId,
+                t.code       AS Code,
+                t.name       AS Name,
+                t.status     AS Status,
+                t.max_users  AS MaxUsers,
+                (SELECT COUNT(*)::int FROM users u WHERE u.tenant_id = t.id AND u.is_active) AS CurrentUsers,
+                t.max_agents AS MaxAgents,
+                (SELECT COUNT(*)::int FROM agent_tenant_assignments a
+                    WHERE a.tenant_id = t.id AND a.status = 'active') AS CurrentAgents
+            FROM tenants t
+            WHERE t.id = @tenantId
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<TenantQuotaStatus>(
+            new CommandDefinition(sql, new { tenantId }, cancellationToken: ct));
+    }
+
+    public async Task<TenantRecord?> UpdateQuotaAsync(Guid tenantId, UpdateTenantQuotaRequest request, CancellationToken ct)
+    {
+        var sql = $"""
+            UPDATE tenants
+            SET max_users = @MaxUsers, max_agents = @MaxAgents, updated_at = NOW()
+            WHERE id = @tenantId
+            RETURNING {SelectColumns}
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<TenantRecord>(
+            new CommandDefinition(sql, new { tenantId, request.MaxUsers, request.MaxAgents }, cancellationToken: ct));
     }
 }

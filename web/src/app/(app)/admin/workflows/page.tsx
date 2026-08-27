@@ -1,0 +1,8 @@
+import { WorkflowBuilder } from "@/components/workflow-builder";
+import { gateway } from "@/lib/api";
+import { requireViewer } from "@/lib/authorization";
+interface Workflow { id: string; name: string; description: string | null; definitionJson: string; isActive: boolean }
+export default async function WorkflowsPage() {
+  const viewer = await requireViewer(["super_admin"]); const response = await gateway.listWorkflows(viewer.token); const items: Workflow[] = response.ok ? ((await response.json()) as { items: Workflow[] }).items : [];
+  return <div className="grid gap-8 lg:grid-cols-[1fr_420px]"><section className="space-y-4"><header><h1 className="font-serif text-3xl">Workflows</h1><p className="text-sm text-[var(--color-muted-fg)]">Reusable ordered prompt, knowledge, and tool requirements.</p></header>{items.map((workflow) => { const definition = JSON.parse(workflow.definitionJson) as { steps?: Array<{ type: string; prompt?: string; tool?: string }> }; return <article key={workflow.id} className="rounded-[var(--radius)] border p-4"><div className="flex justify-between"><h2 className="font-medium">{workflow.name}</h2><span className={workflow.isActive ? "text-emerald-700" : "text-red-700"}>{workflow.isActive ? "active" : "disabled"}</span></div><p className="text-xs text-[var(--color-muted-fg)]">{workflow.description}</p><ol className="mt-3 list-decimal space-y-1 pl-5 text-sm">{(definition.steps ?? []).map((step, i) => <li key={i}><code>{step.type}</code>{step.prompt ? ` — ${step.prompt}` : step.tool ? ` — ${step.tool}` : ""}</li>)}</ol></article>; })}</section><WorkflowBuilder/></div>;
+}

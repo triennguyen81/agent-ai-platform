@@ -25,7 +25,7 @@ public static class VoucherEndpoints
     {
         var group = app
             .MapGroup("/vouchers")
-            .RequireAuthorization("admin")
+            .RequireAuthorization("resource_or_tool")
             .RequireRateLimiting("default");
 
         group.MapGet("/", ListAsync);
@@ -81,7 +81,7 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        TenantContext.TryGet(ctx, out var tenantId);
+        var tenantId = TenantContext.Require(ctx);
 
         var contentType = (file.ContentType ?? "").ToLowerInvariant();
         var isImage = ImageContentTypes.Contains(contentType);
@@ -106,7 +106,7 @@ public static class VoucherEndpoints
         // MaxUploadBytes above) so we can push it to S3 AND re-read it
         // for the OCR call without a second network round-trip.
         // ---------------------------------------------------------------
-        var s3Key = $"vouchers/{userId:N}/{Guid.NewGuid():N}{extension}";
+        var s3Key = TenantObjectKey.Build(tenantId, "vouchers", userId.ToString("N"), $"{Guid.NewGuid():N}{extension}");
         var bucket = s3Options.Value.VoucherBucket;
 
         byte[] fileBytes;
@@ -214,7 +214,7 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        TenantContext.TryGet(ctx, out var tenantId);
+        var tenantId = TenantContext.Require(ctx);
 
         var items = await repo.ListAsync(tenantId, userId, voucherType, status, q, limit, offset, ct);
         return Results.Ok(new VouchersListResponse(items, items.Count));
@@ -234,7 +234,7 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        TenantContext.TryGet(ctx, out var tenantId);
+        var tenantId = TenantContext.Require(ctx);
 
         var created = await repo.CreateAsync(tenantId, userId, request, ct);
         return Results.Created($"/vouchers/{created.Voucher.Id}", created);
@@ -250,7 +250,7 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        TenantContext.TryGet(ctx, out var tenantId);
+        var tenantId = TenantContext.Require(ctx);
 
         var voucher = await repo.FindAsync(tenantId, userId, id, ct);
         return voucher is null ? Results.NotFound() : Results.Ok(voucher);
@@ -267,7 +267,7 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        TenantContext.TryGet(ctx, out var tenantId);
+        var tenantId = TenantContext.Require(ctx);
 
         var updated = await repo.UpdateAsync(tenantId, userId, id, request, ct);
         return updated is null ? Results.NotFound() : Results.Ok(updated);
@@ -299,7 +299,7 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        TenantContext.TryGet(ctx, out var tenantId);
+        var tenantId = TenantContext.Require(ctx);
 
         var voucher = await repo.FindAsync(tenantId, userId, id, ct);
         if (voucher is null)
@@ -317,7 +317,9 @@ public static class VoucherEndpoints
         // S3-hosted rows use the vouchers/... prefix from the E-4 upload
         // path. Everything else is a legacy /var/aiq/uploads/... path
         // from before the migration.
-        if (path.StartsWith("vouchers/", StringComparison.Ordinal))
+        var isTenantObject = TenantObjectKey.BelongsTo(tenantId, path);
+        var isOwnedLegacyObject = path.StartsWith($"vouchers/{userId:N}/", StringComparison.Ordinal);
+        if (isTenantObject || isOwnedLegacyObject)
         {
             var signedUrl = await storage.GetSignedUrlAsync(
                 s3Options.Value.VoucherBucket,
@@ -371,7 +373,7 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        TenantContext.TryGet(ctx, out var tenantId);
+        var tenantId = TenantContext.Require(ctx);
 
         // Ownership check — 404 if the caller doesn't own the stub.
         var existing = await repo.FindAsync(tenantId, userId, id, ct);
@@ -380,7 +382,7 @@ public static class VoucherEndpoints
             return Results.NotFound();
         }
 
-        await repo.ReplaceExtractedAsync(id, request, ct);
+        await repo.ReplaceExtractedAsync(tenantId, userId, id, request, ct);
         var updated = await repo.FindAsync(tenantId, userId, id, ct);
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
@@ -395,7 +397,7 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        TenantContext.TryGet(ctx, out var tenantId);
+        var tenantId = TenantContext.Require(ctx);
 
         var deleted = await repo.DeleteAsync(tenantId, userId, id, ct);
         return deleted ? Results.NoContent() : Results.NotFound();
@@ -408,7 +410,7 @@ public static class VoucherEndpoints
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TryGetUserId(ctx, out _))
+        if (!TryGetUserId(ctx, out var userId))
         {
             return Results.Unauthorized();
         }
@@ -417,7 +419,9 @@ public static class VoucherEndpoints
             return Results.BadRequest(new { error = "entries required" });
         }
 
-        var saved = await repo.SaveJournalSuggestionsAsync(id, request, ct);
+        var tenantId = TenantContext.Require(ctx);
+        if (await repo.FindAsync(tenantId, userId, id, ct) is null) return Results.NotFound();
+        var saved = await repo.SaveJournalSuggestionsAsync(tenantId, userId, id, request, ct);
         return Results.Ok(saved);
     }
 
@@ -434,7 +438,7 @@ public static class VoucherEndpoints
             return Results.Unauthorized();
         }
 
-        var updated = await repo.AcceptJournalAsync(id, entryId, userId, request, ct);
+        var updated = await repo.AcceptJournalAsync(TenantContext.Require(ctx), id, entryId, userId, request, ct);
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
 

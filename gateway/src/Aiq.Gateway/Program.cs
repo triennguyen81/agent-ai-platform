@@ -117,6 +117,7 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
 // ---- Services --------------------------------------------------------------
 builder.Services.AddSingleton(new NpgsqlConnectionFactory(connectionString));
 builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddSingleton<DatabaseMigrator>();
 builder.Services.AddScoped<IBookRepository, BookRepository>();
 builder.Services.AddScoped<INoteRepository, NoteRepository>();
 builder.Services.AddScoped<IContractRepository, ContractRepository>();
@@ -125,7 +126,10 @@ builder.Services.AddScoped<IVoucherRepository, VoucherRepository>();
 builder.Services.AddScoped<INotificationRepository, NotificationRepository>();
 builder.Services.AddScoped<ITenantRepository, TenantRepository>();
 builder.Services.AddScoped<IAgentRepository, AgentRepository>();
+builder.Services.AddScoped<IAgentAssignmentRepository, AgentAssignmentRepository>();
+builder.Services.AddScoped<IDynamicAgentRepository, DynamicAgentRepository>();
 builder.Services.AddScoped<IToolRepository, ToolRepository>();
+builder.Services.AddScoped<IWorkflowRepository, WorkflowRepository>();
 builder.Services.AddScoped<IReviewBoardRepository, ReviewBoardRepository>();
 builder.Services.AddScoped<IHitlRepository, HitlRepository>();
 builder.Services.AddScoped<IAgentKnowledgeRepository, AgentKnowledgeRepository>();
@@ -187,6 +191,7 @@ builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        options.MapInboundClaims = false;
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -197,6 +202,8 @@ builder.Services
             ValidAudience = jwtOptions.Audience,
             IssuerSigningKey = new SymmetricSecurityKey(
                 Encoding.UTF8.GetBytes(jwtOptions.SigningKey)),
+            NameClaimType = "sub",
+            RoleClaimType = "role",
             ClockSkew = TimeSpan.FromSeconds(30)
         };
     });
@@ -210,6 +217,18 @@ builder.Services.AddAuthorization(options =>
     // Legacy policies kept for backward compatibility with older endpoints / data.
     options.AddPolicy("reviewer",    p => p.RequireRole("super_admin", "admin", "reviewer"));
     options.AddPolicy("uploader",    p => p.RequireRole("super_admin", "admin", "uploader"));
+    // A role=user session normally can't reach these endpoints. The one
+    // exception is a request carrying the "scope=tool_execution" claim —
+    // minted only inside GET /runtime/agents/{id}/manifest, short-lived,
+    // scoped to the caller's own real role/tenant claims (TenantContext
+    // Middleware rejects any token whose role claims don't exactly equal the
+    // user's persisted DB roles, so this can never carry an invented role —
+    // only this extra claim marks it as tool-execution-authorized). Never
+    // handed to the browser/user directly.
+    options.AddPolicy("resource_or_tool", p => p.RequireAssertion(ctx =>
+        Aiq.Gateway.Governance.ResourceOrToolPolicy.IsAuthorized(
+            ctx.User.IsInRole("super_admin"), ctx.User.IsInRole("admin"), ctx.User.IsInRole("user"),
+            ctx.User.HasClaim("scope", "tool_execution"))));
 });
 
 builder.Services.AddRateLimiter(options =>
@@ -284,6 +303,12 @@ builder.Services.AddOutputCache(options =>
 // ---- Pipeline --------------------------------------------------------------
 var app = builder.Build();
 
+if (builder.Configuration.GetValue("Database:RunMigrations", true))
+{
+    await app.Services.GetRequiredService<DatabaseMigrator>()
+        .ApplyAsync(CancellationToken.None);
+}
+
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 app.UseResponseCompression();
@@ -292,8 +317,8 @@ app.UseHttpMetrics();           // /metrics request histograms + counters per en
 app.UseRateLimiter();
 app.UseOutputCache();
 app.UseAuthentication();
-app.UseAuthorization();
 app.UseMiddleware<TenantContextMiddleware>();
+app.UseAuthorization();
 app.UseMiddleware<AuditMiddleware>();
 
 if (app.Environment.IsDevelopment())
@@ -312,7 +337,9 @@ app.MapVoucherEndpoints();
 app.MapNotificationEndpoints();
 app.MapTenantEndpoints();
 app.MapAgentEndpoints();
+app.MapDynamicAgentEndpoints();
 app.MapToolEndpoints();
+app.MapWorkflowEndpoints();
 app.MapReviewEndpoints();
 app.MapHitlEndpoints();
 app.MapAgentKnowledgeEndpoints();
@@ -360,7 +387,8 @@ app.MapGet("/me", (HttpContext ctx) =>
     {
         sub   = user.FindFirst("sub")?.Value,
         email = user.FindFirst("email")?.Value,
-        roles = user.FindAll("role").Select(c => c.Value).ToArray()
+        roles = user.FindAll("role").Select(c => c.Value).ToArray(),
+        tenantId = TenantContext.TryGet(ctx, out var tenantId) ? tenantId : (Guid?)null
     });
 })
 .RequireAuthorization()

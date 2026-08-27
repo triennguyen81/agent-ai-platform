@@ -29,6 +29,8 @@ public sealed record HitlPendingActionRecord(
     Guid? TriggeredBy,
     string? TriggeredByEmail,
     string ToolCode,
+    string? ToolRiskTier,
+    string AgentActionTier,
     string PayloadJson,
     string Status,
     Guid? DecidedBy,
@@ -61,13 +63,70 @@ public sealed record DecideActionRequest(
     [Required, RegularExpression("^(approve|reject)$")] string Decision,
     string? Comment);
 
+public enum HitlOutcome { Allowed, PendingApproval, Rejected }
+public sealed record HitlEvaluationResult(HitlOutcome Outcome, Guid? ActionId, string? GateName);
+
+/// <summary>
+/// Matches a hitl_gates.trigger_rule against a real tool call. Shape:
+/// {"tool": "code", "field_path": "amount", "op": "eq"|"gte"|"gt"|"lte"|"lt", "value": ...}.
+/// "tool" and "field_path" are both optional — omitting "tool" matches any
+/// tool this gate's row would otherwise apply to; omitting "field_path"
+/// makes the gate fire on every call to the matched tool. Anything the rule
+/// can't evaluate (missing field, unknown op, non-comparable types) is
+/// treated as a MATCH — fail closed toward requiring approval, never toward
+/// silently skipping a configured gate.
+/// </summary>
+public static class TriggerRuleEvaluator
+{
+    public static bool Matches(JsonElement rule, string toolCode, JsonElement payload)
+    {
+        if (rule.ValueKind != JsonValueKind.Object) return false;
+        if (rule.TryGetProperty("tool", out var toolProp) && toolProp.ValueKind == JsonValueKind.String
+            && !string.Equals(toolProp.GetString(), toolCode, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        if (!rule.TryGetProperty("field_path", out var fieldProp) || fieldProp.ValueKind != JsonValueKind.String)
+        {
+            return true;
+        }
+        if (payload.ValueKind != JsonValueKind.Object || !payload.TryGetProperty(fieldProp.GetString()!, out var actual))
+        {
+            return true;
+        }
+        if (!rule.TryGetProperty("op", out var opProp) || opProp.ValueKind != JsonValueKind.String
+            || !rule.TryGetProperty("value", out var expected))
+        {
+            return true;
+        }
+        var op = opProp.GetString();
+        if (actual.ValueKind == JsonValueKind.Number && expected.ValueKind == JsonValueKind.Number)
+        {
+            var a = actual.GetDouble();
+            var e = expected.GetDouble();
+            return op switch
+            {
+                "eq" => a == e,
+                "gte" => a >= e,
+                "gt" => a > e,
+                "lte" => a <= e,
+                "lt" => a < e,
+                _ => true,
+            };
+        }
+        var actualStr = actual.ValueKind == JsonValueKind.String ? actual.GetString() : actual.GetRawText();
+        var expectedStr = expected.ValueKind == JsonValueKind.String ? expected.GetString() : expected.GetRawText();
+        return op == "eq" ? actualStr == expectedStr : true;
+    }
+}
+
 public interface IHitlRepository
 {
-    Task<IReadOnlyList<HitlGateRecord>> ListGatesAsync(Guid agentId, CancellationToken ct);
+    Task<IReadOnlyList<HitlGateRecord>> ListGatesAsync(Guid tenantId, Guid agentId, CancellationToken ct);
     Task<HitlGateRecord> CreateGateAsync(
         Guid tenantId, Guid agentId, Guid createdBy, CreateGateRequest request, CancellationToken ct);
-    Task<HitlGateRecord?> UpdateGateAsync(Guid gateId, UpdateGateRequest request, CancellationToken ct);
-    Task<bool> DeleteGateAsync(Guid gateId, CancellationToken ct);
+    Task<HitlGateRecord?> UpdateGateAsync(Guid tenantId, Guid gateId, UpdateGateRequest request, CancellationToken ct);
+    Task<bool> DeleteGateAsync(Guid tenantId, Guid gateId, CancellationToken ct);
 
     Task<HitlPendingActionRecord> CreatePendingActionAsync(
         Guid tenantId, Guid triggeredBy, CreatePendingActionRequest request, CancellationToken ct);
@@ -76,9 +135,28 @@ public interface IHitlRepository
         Guid tenantId, CancellationToken ct);
 
     Task<HitlPendingActionRecord?> DecideAsync(
-        Guid actionId, Guid deciderId, DecideActionRequest request, CancellationToken ct);
+        Guid tenantId, Guid actionId, Guid deciderId, DecideActionRequest request, CancellationToken ct);
 
     Task<HitlPendingActionRecord?> FindActionAsync(Guid actionId, CancellationToken ct);
+
+    /// <summary>
+    /// The real-execution integration point (Phase 5D): evaluates a
+    /// tenant+agent's active gates against one tool call. No gate matches ->
+    /// Allowed. A gate matches and a prior APPROVED decision for this exact
+    /// (tool, payload) exists -> consumes it, Allowed. A prior REJECTED
+    /// decision exists -> Rejected. Otherwise creates a new pending action
+    /// and returns PendingApproval — the tool must not execute either way.
+    /// </summary>
+    Task<HitlEvaluationResult> EvaluateAsync(Guid tenantId, Guid agentId, Guid actorId, string toolCode, JsonElement payload, CancellationToken ct);
+
+    /// <summary>
+    /// True if this tenant may manage gates for this agent — either a
+    /// legacy tenant-owned agent, or a system agent actively assigned to
+    /// this tenant (agents.tenant_id is NULL for system agents, so the
+    /// legacy IAgentRepository.FindAsync tenant_id match alone can never
+    /// see them — same class of gap fixed for knowledge in Phase 5A).
+    /// </summary>
+    Task<bool> IsAgentVisibleToTenantAsync(Guid tenantId, Guid agentId, CancellationToken ct);
 }
 
 public sealed class HitlRepository : IHitlRepository
@@ -108,6 +186,8 @@ public sealed class HitlRepository : IHitlRepository
             p.triggered_by    AS TriggeredBy,
             ut.email          AS TriggeredByEmail,
             p.tool_code       AS ToolCode,
+            (SELECT t.risk_tier FROM tools t WHERE t.code = p.tool_code LIMIT 1) AS ToolRiskTier,
+            a.action_tier     AS AgentActionTier,
             p.payload::text   AS PayloadJson,
             p.status          AS Status,
             p.decided_by      AS DecidedBy,
@@ -125,12 +205,12 @@ public sealed class HitlRepository : IHitlRepository
         _factory = factory;
     }
 
-    public async Task<IReadOnlyList<HitlGateRecord>> ListGatesAsync(Guid agentId, CancellationToken ct)
+    public async Task<IReadOnlyList<HitlGateRecord>> ListGatesAsync(Guid tenantId, Guid agentId, CancellationToken ct)
     {
-        var sql = $"SELECT {GateColumns} FROM hitl_gates WHERE agent_id = @agentId ORDER BY name";
+        var sql = $"SELECT {GateColumns} FROM hitl_gates WHERE tenant_id = @tenantId AND agent_id = @agentId ORDER BY name";
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<HitlGateRecord>(
-            new CommandDefinition(sql, new { agentId }, cancellationToken: ct));
+            new CommandDefinition(sql, new { tenantId, agentId }, cancellationToken: ct));
         return rows.AsList();
     }
 
@@ -155,7 +235,7 @@ public sealed class HitlRepository : IHitlRepository
             }, cancellationToken: ct));
     }
 
-    public async Task<HitlGateRecord?> UpdateGateAsync(Guid gateId, UpdateGateRequest request, CancellationToken ct)
+    public async Task<HitlGateRecord?> UpdateGateAsync(Guid tenantId, Guid gateId, UpdateGateRequest request, CancellationToken ct)
     {
         var ruleJson = request.TriggerRule?.GetRawText();
         var sql = $"""
@@ -165,23 +245,23 @@ public sealed class HitlRepository : IHitlRepository
                 trigger_rule  = COALESCE(@ruleJson::jsonb, trigger_rule),
                 approver_role = COALESCE(@ApproverRole, approver_role),
                 is_active     = COALESCE(@IsActive, is_active)
-            WHERE id = @gateId
+            WHERE id = @gateId AND tenant_id = @tenantId
             RETURNING {GateColumns}
             """;
         await using var conn = await _factory.OpenAsync(ct);
         return await conn.QueryFirstOrDefaultAsync<HitlGateRecord>(
             new CommandDefinition(sql, new
             {
-                gateId,
+                tenantId, gateId,
                 request.Name, request.Description, request.ApproverRole, request.IsActive, ruleJson,
             }, cancellationToken: ct));
     }
 
-    public async Task<bool> DeleteGateAsync(Guid gateId, CancellationToken ct)
+    public async Task<bool> DeleteGateAsync(Guid tenantId, Guid gateId, CancellationToken ct)
     {
-        const string sql = "DELETE FROM hitl_gates WHERE id = @gateId";
+        const string sql = "DELETE FROM hitl_gates WHERE id = @gateId AND tenant_id = @tenantId";
         await using var conn = await _factory.OpenAsync(ct);
-        var n = await conn.ExecuteAsync(new CommandDefinition(sql, new { gateId }, cancellationToken: ct));
+        var n = await conn.ExecuteAsync(new CommandDefinition(sql, new { tenantId, gateId }, cancellationToken: ct));
         return n > 0;
     }
 
@@ -195,7 +275,7 @@ public sealed class HitlRepository : IHitlRepository
             SELECT
                 @tenantId, g.id, g.agent_id, @triggeredBy, @ToolCode, @payloadJson::jsonb, @ExpiresAt
             FROM hitl_gates g
-            WHERE g.id = @GateId
+            WHERE g.id = @GateId AND g.tenant_id = @tenantId
             RETURNING id
             """;
         await using var conn = await _factory.OpenAsync(ct);
@@ -227,7 +307,7 @@ public sealed class HitlRepository : IHitlRepository
     }
 
     public async Task<HitlPendingActionRecord?> DecideAsync(
-        Guid actionId, Guid deciderId, DecideActionRequest request, CancellationToken ct)
+        Guid tenantId, Guid actionId, Guid deciderId, DecideActionRequest request, CancellationToken ct)
     {
         var newStatus = request.Decision == "approve" ? "approved" : "rejected";
         const string sql = """
@@ -236,12 +316,12 @@ public sealed class HitlRepository : IHitlRepository
                 decided_by = @deciderId,
                 decided_at = NOW(),
                 decision_comment = @Comment
-            WHERE id = @actionId AND status = 'pending'
+            WHERE id = @actionId AND tenant_id = @tenantId AND status = 'pending'
             RETURNING id
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var updated = await conn.QueryFirstOrDefaultAsync<Guid?>(
-            new CommandDefinition(sql, new { actionId, deciderId, newStatus, request.Comment },
+            new CommandDefinition(sql, new { tenantId, actionId, deciderId, newStatus, request.Comment },
                 cancellationToken: ct));
         if (updated is null) return null;
         return await FindActionAsync(actionId, ct);
@@ -261,5 +341,64 @@ public sealed class HitlRepository : IHitlRepository
         await using var conn = await _factory.OpenAsync(ct);
         return await conn.QueryFirstOrDefaultAsync<HitlPendingActionRecord>(
             new CommandDefinition(sql, new { actionId }, cancellationToken: ct));
+    }
+
+    public async Task<bool> IsAgentVisibleToTenantAsync(Guid tenantId, Guid agentId, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.ExecuteScalarAsync<bool>(new CommandDefinition("""
+            SELECT EXISTS(SELECT 1 FROM agents WHERE id=@agentId AND tenant_id=@tenantId)
+                OR EXISTS(SELECT 1 FROM agent_tenant_assignments WHERE agent_id=@agentId AND tenant_id=@tenantId AND status='active')
+            """, new { tenantId, agentId }, cancellationToken: ct));
+    }
+
+    private sealed record GateLookupRow(Guid Id, string Name, string TriggerRuleJson);
+    private sealed record PriorDecisionRow(Guid Id, string Status);
+
+    public async Task<HitlEvaluationResult> EvaluateAsync(Guid tenantId, Guid agentId, Guid actorId, string toolCode, JsonElement payload, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        var gates = (await conn.QueryAsync<GateLookupRow>(new CommandDefinition(
+            "SELECT id AS Id, name AS Name, trigger_rule::text AS TriggerRuleJson FROM hitl_gates WHERE tenant_id=@tenantId AND agent_id=@agentId AND is_active ORDER BY name",
+            new { tenantId, agentId }, cancellationToken: ct))).AsList();
+
+        GateLookupRow? matched = null;
+        foreach (var g in gates)
+        {
+            using var doc = JsonDocument.Parse(g.TriggerRuleJson);
+            if (TriggerRuleEvaluator.Matches(doc.RootElement, toolCode, payload))
+            {
+                matched = g;
+                break;
+            }
+        }
+        if (matched is null) return new(HitlOutcome.Allowed, null, null);
+
+        var payloadJson = payload.GetRawText();
+        var prior = await conn.QueryFirstOrDefaultAsync<PriorDecisionRow>(new CommandDefinition("""
+            SELECT id AS Id, status AS Status FROM hitl_pending_actions
+            WHERE tenant_id=@tenantId AND agent_id=@agentId AND gate_id=@gateId AND tool_code=@toolCode
+              AND payload=@payloadJson::jsonb AND status IN ('approved','rejected') AND consumed_at IS NULL
+            ORDER BY decided_at DESC LIMIT 1
+            """, new { tenantId, agentId, gateId = matched.Id, toolCode, payloadJson }, cancellationToken: ct));
+
+        if (prior is { Status: "approved" })
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                "UPDATE hitl_pending_actions SET consumed_at=NOW() WHERE id=@id",
+                new { id = prior.Id }, cancellationToken: ct));
+            return new(HitlOutcome.Allowed, prior.Id, matched.Name);
+        }
+        if (prior is { Status: "rejected" })
+        {
+            return new(HitlOutcome.Rejected, prior.Id, matched.Name);
+        }
+
+        var newId = await conn.QuerySingleAsync<Guid>(new CommandDefinition("""
+            INSERT INTO hitl_pending_actions (tenant_id, gate_id, agent_id, triggered_by, tool_code, payload)
+            VALUES (@tenantId, @gateId, @agentId, @actorId, @toolCode, @payloadJson::jsonb)
+            RETURNING id
+            """, new { tenantId, gateId = matched.Id, agentId, actorId, toolCode, payloadJson }, cancellationToken: ct));
+        return new(HitlOutcome.PendingApproval, newId, matched.Name);
     }
 }

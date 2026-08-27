@@ -27,7 +27,7 @@ public sealed class OcrJobRunner
     [JobDisplayName("OCR pipeline · book {0}")]
     [AutomaticRetry(Attempts = 2, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
     public async Task RunAsync(
-        Guid bookId,
+        Guid tenantId, Guid bookId,
         string stagedFilePath,
         string originalFilename,
         CancellationToken ct)
@@ -37,13 +37,13 @@ public sealed class OcrJobRunner
             _logger.LogError(
                 "OCR job for book {BookId} cannot start — staged file {Path} is missing",
                 bookId, stagedFilePath);
-            await _books.UpdateStatusAndPageCountAsync(bookId, "failed", 0, ct);
+            await _books.UpdateStatusAndPageCountAsync(tenantId, bookId, "failed", 0, ct);
             return;
         }
 
         try
         {
-            await _books.UpdateStatusAndPageCountAsync(bookId, "processing", 0, ct);
+            await _books.UpdateStatusAndPageCountAsync(tenantId, bookId, "processing", 0, ct);
 
             await using var pdfStream = File.OpenRead(stagedFilePath);
             var ocr = await _agent.RunOcrPipelineAsync(pdfStream, originalFilename, ct);
@@ -56,8 +56,8 @@ public sealed class OcrJobRunner
                     (float)p.Confidence))
                 .ToArray();
 
-            await _books.UpsertPagesAsync(bookId, pages, ct);
-            await _books.UpdateStatusAndPageCountAsync(bookId, "processed", ocr.PageCount, ct);
+            await _books.UpsertPagesAsync(tenantId, bookId, pages, ct);
+            await _books.UpdateStatusAndPageCountAsync(tenantId, bookId, "processed", ocr.PageCount, ct);
 
             _logger.LogInformation(
                 "OCR job complete for book {BookId} — {PageCount} pages, avg confidence {Confidence:F2}",
@@ -67,7 +67,7 @@ public sealed class OcrJobRunner
         {
             _logger.LogWarning(ex,
                 "OCR job for book {BookId} failed (upstream {Status})", bookId, ex.UpstreamStatus);
-            await _books.UpdateStatusAndPageCountAsync(bookId, "failed", 0, ct);
+            await _books.UpdateStatusAndPageCountAsync(tenantId, bookId, "failed", 0, ct);
             throw;
         }
         finally

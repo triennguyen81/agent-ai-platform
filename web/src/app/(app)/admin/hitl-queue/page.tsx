@@ -18,6 +18,8 @@ interface PendingAction {
   triggeredBy: string | null;
   triggeredByEmail: string | null;
   toolCode: string;
+  toolRiskTier: string | null;
+  agentActionTier: string;
   payloadJson: string;
   status: string;
   createdAt: string;
@@ -49,14 +51,6 @@ function formatDateTime(s: string | null): string {
   if (!s) return "—";
   try {
     return new Date(s).toLocaleString("vi-VN");
-  } catch {
-    return s;
-  }
-}
-
-function prettyJson(s: string): string {
-  try {
-    return JSON.stringify(JSON.parse(s), null, 2);
   } catch {
     return s;
   }
@@ -119,6 +113,15 @@ export default async function HitlQueuePage({
                     <span className="font-mono text-[10px] text-[var(--color-muted-fg)]">
                       {a.toolCode}
                     </span>
+                    <span className="rounded-full border border-amber-300 px-2 py-0.5 text-[10px] text-amber-800">
+                      risk: {a.toolRiskTier ?? "unclassified"}
+                    </span>
+                    <span className="rounded-full border px-2 py-0.5 text-[10px] text-[var(--color-muted-fg)]">
+                      action: {a.agentActionTier}
+                    </span>
+                    <span className="rounded-full border px-2 py-0.5 text-[10px] text-[var(--color-muted-fg)]">
+                      {a.status}
+                    </span>
                   </div>
                   <div className="mt-1 text-xs text-[var(--color-muted-fg)]">
                     Agent:{" "}
@@ -132,14 +135,10 @@ export default async function HitlQueuePage({
                 </div>
               </div>
 
-              <details className="rounded border bg-[var(--color-bg)] p-3">
-                <summary className="cursor-pointer text-xs font-medium">
-                  Payload
-                </summary>
-                <pre className="mt-2 max-h-64 overflow-auto text-xs">
-                  {prettyJson(a.payloadJson)}
-                </pre>
-              </details>
+              <p className="rounded border bg-[var(--color-bg)] p-3 text-xs text-[var(--color-muted-fg)]">
+                Tool arguments are intentionally redacted. Review the tenant, agent, requester,
+                gate, and tool identity above before deciding.
+              </p>
 
               <div className="grid gap-3 lg:grid-cols-2">
                 <form action={decideAction} className="space-y-2">

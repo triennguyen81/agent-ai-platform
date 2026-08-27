@@ -73,9 +73,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
     "===== END =====",
   ].join("\n");
 
-  const agentRes = await agent.runTask({
+  const agentRes = await agent.runTask(token, {
     task,
-    user_token: token,
     skills: [
       "voucher-invoice-vat",
       "accounting-vietnam",

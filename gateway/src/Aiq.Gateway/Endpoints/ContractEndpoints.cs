@@ -9,11 +9,13 @@ public static class ContractEndpoints
 {
     public static IEndpointRouteBuilder MapContractEndpoints(this IEndpointRouteBuilder app)
     {
-        // admin / super_admin can manage contracts. Pure consumers (role=user)
-        // don't get access — contracts contain business-sensitive data.
+        // admin / super_admin can manage contracts directly. A plain role=user
+        // browser session still never gets in — "resource_or_tool" only adds a
+        // short-lived, server-minted tool_execution token (see manifest
+        // endpoint), never handed to a user directly.
         var group = app
             .MapGroup("/contracts")
-            .RequireAuthorization("admin")
+            .RequireAuthorization("resource_or_tool")
             .RequireRateLimiting("default");
 
         group.MapGet("/", ListAsync);

@@ -8,7 +8,7 @@ public interface IOcrJobScheduler
 {
     /// <summary>Stage a PDF on disk and enqueue an OCR job. Returns the Hangfire job id.</summary>
     Task<string> EnqueueAsync(
-        Guid bookId,
+        Guid tenantId, Guid bookId,
         Stream pdfContent,
         string originalFilename,
         CancellationToken ct);
@@ -31,7 +31,7 @@ public sealed class OcrJobScheduler : IOcrJobScheduler
     }
 
     public async Task<string> EnqueueAsync(
-        Guid bookId,
+        Guid tenantId, Guid bookId,
         Stream pdfContent,
         string originalFilename,
         CancellationToken ct)
@@ -41,8 +41,9 @@ public sealed class OcrJobScheduler : IOcrJobScheduler
         // Use a fresh GUID so the on-disk filename never collides and never leaks
         // anything from the original upload's filename.
         var stagedPath = Path.Combine(
-            _options.UploadStagingDirectory,
+            Path.Combine(_options.UploadStagingDirectory, $"tenant-{tenantId:N}"),
             $"book-{bookId:N}-{Guid.NewGuid():N}.pdf");
+        Directory.CreateDirectory(Path.GetDirectoryName(stagedPath)!);
 
         await using (var dest = File.Create(stagedPath))
         {
@@ -50,11 +51,11 @@ public sealed class OcrJobScheduler : IOcrJobScheduler
         }
 
         var jobId = _hangfire.Enqueue<OcrJobRunner>(
-            runner => runner.RunAsync(bookId, stagedPath, originalFilename, CancellationToken.None));
+            runner => runner.RunAsync(tenantId, bookId, stagedPath, originalFilename, CancellationToken.None));
 
         _logger.LogInformation(
-            "Enqueued OCR job {JobId} for book {BookId} (staged at {Path})",
-            jobId, bookId, stagedPath);
+            "Enqueued OCR job {JobId} for tenant {TenantId}, book {BookId}",
+            jobId, tenantId, bookId);
 
         return jobId;
     }

@@ -10,7 +10,9 @@ namespace Aiq.Gateway.Auth;
 
 public interface IJwtTokenService
 {
-    AccessToken Issue(UserRecord user, IReadOnlyCollection<string> roles, Guid? tenantId = null);
+    AccessToken Issue(
+        UserRecord user, IReadOnlyCollection<string> roles, Guid? tenantId = null,
+        TimeSpan? expiresIn = null, IReadOnlyDictionary<string, string>? extraClaims = null);
 }
 
 public sealed record AccessToken(string Token, DateTimeOffset ExpiresAt);
@@ -24,9 +26,13 @@ public sealed class JwtTokenService : IJwtTokenService
         _options = options.Value;
     }
 
-    public AccessToken Issue(UserRecord user, IReadOnlyCollection<string> roles, Guid? tenantId = null)
+    public AccessToken Issue(
+        UserRecord user, IReadOnlyCollection<string> roles, Guid? tenantId = null,
+        TimeSpan? expiresIn = null, IReadOnlyDictionary<string, string>? extraClaims = null)
     {
-        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(_options.AccessTokenMinutes);
+        var expiresAt = expiresIn is { } span
+            ? DateTimeOffset.UtcNow.Add(span)
+            : DateTimeOffset.UtcNow.AddMinutes(_options.AccessTokenMinutes);
 
         var claims = new List<Claim>
         {
@@ -43,6 +49,14 @@ public sealed class JwtTokenService : IJwtTokenService
         foreach (var role in roles)
         {
             claims.Add(new Claim("role", role));
+        }
+
+        if (extraClaims is not null)
+        {
+            foreach (var (type, value) in extraClaims)
+            {
+                claims.Add(new Claim(type, value));
+            }
         }
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_options.SigningKey));

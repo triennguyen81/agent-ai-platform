@@ -33,19 +33,24 @@ public static class AgentKnowledgeEndpoints
     }
 
     private static async Task<IResult> ListAsync(
-        Guid agentId, IAgentKnowledgeRepository repo, CancellationToken ct)
+        Guid agentId, IAgentKnowledgeRepository repo, IAgentRepository agents,
+        HttpContext ctx, CancellationToken ct)
     {
+        if (!TenantContext.TryGet(ctx, out var tenantId)
+            || await agents.FindAsync(tenantId, agentId, ct) is null) return Results.NotFound();
         var items = await repo.ListSummariesForAgentAsync(agentId, ct);
         return Results.Ok(new { items, total = items.Count });
     }
 
     private static async Task<IResult> ListAttachableAsync(
-        Guid agentId, IAgentKnowledgeRepository repo, HttpContext ctx, CancellationToken ct)
+        Guid agentId, IAgentKnowledgeRepository repo, IAgentRepository agents,
+        HttpContext ctx, CancellationToken ct)
     {
         if (!TenantContext.TryGet(ctx, out var tenantId))
         {
             return Results.BadRequest(new { error = "tenant context missing" });
         }
+        if (await agents.FindAsync(tenantId, agentId, ct) is null) return Results.NotFound();
         var items = await repo.ListAttachableAsync(tenantId, agentId, ct);
         return Results.Ok(new { items, total = items.Count });
     }
@@ -54,21 +59,26 @@ public static class AgentKnowledgeEndpoints
 
     private static async Task<IResult> AttachAsync(
         Guid agentId, AttachRequest request, IAgentKnowledgeRepository repo,
-        HttpContext ctx, CancellationToken ct)
+        IAgentRepository agents, HttpContext ctx, CancellationToken ct)
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
         if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
+        if (!TenantContext.TryGet(ctx, out var tenantId)
+            || await agents.FindAsync(tenantId, agentId, ct) is null) return Results.NotFound();
 
-        var ok = await repo.AttachAsync(agentId, request.NoteId, userId, ct);
+        var ok = await repo.AttachAsync(tenantId, agentId, request.NoteId, userId, ct);
         return ok
             ? Results.NoContent()
             : Results.BadRequest(new { error = "Note đã gắn hoặc không tồn tại" });
     }
 
     private static async Task<IResult> DetachAsync(
-        Guid agentId, Guid noteId, IAgentKnowledgeRepository repo, CancellationToken ct)
+        Guid agentId, Guid noteId, IAgentKnowledgeRepository repo, IAgentRepository agents,
+        HttpContext ctx, CancellationToken ct)
     {
-        var ok = await repo.DetachAsync(agentId, noteId, ct);
+        if (!TenantContext.TryGet(ctx, out var tenantId)
+            || await agents.FindAsync(tenantId, agentId, ct) is null) return Results.NotFound();
+        var ok = await repo.DetachAsync(tenantId, agentId, noteId, ct);
         return ok ? Results.NoContent() : Results.NotFound();
     }
 
@@ -78,9 +88,18 @@ public static class AgentKnowledgeEndpoints
     /// chats with this agent instead of pulling the caller's own notes.
     /// </summary>
     private static async Task<IResult> ContextAsync(
-        Guid agentId, IAgentKnowledgeRepository repo, CancellationToken ct)
+        Guid agentId, IAgentKnowledgeRepository repo, IAgentAssignmentRepository assignments,
+        HttpContext ctx, CancellationToken ct)
     {
-        var items = await repo.ListForAgentAsync(agentId, ct);
+        if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
+        var isSuperAdmin = ctx.User.IsInRole("super_admin");
+        var isTenantAdmin = ctx.User.IsInRole("admin");
+        Guid? tenantId = TenantContext.TryGet(ctx, out var tid) ? tid : null;
+        var authorization = await assignments.AuthorizeExecutionAsync(
+            userId, tenantId, isSuperAdmin, isTenantAdmin, agentId, ct);
+        if (authorization is null) return Results.NotFound();
+        if (!authorization.Allowed) return Results.Forbid();
+        var items = await repo.ListForAgentAsync(authorization.TenantId, agentId, ct);
         return Results.Ok(new { items, total = items.Count });
     }
 

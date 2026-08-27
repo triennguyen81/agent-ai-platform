@@ -57,6 +57,22 @@ public sealed record PutObjectResult(
     string Sha256Hex,
     string? ETag);
 
+public static class TenantObjectKey
+{
+    public static string Prefix(Guid tenantId) => $"tenant/{tenantId:N}/";
+
+    public static string Build(Guid tenantId, params string[] segments)
+    {
+        if (tenantId == Guid.Empty) throw new ArgumentException("Tenant id is required.", nameof(tenantId));
+        if (segments.Length == 0 || segments.Any(s => string.IsNullOrWhiteSpace(s) || s.Contains("..") || s.Contains('/') || s.Contains('\\')))
+            throw new ArgumentException("Object key segments must be non-empty path-safe values.", nameof(segments));
+        return Prefix(tenantId) + string.Join('/', segments);
+    }
+
+    public static bool BelongsTo(Guid tenantId, string key) =>
+        tenantId != Guid.Empty && key.StartsWith(Prefix(tenantId), StringComparison.Ordinal);
+}
+
 public static class ContentHashing
 {
     /// <summary>
