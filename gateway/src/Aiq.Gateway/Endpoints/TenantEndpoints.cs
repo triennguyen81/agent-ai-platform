@@ -1,10 +1,19 @@
 using System.ComponentModel.DataAnnotations;
+using Aiq.Gateway.Audit;
+using Aiq.Gateway.Auth;
 using Aiq.Gateway.Governance;
 
 namespace Aiq.Gateway.Endpoints;
 
 public static class TenantEndpoints
 {
+    public sealed record OnboardTenantRequest(
+        [Required, RegularExpression("^[a-z0-9-]+$"), StringLength(60, MinimumLength = 2)] string Code,
+        [Required, StringLength(120)] string Name,
+        [Required, EmailAddress] string OwnerEmail,
+        [Required, MinLength(8)] string OwnerPassword,
+        [Required, StringLength(200)] string OwnerDisplayName);
+
     public static IEndpointRouteBuilder MapTenantEndpoints(this IEndpointRouteBuilder app)
     {
         // super_admin only — tenant CRUD
@@ -21,6 +30,13 @@ public static class TenantEndpoints
         superAdmin.MapDelete("/{id:guid}/members/{userId:guid}", RemoveMemberAsync);
         superAdmin.MapGet("/{id:guid}/quota", GetQuotaAsync);
         superAdmin.MapPatch("/{id:guid}/quota", UpdateQuotaAsync);
+
+        app.MapGet("/system/tenants/summary", ListSummariesAsync)
+            .RequireAuthorization("super_admin").RequireRateLimiting("default");
+        app.MapGet("/system/tenants/{id:guid}/summary", GetSummaryAsync)
+            .RequireAuthorization("super_admin").RequireRateLimiting("default");
+        app.MapPost("/system/tenants/onboard", OnboardAsync)
+            .RequireAuthorization("super_admin").RequireRateLimiting("default");
 
         // Any authenticated user may inspect their single canonical membership.
         var me = app
@@ -66,6 +82,56 @@ public static class TenantEndpoints
         catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
         {
             return Results.Conflict(new { error = "Tenant code đã tồn tại" });
+        }
+    }
+
+    private static async Task<IResult> ListSummariesAsync(ITenantRepository repo, CancellationToken ct)
+    {
+        var items = await repo.ListSummariesAsync(ct);
+        return Results.Ok(new { items, total = items.Count });
+    }
+
+    private static async Task<IResult> GetSummaryAsync(Guid id, ITenantRepository repo, CancellationToken ct)
+    {
+        var summary = await repo.GetSummaryAsync(id, ct);
+        return summary is null ? Results.NotFound() : Results.Ok(summary);
+    }
+
+    private static async Task<IResult> OnboardAsync(
+        OnboardTenantRequest request,
+        ITenantRepository repo,
+        IPasswordHasher hasher,
+        IAuditLogger audit,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
+        try
+        {
+            var created = await repo.OnboardAsync(
+                new CreateTenantRequest(request.Code.Trim().ToLowerInvariant(), request.Name.Trim()),
+                request.OwnerEmail.Trim().ToLowerInvariant(),
+                hasher.Hash(request.OwnerPassword),
+                request.OwnerDisplayName.Trim(),
+                ct);
+            Guid.TryParse(ctx.User.FindFirst("sub")?.Value, out var actorId);
+            await audit.WriteAsync(new AuditEntry(
+                actorId, "tenant.onboard", "tenant", created.Tenant.Id.ToString(),
+                new { ownerUserId = created.OwnerUserId, ownerEmail = request.OwnerEmail.Trim().ToLowerInvariant() },
+                ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
+            return Results.Created($"/tenants/{created.Tenant.Id}", new
+            {
+                tenant = created.Tenant,
+                ownerUserId = created.OwnerUserId,
+            });
+        }
+        catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
+        {
+            return Results.Conflict(new { error = "tenant_code_or_owner_email_already_exists" });
+        }
+        catch (Npgsql.PostgresException ex) when (ex.SqlState == "23514")
+        {
+            return Results.Conflict(new { error = ex.MessageText });
         }
     }
 

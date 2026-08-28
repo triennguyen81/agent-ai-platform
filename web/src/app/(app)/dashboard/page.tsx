@@ -3,7 +3,7 @@ import { Bot, Building2, ShieldCheck, Users } from "lucide-react";
 import { requireViewer } from "@/lib/authorization";
 
 export default async function DashboardPage() {
-  const viewer = await requireViewer(["super_admin", "admin"]);
+  const viewer = await requireViewer(["super_admin", "tenant_owner", "admin"]);
   const superAdmin = viewer.roles.includes("super_admin");
   const cards = superAdmin
     ? [

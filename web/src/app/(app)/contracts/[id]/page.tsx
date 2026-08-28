@@ -79,7 +79,7 @@ export default async function ContractDetailPage({ params }: Props) {
   if (meRes.ok) {
     const me = (await meRes.json()) as { roles?: string[] };
     const roles = me.roles ?? [];
-    if (!roles.includes("super_admin") && !roles.includes("admin")) {
+    if (!roles.includes("super_admin") && !roles.includes("tenant_owner") && !roles.includes("admin")) {
       redirect("/chat");
     }
   }

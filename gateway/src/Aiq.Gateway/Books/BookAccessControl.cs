@@ -15,7 +15,7 @@ public sealed class BookAccessControl : IBookAccessControl
 {
     public bool CanMutate(ClaimsPrincipal user, BookRecord book)
     {
-        if (user.IsInRole("admin"))
+        if (user.IsInRole("admin") || user.IsInRole("tenant_owner"))
         {
             return true;
         }

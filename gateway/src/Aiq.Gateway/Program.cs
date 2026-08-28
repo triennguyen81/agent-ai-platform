@@ -210,10 +210,17 @@ builder.Services
 
 builder.Services.AddAuthorization(options =>
 {
-    // 3-tier role model: super_admin (manages users) ⊃ admin (KB contributors) ⊃ user (consumers).
+    // Role model: super_admin (manages platform + tenants) ⊃ tenant_owner
+    // (sole accountable owner of one tenant) ⊃ admin (tenant contributors)
+    // ⊃ user (consumers). tenant_owner is folded into the "admin" and "user"
+    // policies so an owner never has LESS access than a plain admin — it
+    // does not change what any existing super_admin/admin/user can already
+    // do. Owner-exclusive actions (create/replace/transfer TENANT_OWNER)
+    // stay gated behind the literal "super_admin" policy, never "admin".
     options.AddPolicy("super_admin", p => p.RequireRole("super_admin"));
-    options.AddPolicy("admin",       p => p.RequireRole("super_admin", "admin"));
-    options.AddPolicy("user",        p => p.RequireRole("super_admin", "admin", "user"));
+    options.AddPolicy("tenant_owner", p => p.RequireRole("tenant_owner"));
+    options.AddPolicy("admin",       p => p.RequireRole("super_admin", "tenant_owner", "admin"));
+    options.AddPolicy("user",        p => p.RequireRole("super_admin", "tenant_owner", "admin", "user"));
     // Legacy policies kept for backward compatibility with older endpoints / data.
     options.AddPolicy("reviewer",    p => p.RequireRole("super_admin", "admin", "reviewer"));
     options.AddPolicy("uploader",    p => p.RequireRole("super_admin", "admin", "uploader"));
@@ -227,7 +234,9 @@ builder.Services.AddAuthorization(options =>
     // handed to the browser/user directly.
     options.AddPolicy("resource_or_tool", p => p.RequireAssertion(ctx =>
         Aiq.Gateway.Governance.ResourceOrToolPolicy.IsAuthorized(
-            ctx.User.IsInRole("super_admin"), ctx.User.IsInRole("admin"), ctx.User.IsInRole("user"),
+            ctx.User.IsInRole("super_admin"),
+            ctx.User.IsInRole("admin") || ctx.User.IsInRole("tenant_owner"),
+            ctx.User.IsInRole("user"),
             ctx.User.HasClaim("scope", "tool_execution"))));
 });
 

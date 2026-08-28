@@ -14,6 +14,11 @@ interface MeResponse {
 
 async function logoutAction() {
   "use server";
+  // Temporary verification marker, pairs with the client-side onSelect log
+  // in app-nav.tsx — confirms the server action actually executed (not just
+  // that the click fired). Safe to keep; remove once logout is trusted in
+  // production.
+  console.debug("[logout] logoutAction executing, clearing session cookie");
   await clearSession();
   // When Clerk is on, we'd also want to call signOut() but the user can
   // click Clerk's own UserButton for that. Cookie clear is sufficient to
@@ -41,23 +46,25 @@ export default async function AppLayout({
   const me = (await meRes.json()) as MeResponse;
   const roles = me.roles ?? [];
   const isSuperAdmin = roles.includes("super_admin");
+  const isTenantOwner = roles.includes("tenant_owner");
   const isTenantAdmin = roles.includes("admin");
 
   return (
     <div className="min-h-dvh">
       <header className="sticky top-0 z-10 border-b border-[var(--color-border)] bg-[var(--color-bg)]/95 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-          <Link href="/chat" className="font-serif text-xl tracking-tight">
+          <Link href={isSuperAdmin || isTenantOwner || isTenantAdmin ? "/dashboard" : "/my-agents"} className="font-serif text-xl tracking-tight">
             Cát Tường AI
           </Link>
           <div className="flex items-center gap-2">
             <AppNav
               email={me.email ?? "you"}
               isSuperAdmin={isSuperAdmin}
+              isTenantOwner={isTenantOwner}
               isTenantAdmin={isTenantAdmin}
               signOutAction={logoutAction}
             />
-            <NotificationBell />
+            {!isSuperAdmin && <NotificationBell />}
           </div>
         </div>
       </header>

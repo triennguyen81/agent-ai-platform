@@ -133,7 +133,7 @@ export default async function TenantAgentDetailPage({
     ? ((await assignedRes.json()) as { items: AgentUserAssignmentRecord[] }).items
     : [];
   const assignedUserIds = new Set(assignedUsers.map((u) => u.userId));
-  const assignableUsers = users.filter((u) => !assignedUserIds.has(u.id));
+  const assignableUsers = users.filter((u) => u.isActive && !assignedUserIds.has(u.id));
   const knowledge: KnowledgeRecord[] = knowledgeRes.ok ? ((await knowledgeRes.json()) as { items: Omit<KnowledgeRecord, "noteId">[] }).items.map((note) => ({ ...note, noteId: note.id })) : [];
   const attachable: KnowledgeRecord[] = attachableRes.ok ? ((await attachableRes.json()) as { items: Omit<KnowledgeRecord, "noteId">[] }).items.map((note) => ({ ...note, noteId: note.id })) : [];
 

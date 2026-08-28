@@ -88,13 +88,15 @@ function AccountTrigger({ email }: { email: string }) {
 export interface AppNavProps {
   email: string;
   isSuperAdmin: boolean;
+  isTenantOwner: boolean;
   isTenantAdmin: boolean;
   signOutAction: () => void | Promise<void>;
 }
 
-export function AppNav({ email, isSuperAdmin, isTenantAdmin, signOutAction }: AppNavProps) {
+export function AppNav({ email, isSuperAdmin, isTenantOwner, isTenantAdmin, signOutAction }: AppNavProps) {
   const pathname = usePathname();
-  const isAdminOrAbove = isSuperAdmin || isTenantAdmin;
+  const isAdminOrAbove = isSuperAdmin || isTenantOwner || isTenantAdmin;
+  const isManagementRole = isAdminOrAbove;
 
   const nghiepVu: NavItem[] = isAdminOrAbove
     ? [
@@ -124,8 +126,9 @@ export function AppNav({ email, isSuperAdmin, isTenantAdmin, signOutAction }: Ap
         { href: "/admin/audit", label: "Audit", icon: ShieldCheck },
         { href: "/admin/health", label: "Health", icon: HeartPulse },
       ]
-    : isTenantAdmin
+    : isTenantOwner
       ? [
+          { href: "/admin/tenant-admins", label: "Administrators", icon: UserCog },
           { href: "/admin/tenant-users", label: "Users", icon: Users },
           { href: "/admin/tenant-agents", label: "Tenant Agents", icon: Bot },
           { href: "/knowledge", label: "Knowledge", icon: BookOpen },
@@ -133,12 +136,26 @@ export function AppNav({ email, isSuperAdmin, isTenantAdmin, signOutAction }: Ap
           { href: "/admin/audit", label: "Audit / Usage", icon: ShieldCheck },
           { href: "/admin/tenant-status", label: "Tenant Status", icon: Gauge },
         ]
+      : isTenantAdmin
+        ? [
+            { href: "/admin/tenant-users", label: "Users", icon: Users },
+            { href: "/admin/tenant-agents", label: "Tenant Agents", icon: Bot },
+            { href: "/knowledge", label: "Knowledge", icon: BookOpen },
+            { href: "/admin/hitl-queue", label: "HITL / Reviews", icon: ClipboardCheck },
+            { href: "/admin/audit", label: "Audit / Usage", icon: ShieldCheck },
+          ]
       : [];
 
   return (
     <nav className="flex items-center gap-1">
-      <DirectLink href="/chat" label="Chat" active={pathname === "/chat"} />
-      <DirectLink href="/my-agents" label="Trợ lý" active={pathname.startsWith("/my-agents")} />
+      {isManagementRole ? (
+        <DirectLink href="/dashboard" label="Dashboard" active={pathname === "/dashboard"} />
+      ) : (
+        <>
+          <DirectLink href="/my-agents" label="My Agents" active={pathname.startsWith("/my-agents")} />
+          <DirectLink href="/chat" label="Chat" active={pathname === "/chat"} />
+        </>
+      )}
       <ModuleMenu label="Nghiệp vụ" items={nghiepVu} pathname={pathname} />
       <ModuleMenu label="Workspace" items={workspace} pathname={pathname} />
       <ModuleMenu label="Quản trị" items={quanTri} pathname={pathname} />
@@ -150,13 +167,18 @@ export function AppNav({ email, isSuperAdmin, isTenantAdmin, signOutAction }: Ap
         <DropdownMenuContent align="end">
           <div className="px-2.5 py-1.5 text-xs text-[var(--color-muted-fg)]">{email}</div>
           <DropdownMenuSeparator />
-          <DropdownMenuItem asChild className="text-red-700">
-            <form action={signOutAction}>
-              <button type="submit" className="flex w-full items-center gap-2">
-                <LogOut className="size-4" />
-                Đăng xuất
-              </button>
-            </form>
+          <DropdownMenuItem
+            className="text-red-700"
+            onSelect={() => {
+              // Temporary verification marker — confirms Radix's onSelect
+              // actually fires before the server action runs. Safe to keep;
+              // remove once logout is trusted in production.
+              console.debug("[logout] onSelect fired, invoking signOutAction");
+              void signOutAction();
+            }}
+          >
+            <LogOut className="size-4" />
+            Đăng xuất
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

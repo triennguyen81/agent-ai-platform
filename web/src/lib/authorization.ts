@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { gateway } from "@/lib/api";
 import { clearSession, requireSession } from "@/lib/auth";
 
-export type LoginRole = "super_admin" | "admin" | "user";
+export type LoginRole = "super_admin" | "tenant_owner" | "admin" | "user";
 
 export interface Viewer {
   token: string;
@@ -24,7 +24,7 @@ export async function requireViewer(allowed?: LoginRole[]): Promise<Viewer> {
     sub?: string; email?: string; tenantId?: string | null; roles?: string[];
   };
   const roles = (body.roles ?? []).filter((role): role is LoginRole =>
-    role === "super_admin" || role === "admin" || role === "user",
+    role === "super_admin" || role === "tenant_owner" || role === "admin" || role === "user",
   );
   if (allowed && !allowed.some((role) => roles.includes(role))) redirect("/forbidden");
   return {

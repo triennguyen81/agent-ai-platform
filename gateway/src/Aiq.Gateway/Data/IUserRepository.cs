@@ -11,6 +11,7 @@ public interface IUserRepository
     Task<UserRecord>  CreateExternalAsync(string email, string? displayName, string provider, string externalId, CancellationToken ct);
     Task              SetTenantAsync(Guid userId, Guid? tenantId, CancellationToken ct);
     Task<bool>        SetActiveAsync(Guid userId, bool isActive, CancellationToken ct);
+    Task<bool>        UpdateTenantUserAsync(Guid tenantId, Guid userId, string? displayName, CancellationToken ct);
     Task              AssignRoleAsync(Guid userId, string roleName, CancellationToken ct);
     Task<bool>        RemoveRoleAsync(Guid userId, string roleName, CancellationToken ct);
     Task<IReadOnlyCollection<string>> GetRolesAsync(Guid userId, CancellationToken ct);
@@ -40,6 +41,13 @@ public interface IUserRepository
     /// above.
     /// </summary>
     Task<IReadOnlyList<UserDirectoryEntry>> ListDirectoryAsync(CancellationToken ct);
+
+    /// <summary>
+    /// role='tenant_owner' members of a single tenant, active or disabled —
+    /// powers the Stage 2 ownership preflight report and the Stage 3 atomic
+    /// transfer. Same shape/semantics as ListAdminsByTenantAsync.
+    /// </summary>
+    Task<IReadOnlyList<UserWithRoles>> ListTenantOwnersAsync(Guid tenantId, CancellationToken ct);
 }
 
 public sealed record UserDirectoryEntry(
@@ -176,13 +184,27 @@ public sealed class UserRepository : IUserRepository
             var inserted = await conn.ExecuteAsync(new CommandDefinition(
                 insertSql, new { userId, roleName }, tx, cancellationToken: ct));
             if (inserted != 1) throw new InvalidOperationException("Role does not exist.");
-            await tx.CommitAsync(ct);
         }
         catch
         {
+            // Only reachable for a failure BEFORE commit was attempted — the
+            // transaction is still active here, so an explicit rollback is
+            // both safe and necessary.
             await tx.RollbackAsync(ct);
             throw;
         }
+        // Deliberately outside the try/rollback block: with the deferred
+        // constraint triggers from migration 018, a deferred invariant
+        // violation (e.g. "the sole active tenant_owner cannot be removed")
+        // surfaces exactly HERE, at commit — and when CommitAsync itself
+        // throws, Npgsql has already aborted the transaction server-side.
+        // Calling RollbackAsync again on an already-completed transaction
+        // throws its own InvalidOperationException, masking the original
+        // PostgresException the caller needs to see (e.g. UserEndpoints'
+        // 23505/23514 -> 409 translation). Letting CommitAsync's exception
+        // propagate untouched — `await using var tx` disposal is safe on an
+        // already-completed transaction — preserves that original error.
+        await tx.CommitAsync(ct);
     }
 
     public async Task SetTenantAsync(Guid userId, Guid? tenantId, CancellationToken ct)
@@ -198,6 +220,27 @@ public sealed class UserRepository : IUserRepository
         await using var conn = await _factory.OpenAsync(ct);
         var n = await conn.ExecuteAsync(new CommandDefinition(sql, new { userId, isActive }, cancellationToken: ct));
         return n > 0;
+    }
+
+    public async Task<bool> UpdateTenantUserAsync(
+        Guid tenantId, Guid userId, string? displayName, CancellationToken ct)
+    {
+        const string sql = """
+            UPDATE users u
+            SET display_name = @displayName, updated_at = NOW()
+            WHERE u.id = @userId
+              AND u.tenant_id = @tenantId
+              AND EXISTS (
+                  SELECT 1
+                  FROM user_roles ur
+                  JOIN roles r ON r.id = ur.role_id AND r.name = 'user'
+                  WHERE ur.user_id = u.id
+              );
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.ExecuteAsync(new CommandDefinition(
+            sql, new { tenantId, userId, displayName }, cancellationToken: ct));
+        return rows == 1;
     }
 
     public async Task<bool> RemoveRoleAsync(Guid userId, string roleName, CancellationToken ct)
@@ -291,9 +334,8 @@ public sealed class UserRepository : IUserRepository
 
     public async Task<IReadOnlyList<UserWithRoles>> ListByTenantAsync(Guid tenantId, CancellationToken ct)
     {
-        // role='user' only — mirrors the guard AssignUserAsync already
-        // enforces at write time, so the picker never offers an admin/other
-        // principal that a subsequent assign call would silently reject.
+        // role='user' only. Disabled users remain visible so tenant managers
+        // can re-enable them; assignment UIs filter IsActive separately.
         const string sql = """
             SELECT
                 u.id              AS Id,
@@ -306,7 +348,7 @@ public sealed class UserRepository : IUserRepository
             FROM users u
             JOIN user_roles ur ON ur.user_id = u.id
             JOIN roles r       ON r.id = ur.role_id AND r.name = 'user'
-            WHERE u.tenant_id = @tenantId AND u.is_active
+            WHERE u.tenant_id = @tenantId
             ORDER BY u.email;
             """;
 
@@ -330,6 +372,30 @@ public sealed class UserRepository : IUserRepository
             FROM users u
             JOIN user_roles ur ON ur.user_id = u.id
             JOIN roles r       ON r.id = ur.role_id AND r.name = 'admin'
+            WHERE u.tenant_id = @tenantId
+            ORDER BY u.email;
+            """;
+
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.QueryAsync<UserWithRoles>(
+            new CommandDefinition(sql, new { tenantId }, cancellationToken: ct));
+        return rows.ToArray();
+    }
+
+    public async Task<IReadOnlyList<UserWithRoles>> ListTenantOwnersAsync(Guid tenantId, CancellationToken ct)
+    {
+        const string sql = """
+            SELECT
+                u.id              AS Id,
+                u.email           AS Email,
+                u.display_name    AS DisplayName,
+                u.is_active       AS IsActive,
+                u.created_at      AS CreatedAt,
+                u.external_provider AS ExternalProvider,
+                ARRAY['tenant_owner']::TEXT[] AS Roles
+            FROM users u
+            JOIN user_roles ur ON ur.user_id = u.id
+            JOIN roles r       ON r.id = ur.role_id AND r.name = 'tenant_owner'
             WHERE u.tenant_id = @tenantId
             ORDER BY u.email;
             """;

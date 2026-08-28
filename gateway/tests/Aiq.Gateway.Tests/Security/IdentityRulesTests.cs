@@ -5,9 +5,10 @@ namespace Aiq.Gateway.Tests.Security;
 public sealed class IdentityRulesTests
 {
     [Fact]
-    public void OnlyThreeLoginRolesAreAccepted()
+    public void OnlyFourLoginRolesAreAccepted()
     {
         Assert.True(LoginRoleRules.IsAllowed("super_admin"));
+        Assert.True(LoginRoleRules.IsAllowed("tenant_owner"));
         Assert.True(LoginRoleRules.IsAllowed("admin"));
         Assert.True(LoginRoleRules.IsAllowed("user"));
         Assert.False(LoginRoleRules.IsAllowed("reviewer"));

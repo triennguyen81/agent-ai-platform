@@ -176,6 +176,39 @@ export const gateway = {
       body: JSON.stringify(payload),
     });
   },
+  onboardTenant(token: string, payload: {
+    code: string;
+    name: string;
+    ownerDisplayName: string;
+    ownerEmail: string;
+    ownerPassword: string;
+  }) {
+    return call(GATEWAY_BASE, "/system/tenants/onboard", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  listTenantSummaries(token: string) {
+    return call(GATEWAY_BASE, "/system/tenants/summary", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  getTenantSummary(token: string, tenantId: string) {
+    return call(GATEWAY_BASE, `/system/tenants/${tenantId}/summary`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  transferTenantOwner(token: string, tenantId: string, payload: {
+    successorUserId: string;
+    predecessorAction: "demote" | "deactivate";
+  }) {
+    return call(GATEWAY_BASE, `/system/tenants/${tenantId}/owner/transfer`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
   getTenant(token: string, tenantId: string) {
     return call(GATEWAY_BASE, `/tenants/${tenantId}`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -205,6 +238,26 @@ export const gateway = {
   },
   enableTenantAdmin(token: string, tenantId: string, userId: string) {
     return call(GATEWAY_BASE, `/system/tenants/${tenantId}/admins/${userId}/enable`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // TENANT_OWNER: manage plain administrators in the authenticated tenant.
+  // There is intentionally no tenantId or role argument.
+  listOwnTenantAdmins(token: string) {
+    return call(GATEWAY_BASE, "/tenant/admins", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createOwnTenantAdmin(token: string, payload: { email: string; password: string; displayName?: string }) {
+    return call(GATEWAY_BASE, "/tenant/admins", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  setOwnTenantAdminActive(token: string, userId: string, isActive: boolean) {
+    return call(GATEWAY_BASE, `/tenant/admins/${userId}/${isActive ? "enable" : "disable"}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -628,6 +681,13 @@ export const gateway = {
   createTenantUser(token: string, payload: { email: string; password: string; displayName?: string }) {
     return call(GATEWAY_BASE, "/tenant/users", {
       method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateTenantUser(token: string, userId: string, payload: { displayName?: string }) {
+    return call(GATEWAY_BASE, `/tenant/users/${userId}`, {
+      method: "PATCH",
       headers: { Authorization: `Bearer ${token}` },
       body: JSON.stringify(payload),
     });

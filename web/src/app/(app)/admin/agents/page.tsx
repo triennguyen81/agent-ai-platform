@@ -70,7 +70,7 @@ function AvailabilityBadge({ enabled }: { enabled: boolean }) {
 }
 
 export default async function TroLyAiCatalogPage() {
-  const viewer = await requireViewer(["super_admin", "admin"]);
+  const viewer = await requireViewer(["super_admin", "tenant_owner", "admin"]);
   const isSuperAdmin = viewer.roles.includes("super_admin");
 
   if (isSuperAdmin) {

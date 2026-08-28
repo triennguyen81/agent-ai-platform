@@ -11,7 +11,7 @@ const NAV_ITEMS = [
 ];
 
 export default async function AccountingLayout({ children }: { children: React.ReactNode }) {
-  await requireViewer(["super_admin", "admin"]);
+  await requireViewer(["super_admin", "tenant_owner", "admin"]);
   return (
     <div className="space-y-6">
       <nav className="-mx-1 flex flex-wrap gap-1 overflow-x-auto pb-2 text-sm">

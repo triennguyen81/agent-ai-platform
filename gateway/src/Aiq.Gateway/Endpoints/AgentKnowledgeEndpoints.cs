@@ -93,7 +93,7 @@ public static class AgentKnowledgeEndpoints
     {
         if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
         var isSuperAdmin = ctx.User.IsInRole("super_admin");
-        var isTenantAdmin = ctx.User.IsInRole("admin");
+        var isTenantAdmin = ctx.User.IsInRole("admin") || ctx.User.IsInRole("tenant_owner");
         Guid? tenantId = TenantContext.TryGet(ctx, out var tid) ? tid : null;
         var authorization = await assignments.AuthorizeExecutionAsync(
             userId, tenantId, isSuperAdmin, isTenantAdmin, agentId, ct);

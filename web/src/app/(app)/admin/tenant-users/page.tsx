@@ -46,12 +46,24 @@ async function setActiveAction(formData: FormData): Promise<void> {
   redirect(`/admin/tenant-users?ok=${action}d`);
 }
 
+async function editUserAction(formData: FormData): Promise<void> {
+  "use server";
+  const userId = String(formData.get("userId") ?? "").trim();
+  const displayName = String(formData.get("displayName") ?? "").trim();
+  if (!userId) redirect("/admin/tenant-users?error=yeu-cau-khong-hop-le");
+  const token = await requireSession();
+  const res = await gateway.updateTenantUser(token, userId, { displayName });
+  if (!res.ok) redirect(`/admin/tenant-users?error=edit-that-bai-${res.status}`);
+  revalidatePath("/admin/tenant-users");
+  redirect("/admin/tenant-users?ok=updated");
+}
+
 export default async function TenantUsersPage({
   searchParams,
 }: {
   searchParams: Promise<{ ok?: string; error?: string }>;
 }) {
-  const viewer = await requireViewer(["admin"]);
+  const viewer = await requireViewer(["tenant_owner", "admin"]);
   const response = await gateway.listTenantUsers(viewer.token);
   const users: TenantUser[] = response.ok ? ((await response.json()) as { items: TenantUser[] }).items : [];
   const { ok, error } = await searchParams;
@@ -89,10 +101,18 @@ export default async function TenantUsersPage({
                     )}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <div className="flex items-center justify-end gap-3">
-                      <Link href="/admin/tenant-agents" className="text-[var(--color-primary)] hover:underline">
-                        Quản lý phân quyền
+                    <div className="flex flex-wrap items-center justify-end gap-3">
+                      <Link href={`/admin/tenant-users/${user.id}/agents`} className="text-[var(--color-primary)] hover:underline">
+                        Agent assignments
                       </Link>
+                      <details className="text-left">
+                        <summary className="cursor-pointer text-[var(--color-primary)]">Sửa</summary>
+                        <form action={editUserAction} className="mt-2 flex gap-2">
+                          <input type="hidden" name="userId" value={user.id} />
+                          <Input name="displayName" defaultValue={user.displayName ?? ""} placeholder="Tên hiển thị" />
+                          <Button type="submit" size="sm">Lưu</Button>
+                        </form>
+                      </details>
                       <form action={setActiveAction}>
                         <input type="hidden" name="userId" value={user.id} />
                         <input type="hidden" name="action" value={user.isActive ? "disable" : "enable"} />
@@ -119,12 +139,12 @@ export default async function TenantUsersPage({
       <aside className="space-y-4">
         <h2 className="font-serif text-xl">Tạo người dùng</h2>
         <p className="text-xs text-[var(--color-muted-fg)]">
-          Luôn được tạo trong tenant của bạn với vai trò "user". Không thể tạo tài khoản ADMIN hoặc SUPER_ADMIN.
+          Luôn được tạo trong tenant của bạn với vai trò "user". Không thể tạo ADMIN, TENANT_OWNER hoặc SUPER_ADMIN.
         </p>
 
         {ok && (
           <p className="rounded-[var(--radius)] border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            {ok === "created" ? "Đã tạo người dùng." : ok === "disabled" ? "Đã khoá người dùng." : "Đã mở lại người dùng."}
+            {ok === "created" ? "Đã tạo người dùng." : ok === "updated" ? "Đã cập nhật người dùng." : ok === "disabled" ? "Đã khoá người dùng." : "Đã mở lại người dùng."}
           </p>
         )}
         {error && (

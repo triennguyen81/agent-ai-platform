@@ -18,7 +18,7 @@ function limitLabel(current: number, max: number | null): string {
 }
 
 export default async function TenantStatusPage() {
-  const viewer = await requireViewer(["admin"]);
+  const viewer = await requireViewer(["tenant_owner"]);
   const response = await gateway.getMyTenantQuota(viewer.token);
   const quota: TenantQuotaStatus | null = response.ok ? ((await response.json()) as TenantQuotaStatus) : null;
 

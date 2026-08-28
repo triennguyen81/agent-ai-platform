@@ -56,7 +56,7 @@ interface Props {
 }
 
 export default async function AuditPage({ searchParams }: Props) {
-  const viewer = await requireViewer(["super_admin", "admin"]);
+  const viewer = await requireViewer(["super_admin", "tenant_owner", "admin"]);
   const isSuperAdmin = viewer.roles.includes("super_admin");
 
   const { event, limit: limitParam } = await searchParams;

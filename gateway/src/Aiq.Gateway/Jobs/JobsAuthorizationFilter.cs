@@ -26,7 +26,7 @@ public sealed class JobsAuthorizationFilter : IDashboardAuthorizationFilter
             return true;
         }
 
-        return http.User.IsInRole("admin");
+        return http.User.IsInRole("admin") || http.User.IsInRole("tenant_owner");
     }
 
     private static bool IsLoopback(HttpContext http)
