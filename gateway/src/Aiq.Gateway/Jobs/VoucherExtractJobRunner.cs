@@ -2,12 +2,14 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Aiq.Gateway.Books;
 using Aiq.Gateway.Customers;
+using Aiq.Gateway.Employees;
+using Aiq.Gateway.Suppliers;
 using Aiq.Gateway.Vouchers;
 using Hangfire;
 
 namespace Aiq.Gateway.Jobs;
 
-// UC-ACC-001 P1 (part 2) — LLM extraction + AR enrichment + 3-way match
+// UC-ACC-001 P1 (part 2) — LLM extraction + AR/AP enrichment + 3-way match
 // all in Hangfire so Next.js promise lifecycle can't kill it mid-flight.
 //
 // Runs AFTER VoucherOcrJobRunner (chained via ContinueJobWith on the
@@ -18,17 +20,23 @@ public sealed class VoucherExtractJobRunner
     private readonly IAgentClient _agent;
     private readonly IVoucherRepository _vouchers;
     private readonly ICustomerRepository _customers;
+    private readonly ISupplierRepository _suppliers;
+    private readonly IEmployeeRepository _employees;
     private readonly ILogger<VoucherExtractJobRunner> _logger;
 
     public VoucherExtractJobRunner(
         IAgentClient agent,
         IVoucherRepository vouchers,
         ICustomerRepository customers,
+        ISupplierRepository suppliers,
+        IEmployeeRepository employees,
         ILogger<VoucherExtractJobRunner> logger)
     {
         _agent = agent;
         _vouchers = vouchers;
         _customers = customers;
+        _suppliers = suppliers;
+        _employees = employees;
         _logger = logger;
     }
 
@@ -92,49 +100,114 @@ public sealed class VoucherExtractJobRunner
             return;
         }
 
-        // Enrich AR + 3-way match — both require tenant context.
+        // Enrich context — tuỳ voucher_type gọi AR (customers/sim_ar_ledger)
+        // hoặc AP (suppliers/sim_ap_ledger) hoặc expense (employees).
         //
-        // For receipts (phiếu thu), the payer MST lives in `payer_mst` or
-        // `buyer_mst` (LLM inconsistency), and the amount is `amount` /
-        // `total_amount`. Fall back through both keys so cash-receipt
-        // flow reuses the same customer + AR lookup as sales invoices.
-        var isReceipt = voucherType.Equals("receipt", StringComparison.OrdinalIgnoreCase);
-        var partnerMst = isReceipt
-            ? ReadStringAny(fields, "payer_mst", "buyer_mst", "customer_mst")
-            : ReadString(fields, "buyer_mst");
-        var voucherAmount = isReceipt
-            ? (ReadDecimalAny(fields, "amount", "total_amount", "so_tien") ?? 0m)
-            : (ReadDecimal(fields, "total_amount") ?? 0m);
+        // voucher_type covered:
+        //   receipt          → AR context + receipt_matching (FIFO oldest)
+        //   invoice_vat_out  → AR context + 3-way SO match
+        //   invoice_vat*     → AR (legacy: pre-universal-extractor tenants)
+        //   invoice_vat_in   → AP context (seller = NCC)
+        //   payment          → AP context + payment_matching (FIFO oldest)
+        //   bank_transfer    → AP context + payment_matching (beneficiary = NCC)
+        //   expense_claim    → expense_claim_matching (employee lookup)
         var documentNumber = ReadString(fields, "document_number");
+        var vt = voucherType.ToLowerInvariant();
 
         if (tenantId is Guid t)
         {
-            object? arContext = null;
-            if (!string.IsNullOrWhiteSpace(partnerMst))
+            switch (vt)
             {
-                arContext = await BuildArContextAsync(t, partnerMst, voucherAmount, ct);
-                if (arContext is not null)
+                case "receipt":
                 {
-                    fields["ar_context"] = arContext;
+                    var payerMst = ReadStringAny(fields, "payer_mst", "buyer_mst", "customer_mst");
+                    var receiptAmount = ReadDecimalAny(fields, "amount", "total_amount", "so_tien") ?? 0m;
+                    object? arContext = null;
+                    if (!string.IsNullOrWhiteSpace(payerMst))
+                    {
+                        // Receipt không tăng AR — pass 0m làm projected delta.
+                        arContext = await BuildArContextAsync(t, payerMst, 0m, ct);
+                        if (arContext is not null) fields["ar_context"] = arContext;
+                    }
+                    if (arContext is not null && receiptAmount > 0m)
+                    {
+                        var matching = BuildReceiptMatching(arContext, receiptAmount);
+                        if (matching is not null) fields["receipt_matching"] = matching;
+                    }
+                    break;
                 }
-            }
 
-            if (isReceipt && arContext is not null && voucherAmount > 0m)
-            {
-                var matching = BuildReceiptMatching(arContext, voucherAmount);
-                if (matching is not null)
+                case "invoice_vat_out":
+                case "invoice_vat":  // legacy tenants pre-universal-extractor
                 {
-                    fields["receipt_matching"] = matching;
+                    var buyerMst = ReadString(fields, "buyer_mst");
+                    var invoiceTotal = ReadDecimal(fields, "total_amount") ?? 0m;
+                    if (!string.IsNullOrWhiteSpace(buyerMst))
+                    {
+                        var arContext = await BuildArContextAsync(t, buyerMst, invoiceTotal, ct);
+                        if (arContext is not null) fields["ar_context"] = arContext;
+                    }
+                    if (!string.IsNullOrWhiteSpace(documentNumber))
+                    {
+                        var matchContext = await BuildMatchContextAsync(t, documentNumber, ct);
+                        if (matchContext is not null) fields["match_context"] = matchContext;
+                    }
+                    break;
                 }
-            }
 
-            if (!isReceipt && !string.IsNullOrWhiteSpace(documentNumber))
-            {
-                var matchContext = await BuildMatchContextAsync(t, documentNumber, ct);
-                if (matchContext is not null)
+                case "invoice_vat_in":
                 {
-                    fields["match_context"] = matchContext;
+                    var sellerMst = ReadStringAny(fields, "seller_mst", "supplier_mst");
+                    var invoiceTotal = ReadDecimalAny(fields, "total_amount", "amount") ?? 0m;
+                    var paymentMethod = ReadString(fields, "payment_method");
+                    if (!string.IsNullOrWhiteSpace(sellerMst))
+                    {
+                        var apContext = await BuildApContextAsync(t, sellerMst, invoiceTotal, paymentMethod, ct);
+                        if (apContext is not null) fields["ap_context"] = apContext;
+                    }
+                    // PO 3-way match (po_match_context) — Sprint 4.
+                    break;
                 }
+
+                case "payment":
+                case "bank_transfer":
+                {
+                    // Payment: TM/CK phiếu chi → payee_mst. Bank_transfer: UNC → beneficiary_mst.
+                    var payeeMst = vt == "bank_transfer"
+                        ? ReadStringAny(fields, "beneficiary_mst", "payee_mst", "supplier_mst", "seller_mst")
+                        : ReadStringAny(fields, "payee_mst", "supplier_mst", "seller_mst");
+                    var paymentAmount = ReadDecimalAny(fields, "amount", "total_amount", "so_tien") ?? 0m;
+                    var paymentMethod = ReadString(fields, "payment_method");
+
+                    object? apContext = null;
+                    if (!string.IsNullOrWhiteSpace(payeeMst))
+                    {
+                        // Payment không tăng AP — pass 0m làm projected delta.
+                        apContext = await BuildApContextAsync(t, payeeMst, 0m, paymentMethod, ct);
+                        if (apContext is not null) fields["ap_context"] = apContext;
+                    }
+                    if (apContext is not null && paymentAmount > 0m)
+                    {
+                        var matching = BuildPaymentMatching(apContext, paymentAmount);
+                        if (matching is not null) fields["payment_matching"] = matching;
+                    }
+                    break;
+                }
+
+                case "expense_claim":
+                {
+                    var employeeCode = ReadStringAny(fields, "employee_code", "employee_id", "ma_nv");
+                    var totalClaim = ReadDecimalAny(fields, "total_claim", "total_amount", "amount", "so_tien") ?? 0m;
+                    var advanceTaken = ReadDecimalAny(fields, "advance_taken", "tam_ung") ?? 0m;
+                    if (!string.IsNullOrWhiteSpace(employeeCode))
+                    {
+                        var claim = await BuildExpenseClaimMatchingAsync(t, employeeCode, totalClaim, advanceTaken, ct);
+                        if (claim is not null) fields["expense_claim_matching"] = claim;
+                    }
+                    break;
+                }
+
+                // Other types (bank_statement, contract, unknown) — no enrichment.
             }
         }
 
@@ -745,6 +818,228 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "3-way match failed for doc {Doc}", documentNumber);
+            return null;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // AP enrichment (mirror BuildArContextAsync).
+    //
+    // Đầu vào: seller_mst (invoice_vat_in) / beneficiary_mst (bank_transfer) /
+    // payee_mst (payment). Trả về NCC + current_ap + aging + 5 risk flags.
+    //
+    // paymentMethod dùng để trigger TT78 flag khi HĐ đầu vào > 30M mà thanh
+    // toán TM (không có chứng từ NH → không được khấu trừ VAT).
+    // ------------------------------------------------------------------
+    private async Task<object?> BuildApContextAsync(
+        Guid tenantId, string supplierMst, decimal invoiceTotal, string? paymentMethod, CancellationToken ct)
+    {
+        try
+        {
+            var supplier = await _suppliers.FindByMstAsync(tenantId, supplierMst, ct);
+            if (supplier is null)
+            {
+                return new { status = "supplier_not_found", supplier_mst = supplierMst };
+            }
+            var report = await _suppliers.GetPayablesAsync(tenantId, supplier.Id, ct);
+            if (report is null) return new { status = "ap_lookup_failed", supplier };
+
+            var projectedBalance = report.CurrentBalance331 + invoiceTotal;
+            var flags = new List<string>();
+
+            // TT78 điều 6: HĐ đầu vào > 30M thanh toán TM → không khấu trừ VAT.
+            var isCash = paymentMethod is not null
+                && (paymentMethod.Equals("TM", StringComparison.OrdinalIgnoreCase)
+                    || paymentMethod.Contains("tiền mặt", StringComparison.OrdinalIgnoreCase)
+                    || paymentMethod.Contains("cash", StringComparison.OrdinalIgnoreCase));
+            if (invoiceTotal > 30_000_000m && isCash)
+            {
+                flags.Add("expense_over_30m_cash_payment");
+            }
+
+            if (invoiceTotal > 500_000_000m) flags.Add("expense_over_500m_requires_l2_approval");
+            if (report.Aging.Over90 > 0) flags.Add("has_overdue_90d");
+            if (report.OverdueAmount > 0) flags.Add("has_overdue_payable");
+
+            // First transaction: current_ap = 0 và không có ledger row nào.
+            if (supplier.CurrentAp == 0m && report.OpenInvoices.Count == 0)
+            {
+                flags.Add("first_transaction_with_supplier");
+            }
+
+            return new
+            {
+                status = "found",
+                supplier,
+                current_balance_331 = report.CurrentBalance331,
+                projected_balance_331 = projectedBalance,
+                aging = report.Aging,
+                overdue_amount = report.OverdueAmount,
+                last_payment_date = report.LastPaymentDate,
+                payment_term_default = report.PaymentTermDefault,
+                open_invoices = report.OpenInvoices,
+                risk_flags = flags,
+                requires_l2_approval = flags.Contains("expense_over_500m_requires_l2_approval")
+                    || flags.Contains("expense_over_30m_cash_payment")
+                    || flags.Contains("has_overdue_90d"),
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "AP enrichment failed for MST {Mst}", supplierMst);
+            return null;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Deterministic payment matching (FIFO oldest-first).
+    //
+    // Mirror BuildReceiptMatching nhưng KHÔNG auto-detect chiết khấu — bên AP
+    // chiết khấu thanh toán được hưởng thường negotiate với NCC, không auto
+    // suy diễn từ shortfall. Nếu LLM extract explicit `discount` thì caller
+    // sẽ handle riêng (Sprint 2 apply-expense endpoint).
+    // ------------------------------------------------------------------
+    private static object? BuildPaymentMatching(object apContext, decimal paymentAmount)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(apContext);
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+
+        if (!doc.RootElement.TryGetProperty("open_invoices", out var openEl)
+            || openEl.ValueKind != System.Text.Json.JsonValueKind.Array
+            || openEl.GetArrayLength() == 0)
+        {
+            return new
+            {
+                status = "no_open_payables",
+                payment_amount = paymentAmount,
+                message = "NCC không có HĐ chưa trả — chi ứng trước / prepayment (treo TK 331 dư Nợ).",
+            };
+        }
+
+        // AP open payables: credit > 0, debit = 0. Sort by due date oldest.
+        var payables = new List<(string DocumentNumber, DateOnly DocumentDate, DateOnly? DueDate, decimal Remaining)>();
+        foreach (var item in openEl.EnumerateArray())
+        {
+            var docNum = item.TryGetProperty("DocumentNumber", out var dn) ? dn.GetString() ?? "?" : "?";
+            var docDate = item.TryGetProperty("DocumentDate", out var dd) && dd.ValueKind == System.Text.Json.JsonValueKind.String
+                ? DateOnly.Parse(dd.GetString()!) : DateOnly.MinValue;
+            DateOnly? dueDate = null;
+            if (item.TryGetProperty("DueDate", out var due) && due.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                dueDate = DateOnly.Parse(due.GetString()!);
+            }
+            var credit = item.TryGetProperty("Credit", out var cr) ? cr.GetDecimal() : 0m;
+            if (credit > 0m)
+            {
+                payables.Add((docNum, docDate, dueDate, credit));
+            }
+        }
+        payables.Sort((a, b) =>
+        {
+            var byDue = (a.DueDate ?? DateOnly.MaxValue).CompareTo(b.DueDate ?? DateOnly.MaxValue);
+            return byDue != 0 ? byDue : a.DocumentDate.CompareTo(b.DocumentDate);
+        });
+
+        var applications = new List<object>();
+        var remaining = paymentAmount;
+        decimal totalApplied = 0m;
+        foreach (var (docNum, docDate, dueDate, invRemaining) in payables)
+        {
+            if (remaining <= 0m) break;
+            var applied = Math.Min(remaining, invRemaining);
+            var invAfter = invRemaining - applied;
+            remaining -= applied;
+            totalApplied += applied;
+            applications.Add(new
+            {
+                document_number = docNum,
+                document_date = docDate,
+                due_date = dueDate,
+                invoice_remaining_before = invRemaining,
+                applied,
+                invoice_remaining_after = invAfter,
+            });
+        }
+
+        string status;
+        string message;
+        if (remaining > 0m)
+        {
+            status = "overpaid";
+            message = $"Chi dư {remaining:N0} VNĐ — treo TK 331 dư Nợ (ứng trước NCC).";
+        }
+        else if (applications.Count == 1 && ((dynamic)applications[0]).invoice_remaining_after == 0m)
+        {
+            status = "matched_full";
+            message = "Trả đủ 1 hoá đơn NCC.";
+        }
+        else if (applications.Count > 1)
+        {
+            status = "matched_multiple";
+            message = $"Áp trả {applications.Count} hoá đơn (thứ tự due-date).";
+        }
+        else
+        {
+            status = "matched_partial";
+            message = "Trả 1 phần hoá đơn.";
+        }
+
+        return new
+        {
+            status,
+            payment_amount = paymentAmount,
+            total_applied = totalApplied,
+            remaining_overpayment = Math.Max(remaining, 0m),
+            applications,
+            message,
+        };
+    }
+
+    // ------------------------------------------------------------------
+    // Expense claim matching (hoàn ứng nhân viên).
+    //
+    // Tra sim_employees theo code → tính reimbursement + budget check + hint
+    // journal breakdown. Frontend Sprint 3 sẽ render ExpenseClaimPanel.
+    // ------------------------------------------------------------------
+    private async Task<object?> BuildExpenseClaimMatchingAsync(
+        Guid tenantId, string employeeCode, decimal totalClaim, decimal advanceTaken, CancellationToken ct)
+    {
+        try
+        {
+            var emp = await _employees.FindByCodeAsync(tenantId, employeeCode, ct);
+            if (emp is null)
+            {
+                return new { status = "employee_not_found", employee_code = employeeCode };
+            }
+
+            // Advance covered = min(total claim, outstanding advance).
+            var advanceCovered = Math.Min(totalClaim, emp.OutstandingAdvance);
+            var remainingToReimburse = Math.Max(0m, totalClaim - advanceCovered);
+
+            // Budget guard: yearly ceiling = monthly × 12.
+            var annualCeiling = emp.MonthlyExpenseBudget * 12m;
+            var budgetExceeded = annualCeiling > 0m && (emp.YtdExpense + totalClaim) > annualCeiling;
+
+            // Journal hint: Nợ 6417/6428 / Có 141 (advance_covered) + Có 111/112 (remainder).
+            var journalHint = $"Nợ 6417 {totalClaim:N0} / Có 141 {advanceCovered:N0} + Có 111 {remainingToReimburse:N0}";
+
+            return new
+            {
+                status = "found",
+                employee = emp,
+                total_claim = totalClaim,
+                advance_taken = advanceTaken,
+                advance_covered = advanceCovered,
+                remaining_to_reimburse = remainingToReimburse,
+                annual_ceiling = annualCeiling,
+                budget_exceeded = budgetExceeded,
+                suggested_journal_hint = journalHint,
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Expense claim enrichment failed for employee {Code}", employeeCode);
             return null;
         }
     }
