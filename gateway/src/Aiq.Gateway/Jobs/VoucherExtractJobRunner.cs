@@ -199,9 +199,22 @@ public sealed class VoucherExtractJobRunner
                     var employeeCode = ReadStringAny(fields, "employee_code", "employee_id", "ma_nv");
                     var totalClaim = ReadDecimalAny(fields, "total_claim", "total_amount", "amount", "so_tien") ?? 0m;
                     var advanceTaken = ReadDecimalAny(fields, "advance_taken", "tam_ung") ?? 0m;
+
+                    // Items có thể ở key `items` (universal-extractor schema) hoặc
+                    // `line_items` (legacy invoice_vat schema).
+                    List<Dictionary<string, object?>>? items = null;
+                    foreach (var itemsKey in new[] { "items", "line_items" })
+                    {
+                        if (fields.TryGetValue(itemsKey, out var itemsObj) && itemsObj is List<object?> itemsList)
+                        {
+                            items = itemsList.OfType<Dictionary<string, object?>>().ToList();
+                            if (items.Count > 0) break;
+                        }
+                    }
+
                     if (!string.IsNullOrWhiteSpace(employeeCode))
                     {
-                        var claim = await BuildExpenseClaimMatchingAsync(t, employeeCode, totalClaim, advanceTaken, ct);
+                        var claim = await BuildExpenseClaimMatchingAsync(t, employeeCode, totalClaim, advanceTaken, items, ct);
                         if (claim is not null) fields["expense_claim_matching"] = claim;
                     }
                     break;
@@ -999,11 +1012,21 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
     // ------------------------------------------------------------------
     // Expense claim matching (hoàn ứng nhân viên).
     //
-    // Tra sim_employees theo code → tính reimbursement + budget check + hint
-    // journal breakdown. Frontend Sprint 3 sẽ render ExpenseClaimPanel.
+    // Tra sim_employees theo code → tính reimbursement + budget check +
+    // per-category journal breakdown. Category mapping (VN accounting):
+    //   airfare/hotel/meal/transport/lưu trú/vé/đi lại → Nợ 6417 (BH)
+    //     hoặc 6428 (QLDN) tuỳ dept của nhân viên
+    //   gift/entertainment/quà/tiếp khách → Nợ 6428 + TT96 warning
+    //     (giới hạn 15% doanh thu, cần theo dõi riêng)
+    // Có 141 = advance_covered, Có 111 = remaining_to_reimburse.
     // ------------------------------------------------------------------
     private async Task<object?> BuildExpenseClaimMatchingAsync(
-        Guid tenantId, string employeeCode, decimal totalClaim, decimal advanceTaken, CancellationToken ct)
+        Guid tenantId,
+        string employeeCode,
+        decimal totalClaim,
+        decimal advanceTaken,
+        List<Dictionary<string, object?>>? items,
+        CancellationToken ct)
     {
         try
         {
@@ -1013,16 +1036,80 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
                 return new { status = "employee_not_found", employee_code = employeeCode };
             }
 
-            // Advance covered = min(total claim, outstanding advance).
             var advanceCovered = Math.Min(totalClaim, emp.OutstandingAdvance);
             var remainingToReimburse = Math.Max(0m, totalClaim - advanceCovered);
 
-            // Budget guard: yearly ceiling = monthly × 12.
             var annualCeiling = emp.MonthlyExpenseBudget * 12m;
             var budgetExceeded = annualCeiling > 0m && (emp.YtdExpense + totalClaim) > annualCeiling;
 
-            // Journal hint: Nợ 6417/6428 / Có 141 (advance_covered) + Có 111/112 (remainder).
-            var journalHint = $"Nợ 6417 {totalClaim:N0} / Có 141 {advanceCovered:N0} + Có 111 {remainingToReimburse:N0}";
+            // Default debit account by department. Sales dept → 6417, others → 6428.
+            var isSalesDept = !string.IsNullOrEmpty(emp.Department)
+                && emp.Department.Contains("Kinh doanh", StringComparison.OrdinalIgnoreCase);
+            var defaultDebitAcct = isSalesDept ? "6417" : "6428";
+
+            // Parse items[] → per-category breakdown.
+            var breakdown = new List<object>();
+            var normalizedItems = new List<object>();
+            var hasTT96Category = false;
+            if (items is { Count: > 0 })
+            {
+                var groups = new Dictionary<string, (string acct, decimal amount, bool tt96)>();
+                foreach (var it in items)
+                {
+                    var rawCategory = ReadStringAny(it, "category", "loai", "loai_chi_phi") ?? "khác";
+                    var description = ReadStringAny(it, "description", "noi_dung", "dien_giai") ?? "";
+                    var amount = ReadDecimalAny(it, "amount", "so_tien", "total_amount") ?? 0m;
+                    var receipt = ReadStringAny(it, "receipt_attached", "chung_tu") ?? "";
+
+                    var (acct, tt96) = MapCategoryToAccount(rawCategory, defaultDebitAcct);
+                    if (tt96) hasTT96Category = true;
+
+                    normalizedItems.Add(new
+                    {
+                        category = rawCategory,
+                        description,
+                        amount,
+                        receipt_attached = receipt,
+                        journal_account = acct,
+                        tt96_flagged = tt96,
+                    });
+
+                    var key = $"{acct}:{rawCategory}";
+                    if (groups.TryGetValue(key, out var existing))
+                    {
+                        groups[key] = (acct, existing.amount + amount, tt96);
+                    }
+                    else
+                    {
+                        groups[key] = (acct, amount, tt96);
+                    }
+                }
+                foreach (var (key, val) in groups)
+                {
+                    breakdown.Add(new
+                    {
+                        debit_account = val.acct,
+                        category = key.Split(':', 2)[1],
+                        amount = val.amount,
+                        tt96_flagged = val.tt96,
+                    });
+                }
+            }
+            else
+            {
+                // Fallback nếu không có items — 1 line duy nhất bằng totalClaim.
+                breakdown.Add(new
+                {
+                    debit_account = defaultDebitAcct,
+                    category = "khác",
+                    amount = totalClaim,
+                    tt96_flagged = false,
+                });
+            }
+
+            var journalHint = advanceCovered > 0m
+                ? $"Nợ {defaultDebitAcct} {totalClaim:N0} / Có 141 {advanceCovered:N0} + Có 111 {remainingToReimburse:N0}"
+                : $"Nợ {defaultDebitAcct} {totalClaim:N0} / Có 111 {totalClaim:N0}";
 
             return new
             {
@@ -1034,6 +1121,10 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
                 remaining_to_reimburse = remainingToReimburse,
                 annual_ceiling = annualCeiling,
                 budget_exceeded = budgetExceeded,
+                default_debit_account = defaultDebitAcct,
+                journal_breakdown = breakdown,
+                items = normalizedItems,
+                has_tt96_category = hasTT96Category,
                 suggested_journal_hint = journalHint,
             };
         }
@@ -1042,6 +1133,29 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
             _logger.LogWarning(ex, "Expense claim enrichment failed for employee {Code}", employeeCode);
             return null;
         }
+    }
+
+    // Category → account map. Returns (account, tt96_flag).
+    // Gift/entertainment fixed to 6428 with TT96 warning (khấu trừ tối đa 15%
+    // doanh thu). Other categories fall through to caller's default.
+    private static (string Account, bool Tt96Flag) MapCategoryToAccount(string category, string defaultAcct)
+    {
+        var c = category.ToLowerInvariant();
+        // TT96 nhóm — gift/entertainment/tiếp khách
+        if (c.Contains("gift") || c.Contains("quà") || c.Contains("qua")
+            || c.Contains("entertainment") || c.Contains("tiếp khách") || c.Contains("tiep khach"))
+        {
+            return ("6428", true);
+        }
+        // Travel expenses — use dept default (6417 sales, 6428 others)
+        if (c.Contains("airfare") || c.Contains("vé máy bay") || c.Contains("ve may bay")
+            || c.Contains("hotel") || c.Contains("khách sạn") || c.Contains("khach san") || c.Contains("lưu trú") || c.Contains("luu tru")
+            || c.Contains("meal") || c.Contains("ăn uống") || c.Contains("an uong") || c.Contains("food")
+            || c.Contains("transport") || c.Contains("đi lại") || c.Contains("di lai") || c.Contains("taxi"))
+        {
+            return (defaultAcct, false);
+        }
+        return (defaultAcct, false);
     }
 }
 

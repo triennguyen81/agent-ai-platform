@@ -224,6 +224,22 @@ interface PaymentMatchingFound {
 
 type PaymentMatching = PaymentMatchingFound;
 
+interface ExpenseClaimItem {
+  category: string;
+  description: string;
+  amount: number;
+  receipt_attached: string;
+  journal_account: string;
+  tt96_flagged: boolean;
+}
+
+interface ExpenseClaimJournalLine {
+  debit_account: string;
+  category: string;
+  amount: number;
+  tt96_flagged: boolean;
+}
+
 interface ExpenseClaimMatchingFound {
   status: "found";
   employee: {
@@ -241,6 +257,10 @@ interface ExpenseClaimMatchingFound {
   remaining_to_reimburse: number;
   annual_ceiling: number;
   budget_exceeded: boolean;
+  default_debit_account: string;
+  journal_breakdown: ExpenseClaimJournalLine[];
+  items: ExpenseClaimItem[];
+  has_tt96_category: boolean;
   suggested_journal_hint: string;
 }
 
@@ -1091,9 +1111,80 @@ function ExpenseClaimPanel({
         </div>
       )}
 
+      {claim.items && claim.items.length > 0 && (
+        <div className="overflow-hidden rounded-[var(--radius)] border bg-[var(--color-bg)]">
+          <div className="border-b bg-[var(--color-muted)]/40 px-3 py-1.5 text-xs font-medium text-[var(--color-muted-fg)]">
+            Chi tiết {claim.items.length} khoản chi
+          </div>
+          <table className="w-full text-sm">
+            <thead className="text-xs text-[var(--color-muted-fg)]">
+              <tr>
+                <th className="px-3 py-1.5 text-left">Loại</th>
+                <th className="px-3 py-1.5 text-left">Nội dung</th>
+                <th className="px-3 py-1.5 text-center">TK Nợ</th>
+                <th className="px-3 py-1.5 text-right">Số tiền</th>
+                <th className="px-3 py-1.5 text-center">HĐ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {claim.items.map((it, idx) => (
+                <tr key={idx} className="border-t">
+                  <td className="px-3 py-1.5 text-xs">{it.category}</td>
+                  <td className="px-3 py-1.5 text-xs">{it.description}</td>
+                  <td className="px-3 py-1.5 text-center">
+                    <span
+                      className={`inline-block rounded-full border px-1.5 py-0.5 font-mono text-[10px] ${
+                        it.tt96_flagged
+                          ? "border-amber-300 bg-amber-50 text-amber-800"
+                          : "border-gray-200 bg-gray-50 text-gray-700"
+                      }`}
+                    >
+                      {it.journal_account}
+                    </span>
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-mono text-xs">
+                    {fmtMoney(it.amount, currency)}
+                  </td>
+                  <td className="px-3 py-1.5 text-center text-[10px] text-[var(--color-muted-fg)]">
+                    {it.receipt_attached && it.receipt_attached.length > 0 ? it.receipt_attached : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {claim.has_tt96_category && (
+        <div className="rounded-[var(--radius)] border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <AlertTriangle className="mr-1 inline size-3.5" />
+          <b>Cảnh báo TT96:</b> Có khoản chi quà/tiếp khách hạch toán TK 6428 — chi phí tiếp
+          khách được khấu trừ tối đa 15% tổng chi phí (Thông tư 96/2015). Cần theo dõi riêng.
+        </div>
+      )}
+
       <div className="rounded-[var(--radius)] border bg-[var(--color-bg)] px-3 py-2">
-        <div className="mb-1 text-xs text-[var(--color-muted-fg)]">Bút toán suggest</div>
-        <div className="font-mono text-sm">{claim.suggested_journal_hint}</div>
+        <div className="mb-1 text-xs text-[var(--color-muted-fg)]">Bút toán tổng hợp</div>
+        <div className="space-y-0.5 font-mono text-xs">
+          {claim.journal_breakdown.map((line, idx) => (
+            <div key={idx}>
+              Nợ <span className={line.tt96_flagged ? "text-amber-700 font-bold" : "font-bold"}>
+                {line.debit_account}
+              </span>{" "}
+              ({line.category}) &nbsp;{fmtMoney(line.amount, currency)}
+            </div>
+          ))}
+          {claim.advance_covered > 0 && (
+            <div className="text-blue-700">
+              Có <b>141</b> (tạm ứng) &nbsp;{fmtMoney(claim.advance_covered, currency)}
+            </div>
+          )}
+          {claim.remaining_to_reimburse > 0 && (
+            <div className="text-emerald-700">
+              Có <b>111</b> (tiền mặt hoàn NV) &nbsp;{fmtMoney(claim.remaining_to_reimburse, currency)}
+            </div>
+          )}
+        </div>
       </div>
 
       {voucherStatus !== "verified" && (
