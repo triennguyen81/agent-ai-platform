@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   Activity,
+  Banknote,
   BookOpen,
   Bot,
   Building2,
@@ -70,6 +71,7 @@ export function AppNav({ roles }: AppNavProps) {
           { href: "/vouchers", label: "Chứng từ", icon: Receipt },
           { href: "/customers", label: "Khách hàng", icon: Building2 },
           { href: "/suppliers", label: "Nhà cung cấp", icon: Truck },
+          { href: "/expenses", label: "Chi phí", icon: Banknote },
         ],
       }
     : null;

@@ -288,15 +288,38 @@ public sealed class SupplierRepository : ISupplierRepository
             new CommandDefinition(poSql, new { tenantId, documentNumber }, cancellationToken: ct));
         if (po is null) return null;
 
-        // GRN — hiện tại sim_purchase_orders.goods_received_note giữ text
-        // (chưa có sim_goods_received_notes table riêng — Sprint 4). Render lại
-        // như 1 row từ chính cột đó.
+        // GRN — Sprint 4: join real sim_goods_received_notes table (fall back
+        // to sim_purchase_orders.goods_received_note text nếu GRN table trống).
         GoodsReceivedNoteRow? grn = null;
-        if (!string.IsNullOrWhiteSpace(po.DeliveryNoteRef))
+        const string grnSql = """
+            SELECT grn_number     AS GrnNumber,
+                   grn_date       AS GrnDate,
+                   warehouse_to   AS WarehouseTo,
+                   delivered_by   AS DeliveredBy,
+                   received_by    AS ReceivedBy,
+                   status         AS Status
+            FROM sim_goods_received_notes
+            WHERE tenant_id = @tenantId
+              AND po_number = @poNumber
+            ORDER BY grn_date DESC
+            LIMIT 1
+            """;
+        try
+        {
+            grn = await conn.QueryFirstOrDefaultAsync<GoodsReceivedNoteRow>(
+                new CommandDefinition(grnSql, new { tenantId, poNumber = po.PoNumber }, cancellationToken: ct));
+        }
+        catch
+        {
+            // Migration 19b chưa apply — bảng chưa tồn tại. Silent fallback.
+        }
+
+        // Fallback: nếu GRN table không có row, dùng text từ sim_purchase_orders.
+        if (grn is null && !string.IsNullOrWhiteSpace(po.DeliveryNoteRef))
         {
             grn = new GoodsReceivedNoteRow(
                 GrnNumber: po.DeliveryNoteRef,
-                GrnDate: po.PoDate,             // best-effort trong Sprint 1; sẽ replace bằng bảng riêng ở Sprint 4
+                GrnDate: po.PoDate,
                 WarehouseTo: null,
                 DeliveredBy: null,
                 ReceivedBy: null,

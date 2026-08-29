@@ -6,6 +6,7 @@ using Aiq.Gateway.Employees;
 using Aiq.Gateway.Suppliers;
 using Aiq.Gateway.Vouchers;
 using Hangfire;
+using Microsoft.Extensions.Options;
 
 namespace Aiq.Gateway.Jobs;
 
@@ -22,6 +23,7 @@ public sealed class VoucherExtractJobRunner
     private readonly ICustomerRepository _customers;
     private readonly ISupplierRepository _suppliers;
     private readonly IEmployeeRepository _employees;
+    private readonly ExpenseRiskOptions _riskOptions;
     private readonly ILogger<VoucherExtractJobRunner> _logger;
 
     public VoucherExtractJobRunner(
@@ -30,6 +32,7 @@ public sealed class VoucherExtractJobRunner
         ICustomerRepository customers,
         ISupplierRepository suppliers,
         IEmployeeRepository employees,
+        IOptions<ExpenseRiskOptions> riskOptions,
         ILogger<VoucherExtractJobRunner> logger)
     {
         _agent = agent;
@@ -37,6 +40,7 @@ public sealed class VoucherExtractJobRunner
         _customers = customers;
         _suppliers = suppliers;
         _employees = employees;
+        _riskOptions = riskOptions.Value;
         _logger = logger;
     }
 
@@ -165,7 +169,46 @@ public sealed class VoucherExtractJobRunner
                         var apContext = await BuildApContextAsync(t, sellerMst, invoiceTotal, paymentMethod, ct);
                         if (apContext is not null) fields["ap_context"] = apContext;
                     }
-                    // PO 3-way match (po_match_context) — Sprint 4.
+                    // PO 3-way match: invoice → PO → GRN (+ purchase_contract Sprint 5).
+                    object? poMatch = null;
+                    if (!string.IsNullOrWhiteSpace(documentNumber))
+                    {
+                        poMatch = await BuildPoMatchContextAsync(t, documentNumber, ct);
+                        if (poMatch is not null) fields["po_match_context"] = poMatch;
+                    }
+                    // no_matching_po flag: invoice > threshold nhưng không match PO nào.
+                    // Trưởng phòng cần review manually — có thể là HĐ ngoài PO
+                    // (mua vặt) hoặc extract sai document_number.
+                    if (invoiceTotal > _riskOptions.InvoiceRequiresPoAbove)
+                    {
+                        var poMatched = poMatch is not null
+                            && System.Text.Json.JsonSerializer.Serialize(poMatch).Contains("\"status\":\"found\"");
+                        if (!poMatched && fields.TryGetValue("ap_context", out var apCtxObj) && apCtxObj is not null)
+                        {
+                            // Mutate risk_flags trong ap_context. Re-serialize để giữ nested shape.
+                            var ctxJson = System.Text.Json.JsonSerializer.Serialize(apCtxObj);
+                            var ctxDict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(ctxJson);
+                            if (ctxDict is not null && ctxDict.TryGetValue("risk_flags", out var flagsObj)
+                                && flagsObj is System.Text.Json.JsonElement flagsEl
+                                && flagsEl.ValueKind == System.Text.Json.JsonValueKind.Array)
+                            {
+                                var flagsList = new List<string>();
+                                foreach (var f in flagsEl.EnumerateArray())
+                                {
+                                    if (f.ValueKind == System.Text.Json.JsonValueKind.String)
+                                    {
+                                        flagsList.Add(f.GetString()!);
+                                    }
+                                }
+                                if (!flagsList.Contains("no_matching_po"))
+                                {
+                                    flagsList.Add("no_matching_po");
+                                    ctxDict["risk_flags"] = flagsList;
+                                    fields["ap_context"] = ctxDict;
+                                }
+                            }
+                        }
+                    }
                     break;
                 }
 
@@ -835,6 +878,31 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
         }
     }
 
+    // AP 3-way match: invoice_vat_in → PO → GRN. Purchase contract sẽ thêm Sprint 5.
+    private async Task<object?> BuildPoMatchContextAsync(Guid tenantId, string documentNumber, CancellationToken ct)
+    {
+        try
+        {
+            var match = await _suppliers.MatchInvoiceToPurchaseOrderAsync(tenantId, documentNumber, ct);
+            if (match is null)
+            {
+                return new { status = "no_match", document_number = documentNumber };
+            }
+            return new
+            {
+                status = "found",
+                quality = match.MatchQuality,
+                purchase_order = match.PurchaseOrder,
+                goods_received_note = match.GoodsReceivedNote,
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "AP 3-way match failed for doc {Doc}", documentNumber);
+            return null;
+        }
+    }
+
     // ------------------------------------------------------------------
     // AP enrichment (mirror BuildArContextAsync).
     //
@@ -860,17 +928,17 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
             var projectedBalance = report.CurrentBalance331 + invoiceTotal;
             var flags = new List<string>();
 
-            // TT78 điều 6: HĐ đầu vào > 30M thanh toán TM → không khấu trừ VAT.
+            // TT78 điều 6: HĐ đầu vào > threshold + thanh toán TM → không khấu trừ VAT.
             var isCash = paymentMethod is not null
                 && (paymentMethod.Equals("TM", StringComparison.OrdinalIgnoreCase)
                     || paymentMethod.Contains("tiền mặt", StringComparison.OrdinalIgnoreCase)
                     || paymentMethod.Contains("cash", StringComparison.OrdinalIgnoreCase));
-            if (invoiceTotal > 30_000_000m && isCash)
+            if (invoiceTotal > _riskOptions.CashPaymentVatDeductibleThreshold && isCash)
             {
                 flags.Add("expense_over_30m_cash_payment");
             }
 
-            if (invoiceTotal > 500_000_000m) flags.Add("expense_over_500m_requires_l2_approval");
+            if (invoiceTotal > _riskOptions.L2ApprovalAbove) flags.Add("expense_over_500m_requires_l2_approval");
             if (report.Aging.Over90 > 0) flags.Add("has_overdue_90d");
             if (report.OverdueAmount > 0) flags.Add("has_overdue_payable");
 

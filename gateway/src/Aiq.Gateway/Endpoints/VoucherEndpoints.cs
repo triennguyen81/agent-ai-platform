@@ -73,6 +73,14 @@ public static class VoucherEndpoints
         //   expense_claim → update sim_employees.outstanding_advance + ytd_expense
         group.MapPost("/{id:guid}/apply-expense", ApplyExpenseAsync);
 
+        // Sprint 4 gap UC1: bấm "Chấp nhận HĐ" trên invoice_vat_out detail page
+        // → insert debit row vào sim_ar_ledger (Nợ 131 tăng) + update current_ar.
+        group.MapPost("/{id:guid}/apply-invoice", ApplyInvoiceAsync);
+
+        // Sprint 4 gap UC2: bấm "Huỷ áp thu" khi cần rollback receipt đã áp.
+        // DELETE rows tagged voucher:{id} + recompute current_ar.
+        group.MapPost("/{id:guid}/unapply-receipt", UnapplyReceiptAsync);
+
         return app;
     }
 
@@ -187,6 +195,155 @@ public static class VoucherEndpoints
             total_applied = result.TotalApplied,
             discount_amount = result.DiscountAmount,
             ledger_rows_inserted = result.LedgerRowsInserted,
+        });
+    }
+
+    private static async Task<IResult> ApplyInvoiceAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Customers.ICustomerRepository customers,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+        {
+            return Results.BadRequest(new { error = "tenant scope required" });
+        }
+
+        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        var vt = voucher.Voucher.VoucherType?.ToLowerInvariant() ?? "";
+        if (vt is not ("invoice_vat_out" or "invoice_vat"))
+        {
+            return Results.BadRequest(new
+            {
+                error = "apply-invoice chỉ áp dụng cho invoice_vat_out (hoá đơn bán)",
+            });
+        }
+        if (voucher.Voucher.Status == "verified")
+        {
+            return Results.Ok(new { voucherId = id, status = "already_applied", message = "Đã áp trước đó." });
+        }
+
+        var extractedJson = voucher.Voucher.ExtractedFieldsJson ?? "{}";
+        using var doc = System.Text.Json.JsonDocument.Parse(extractedJson);
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("ar_context", out var arEl)
+            || !arEl.TryGetProperty("customer", out var custEl)
+            || !custEl.TryGetProperty("Id", out var custIdEl))
+        {
+            return Results.BadRequest(new { error = "voucher chưa có ar_context.customer" });
+        }
+        var customerId = custIdEl.GetGuid();
+        var invoiceTotal = voucher.Voucher.TotalAmount ?? 0m;
+        if (invoiceTotal <= 0m)
+        {
+            return Results.BadRequest(new { error = "invoice_vat_out không có total_amount" });
+        }
+        var docNumber = voucher.Voucher.DocumentNumber ?? $"HD-{id:N}";
+        var docDate = voucher.Voucher.DocumentDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+
+        // Due date = doc_date + customer.credit_terms_days.
+        DateOnly? dueDate = null;
+        if (custEl.TryGetProperty("CreditTermsDays", out var termsEl)
+            && termsEl.ValueKind == System.Text.Json.JsonValueKind.Number)
+        {
+            var days = termsEl.GetInt32();
+            if (days > 0) dueDate = docDate.AddDays(days);
+        }
+
+        var result = await customers.BookInvoiceAsync(
+            tenantId, customerId, id, docNumber, docDate, dueDate, invoiceTotal, ct);
+
+        await repo.UpdateAsync(
+            tenantId, userId, id,
+            new UpdateVoucherRequest(
+                Status: "verified",
+                DocumentNumber: null, DocumentSeries: null, DocumentDate: null,
+                SellerName: null, SellerMst: null, SellerAddress: null,
+                BuyerName: null, BuyerMst: null, BuyerAddress: null,
+                PaymentMethod: null, Subtotal: null, VatRate: null, VatAmount: null,
+                DiscountAmount: null, TotalAmount: null, Currency: null,
+                AmountInWords: null,
+                ErrorMessage: null,
+                Tags: null),
+            ct);
+
+        return Results.Ok(new
+        {
+            voucherId = id,
+            status = result.LedgerRowsInserted == 0 ? "already_applied" : "applied",
+            voucher_type = vt,
+            previous_balance = result.PreviousBalance,
+            new_balance = result.NewBalance,
+            invoice_total = result.InvoiceTotal,
+            ledger_rows_inserted = result.LedgerRowsInserted,
+        });
+    }
+
+    private static async Task<IResult> UnapplyReceiptAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Customers.ICustomerRepository customers,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+        {
+            return Results.BadRequest(new { error = "tenant scope required" });
+        }
+
+        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        if (voucher.Voucher.VoucherType != "receipt")
+        {
+            return Results.BadRequest(new { error = "unapply-receipt chỉ áp dụng cho phiếu thu" });
+        }
+        if (voucher.Voucher.Status != "verified")
+        {
+            return Results.BadRequest(new
+            {
+                error = $"chỉ unapply được phiếu thu đã verified (hiện: {voucher.Voucher.Status})",
+            });
+        }
+
+        var extractedJson = voucher.Voucher.ExtractedFieldsJson ?? "{}";
+        using var doc = System.Text.Json.JsonDocument.Parse(extractedJson);
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("ar_context", out var arEl)
+            || !arEl.TryGetProperty("customer", out var custEl)
+            || !custEl.TryGetProperty("Id", out var custIdEl))
+        {
+            return Results.BadRequest(new { error = "voucher chưa có ar_context.customer" });
+        }
+        var customerId = custIdEl.GetGuid();
+
+        var result = await customers.UnapplyReceiptAsync(tenantId, customerId, id, ct);
+
+        // Rollback voucher status về 'extracted' để user có thể apply lại.
+        await repo.UpdateAsync(
+            tenantId, userId, id,
+            new UpdateVoucherRequest(
+                Status: "extracted",
+                DocumentNumber: null, DocumentSeries: null, DocumentDate: null,
+                SellerName: null, SellerMst: null, SellerAddress: null,
+                BuyerName: null, BuyerMst: null, BuyerAddress: null,
+                PaymentMethod: null, Subtotal: null, VatRate: null, VatAmount: null,
+                DiscountAmount: null, TotalAmount: null, Currency: null,
+                AmountInWords: null,
+                ErrorMessage: null,
+                Tags: null),
+            ct);
+
+        return Results.Ok(new
+        {
+            voucherId = id,
+            status = result.LedgerRowsDeleted == 0 ? "nothing_to_unapply" : "unapplied",
+            previous_balance = result.PreviousBalance,
+            new_balance = result.NewBalance,
+            ledger_rows_deleted = result.LedgerRowsDeleted,
         });
     }
 

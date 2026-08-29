@@ -103,6 +103,17 @@ public sealed record ReceiptApplyResult(
     decimal DiscountAmount,
     int LedgerRowsInserted);
 
+public sealed record InvoiceBookResult(
+    decimal PreviousBalance,
+    decimal NewBalance,
+    decimal InvoiceTotal,
+    int LedgerRowsInserted);
+
+public sealed record ReceiptUnapplyResult(
+    decimal PreviousBalance,
+    decimal NewBalance,
+    int LedgerRowsDeleted);
+
 public interface ICustomerRepository
 {
     Task<IReadOnlyList<CustomerRecord>> ListAsync(Guid tenantId, string? category, string? search, CancellationToken ct);
@@ -126,6 +137,28 @@ public interface ICustomerRepository
         IReadOnlyList<ReceiptApplicationInput> applications,
         decimal discountAmount,
         string? discountReason,
+        CancellationToken ct);
+
+    // Book a sales invoice (invoice_vat_out) into sim_ar_ledger — inserts a
+    // single debit row (increases AR: Nợ 131 tăng) + updates
+    // sim_customers.current_ar += invoiceTotal. Idempotent by voucherId.
+    Task<InvoiceBookResult> BookInvoiceAsync(
+        Guid tenantId,
+        Guid customerId,
+        Guid voucherId,
+        string invoiceDocumentNumber,
+        DateOnly invoiceDate,
+        DateOnly? dueDate,
+        decimal invoiceTotal,
+        CancellationToken ct);
+
+    // Rollback a previously-applied receipt: DELETE rows tagged
+    // reference_note LIKE 'voucher:{voucherId}%' from sim_ar_ledger, then
+    // recompute sim_customers.current_ar = sum(debit) - sum(credit).
+    Task<ReceiptUnapplyResult> UnapplyReceiptAsync(
+        Guid tenantId,
+        Guid customerId,
+        Guid voucherId,
         CancellationToken ct);
 }
 
@@ -444,5 +477,137 @@ public sealed class CustomerRepository : ICustomerRepository
             TotalApplied: totalApplied,
             DiscountAmount: discountAmount,
             LedgerRowsInserted: rowsInserted);
+    }
+
+    public async Task<InvoiceBookResult> BookInvoiceAsync(
+        Guid tenantId,
+        Guid customerId,
+        Guid voucherId,
+        string invoiceDocumentNumber,
+        DateOnly invoiceDate,
+        DateOnly? dueDate,
+        decimal invoiceTotal,
+        CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        const string dupSql = "SELECT COUNT(*) FROM sim_ar_ledger WHERE customer_id = @customerId AND reference_note LIKE @tag";
+        var existing = await conn.ExecuteScalarAsync<int>(
+            new CommandDefinition(dupSql,
+                new { customerId, tag = $"voucher:{voucherId:N}%" },
+                transaction: tx,
+                cancellationToken: ct));
+        if (existing > 0)
+        {
+            await tx.RollbackAsync(ct);
+            var customer = await FindByIdAsync(tenantId, customerId, ct)
+                ?? throw new InvalidOperationException("Customer not found");
+            return new InvoiceBookResult(
+                PreviousBalance: customer.CurrentAr,
+                NewBalance: customer.CurrentAr,
+                InvoiceTotal: 0m,
+                LedgerRowsInserted: 0);
+        }
+
+        var prevBalance = await conn.ExecuteScalarAsync<decimal>(
+            new CommandDefinition(
+                "SELECT current_ar FROM sim_customers WHERE tenant_id = @tenantId AND id = @customerId FOR UPDATE",
+                new { tenantId, customerId },
+                transaction: tx,
+                cancellationToken: ct));
+
+        var newBalance = prevBalance + invoiceTotal;
+
+        const string insertSql = """
+            INSERT INTO sim_ar_ledger
+                (tenant_id, customer_id, document_date, document_number, document_type,
+                 debit, credit, balance_after, due_date, reference_note)
+            VALUES
+                (@tenantId, @customerId, @invoiceDate, @invoiceDocumentNumber, 'invoice',
+                 @debit, 0, @balanceAfter, @dueDate, @refNote)
+            """;
+        await conn.ExecuteAsync(new CommandDefinition(
+            insertSql,
+            new
+            {
+                tenantId,
+                customerId,
+                invoiceDate,
+                invoiceDocumentNumber,
+                debit = invoiceTotal,
+                balanceAfter = newBalance,
+                dueDate = (object?)dueDate ?? DBNull.Value,
+                refNote = $"voucher:{voucherId:N}|book_invoice",
+            },
+            transaction: tx,
+            cancellationToken: ct));
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            "UPDATE sim_customers SET current_ar = @newBalance WHERE tenant_id = @tenantId AND id = @customerId",
+            new { newBalance, tenantId, customerId },
+            transaction: tx,
+            cancellationToken: ct));
+
+        await tx.CommitAsync(ct);
+
+        return new InvoiceBookResult(
+            PreviousBalance: prevBalance,
+            NewBalance: newBalance,
+            InvoiceTotal: invoiceTotal,
+            LedgerRowsInserted: 1);
+    }
+
+    public async Task<ReceiptUnapplyResult> UnapplyReceiptAsync(
+        Guid tenantId,
+        Guid customerId,
+        Guid voucherId,
+        CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        var prevBalance = await conn.ExecuteScalarAsync<decimal>(
+            new CommandDefinition(
+                "SELECT current_ar FROM sim_customers WHERE tenant_id = @tenantId AND id = @customerId FOR UPDATE",
+                new { tenantId, customerId },
+                transaction: tx,
+                cancellationToken: ct));
+
+        // Delete all rows tagged với voucherId. Includes cả credit application
+        // rows và optional discount row.
+        const string deleteSql = """
+            DELETE FROM sim_ar_ledger
+             WHERE customer_id = @customerId
+               AND reference_note LIKE @tag
+            """;
+        var deleted = await conn.ExecuteAsync(
+            new CommandDefinition(deleteSql,
+                new { customerId, tag = $"voucher:{voucherId:N}%" },
+                transaction: tx,
+                cancellationToken: ct));
+
+        if (deleted == 0)
+        {
+            await tx.RollbackAsync(ct);
+            return new ReceiptUnapplyResult(prevBalance, prevBalance, 0);
+        }
+
+        // Recompute current_ar = sum(debit) - sum(credit) from remaining rows.
+        const string recomputeSql = """
+            SELECT COALESCE(SUM(debit) - SUM(credit), 0) FROM sim_ar_ledger WHERE customer_id = @customerId
+            """;
+        var newBalance = await conn.ExecuteScalarAsync<decimal>(
+            new CommandDefinition(recomputeSql, new { customerId }, transaction: tx, cancellationToken: ct));
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            "UPDATE sim_customers SET current_ar = @newBalance WHERE tenant_id = @tenantId AND id = @customerId",
+            new { newBalance, tenantId, customerId },
+            transaction: tx,
+            cancellationToken: ct));
+
+        await tx.CommitAsync(ct);
+
+        return new ReceiptUnapplyResult(prevBalance, newBalance, deleted);
     }
 }

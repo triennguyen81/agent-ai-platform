@@ -143,6 +143,7 @@ builder.Services.AddSingleton<IBookAccessControl, BookAccessControl>();
 // smoke-test connectivity via /healthz/ready and stage the migration behind
 // a feature flag (see docs/arch/s3-migration-plan.md).
 builder.Services.Configure<S3Options>(builder.Configuration.GetSection(S3Options.SectionName));
+builder.Services.Configure<Aiq.Gateway.Jobs.ExpenseRiskOptions>(builder.Configuration.GetSection(Aiq.Gateway.Jobs.ExpenseRiskOptions.SectionName));
 builder.Services.AddSingleton<IObjectStorage, S3ObjectStorage>();
 
 builder.Services

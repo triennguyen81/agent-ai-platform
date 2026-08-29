@@ -6,6 +6,8 @@ import { requireSession } from "@/lib/auth";
 import { VoucherExtractForm } from "@/components/voucher-extract-form";
 import { AcceptReceiptButton } from "@/components/accept-receipt-button";
 import { AcceptExpenseButton } from "@/components/accept-expense-button";
+import { AcceptInvoiceButton } from "@/components/accept-invoice-button";
+import { UnapplyReceiptButton } from "@/components/unapply-receipt-button";
 
 interface VoucherRecord {
   id: string;
@@ -270,6 +272,43 @@ interface ExpenseClaimMatchingNone {
 }
 
 type ExpenseClaimMatching = ExpenseClaimMatchingFound | ExpenseClaimMatchingNone;
+
+// UC3 §5.6 (Sprint 4): PO 3-way match context — invoice_vat_in → PO → GRN.
+interface PoMatchContextFound {
+  status: "found";
+  quality: "exact" | "partial" | string;
+  purchase_order: {
+    poNumber: string;
+    poDate: string;
+    supplierCode: string;
+    status: string;
+    currency: string;
+    exchangeRate: number;
+    subtotalVnd: number;
+    totalAmount: number | null;
+    incoterm: string | null;
+    paymentTerms: string | null;
+    paymentTermsDays: number;
+    deliveryNoteRef: string | null;
+    matchedInvoiceNumber: string | null;
+    notes: string | null;
+  };
+  goods_received_note: {
+    grnNumber: string;
+    grnDate: string;
+    warehouseTo: string | null;
+    deliveredBy: string | null;
+    receivedBy: string | null;
+    status: string;
+  } | null;
+}
+
+interface PoMatchContextNone {
+  status: "no_match";
+  document_number?: string;
+}
+
+type PoMatchContext = PoMatchContextFound | PoMatchContextNone;
 
 const RISK_FLAG_LABELS: Record<string, string> = {
   // AR side (UC1)
@@ -711,6 +750,109 @@ function ArContextPanel({ ar, currency }: { ar: ArContextFound; currency: string
             Lần thanh toán gần nhất: <span className="font-medium">{fmtDate(ar.last_payment_date)}</span>
           </span>
         )}
+      </div>
+    </section>
+  );
+}
+
+// UC3 §5.6 (Sprint 4): AP 3-way match panel — invoice_vat_in → PO → GRN.
+// Clone của MatchContextPanel nhưng 2 card (không có purchase_contract Sprint 5).
+function PoMatchPanel({ match, currency }: { match: PoMatchContextFound; currency: string }) {
+  const po = match.purchase_order;
+  const grn = match.goods_received_note;
+  const isExact = match.quality === "exact";
+
+  return (
+    <section
+      className={`space-y-3 rounded-[var(--radius)] border p-5 ${
+        isExact ? "border-emerald-300 bg-emerald-50/40" : "border-amber-300 bg-amber-50/40"
+      }`}
+    >
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="font-serif text-lg">
+            <ClipboardCheck className="mr-2 inline size-4" /> Đối chiếu 3 chiều AP
+          </h2>
+          <p className="text-xs text-[var(--color-muted-fg)]">
+            HĐ NCC ↔ Đơn đặt hàng (PO) ↔ Phiếu nhập kho (GRN)
+          </p>
+        </div>
+        <span
+          className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium ${
+            isExact ? "bg-emerald-600 text-white" : "bg-amber-500 text-white"
+          }`}
+        >
+          {isExact ? <CheckCircle2 className="size-3.5" /> : <AlertTriangle className="size-3.5" />}
+          {isExact ? "Khớp đầy đủ" : "Khớp một phần"}
+        </span>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="rounded-[var(--radius)] border bg-[var(--color-bg)] p-3 text-sm">
+          <div className="mb-1 flex items-center gap-1 text-xs font-medium text-[var(--color-muted-fg)]">
+            <FileText className="size-3.5" /> Đơn đặt hàng (PO)
+          </div>
+          <div className="font-mono font-bold">{po.poNumber}</div>
+          <div className="mt-1 space-y-0.5 text-xs">
+            <div>Ngày PO: {fmtDate(po.poDate)}</div>
+            <div>NCC: <span className="font-mono">{po.supplierCode}</span></div>
+            <div>Trạng thái: <span className="font-medium">{po.status}</span></div>
+            <div>
+              Subtotal: <span className="font-mono">{fmtMoney(po.subtotalVnd, "VND")}</span>
+              {po.currency !== "VND" && po.exchangeRate > 0 && (
+                <span className="ml-1 text-[10px] text-[var(--color-muted-fg)]">
+                  (@ {po.exchangeRate.toLocaleString("vi-VN")} {po.currency}/VND)
+                </span>
+              )}
+            </div>
+            {po.totalAmount != null && (
+              <div>
+                Total (incl. thuế): <span className="font-mono">{fmtMoney(po.totalAmount, "VND")}</span>
+              </div>
+            )}
+            {po.incoterm && <div>Incoterm: <span className="font-medium">{po.incoterm}</span></div>}
+            {po.paymentTermsDays > 0 && (
+              <div>Điều khoản: <span className="font-medium">Net {po.paymentTermsDays}</span></div>
+            )}
+            {po.matchedInvoiceNumber && (
+              <div>
+                HĐ khớp: <span className="font-mono text-emerald-700">{po.matchedInvoiceNumber}</span>
+              </div>
+            )}
+          </div>
+          {po.notes && (
+            <div className="mt-2 border-t pt-2 text-[11px] italic text-[var(--color-muted-fg)]">
+              {po.notes}
+            </div>
+          )}
+        </div>
+
+        <div
+          className={`rounded-[var(--radius)] border p-3 text-sm ${
+            grn ? "bg-[var(--color-bg)]" : "bg-amber-100/50"
+          }`}
+        >
+          <div className="mb-1 flex items-center gap-1 text-xs font-medium text-[var(--color-muted-fg)]">
+            <Package className="size-3.5" /> Phiếu nhập kho (GRN)
+          </div>
+          {grn ? (
+            <>
+              <div className="font-mono font-bold">{grn.grnNumber}</div>
+              <div className="mt-1 space-y-0.5 text-xs">
+                <div>Ngày nhận: {fmtDate(grn.grnDate)}</div>
+                {grn.warehouseTo && <div>Kho nhận: <span className="font-medium">{grn.warehouseTo}</span></div>}
+                <div>Trạng thái: <span className="font-medium">{grn.status}</span></div>
+                {grn.deliveredBy && <div>Giao bởi: {grn.deliveredBy}</div>}
+                {grn.receivedBy && <div>Nhận bởi: {grn.receivedBy}</div>}
+              </div>
+            </>
+          ) : (
+            <div className="text-xs text-amber-800">
+              <b>Chưa có phiếu nhập kho.</b> Cần kiểm tra: hàng đã về kho chưa? Có nhận sai
+              chứng từ khác?
+            </div>
+          )}
+        </div>
       </div>
     </section>
   );
@@ -1227,6 +1369,7 @@ export default async function VoucherDetailPage({ params }: PageProps) {
   let apContext: ApContext | null = null;
   let paymentMatching: PaymentMatching | null = null;
   let expenseClaimMatching: ExpenseClaimMatching | null = null;
+  let poMatchContext: PoMatchContext | null = null;
   if (v.extractedFieldsJson) {
     try {
       const parsed = JSON.parse(v.extractedFieldsJson) as {
@@ -1236,6 +1379,7 @@ export default async function VoucherDetailPage({ params }: PageProps) {
         ap_context?: ApContext;
         payment_matching?: PaymentMatching;
         expense_claim_matching?: ExpenseClaimMatching;
+        po_match_context?: PoMatchContext;
       };
       arContext = parsed.ar_context ?? null;
       matchContext = parsed.match_context ?? null;
@@ -1243,6 +1387,7 @@ export default async function VoucherDetailPage({ params }: PageProps) {
       apContext = parsed.ap_context ?? null;
       paymentMatching = parsed.payment_matching ?? null;
       expenseClaimMatching = parsed.expense_claim_matching ?? null;
+      poMatchContext = parsed.po_match_context ?? null;
     } catch {
       arContext = null;
       matchContext = null;
@@ -1250,6 +1395,7 @@ export default async function VoucherDetailPage({ params }: PageProps) {
       apContext = null;
       paymentMatching = null;
       expenseClaimMatching = null;
+      poMatchContext = null;
     }
   }
 
@@ -1401,7 +1547,27 @@ export default async function VoucherDetailPage({ params }: PageProps) {
           of the buyer so the accountant sees credit-limit impact + risk flags
           before approving the AI-suggested journal. */}
       {arContext && arContext.status === "found" && (
-        <ArContextPanel ar={arContext} currency={currency} />
+        <>
+          <ArContextPanel ar={arContext} currency={currency} />
+          {/* Sprint 4 gap UC1: Book invoice into AR ledger. */}
+          {(v.voucherType === "invoice_vat_out" || v.voucherType === "invoice_vat") &&
+            v.status !== "verified" && (
+              <section className="rounded-[var(--radius)] border border-emerald-200 bg-emerald-50/30 p-4">
+                <div className="mb-2 text-sm font-medium">Ghi HĐ vào sổ AR</div>
+                <AcceptInvoiceButton voucherId={v.id} />
+                <p className="mt-2 text-[11px] italic text-[var(--color-muted-fg)]">
+                  Bấm để insert debit row vào sim_ar_ledger + tăng current_ar của khách. Idempotent.
+                </p>
+              </section>
+            )}
+          {(v.voucherType === "invoice_vat_out" || v.voucherType === "invoice_vat") &&
+            v.status === "verified" && (
+              <section className="rounded-[var(--radius)] border border-emerald-300 bg-emerald-100 p-3 text-sm text-emerald-900">
+                ✓ Đã ghi HĐ vào công nợ khách. Xem trong{" "}
+                <a href="/customers" className="underline">/customers</a>.
+              </section>
+            )}
+        </>
       )}
       {arContext && arContext.status !== "found" && (
         <section className="rounded-[var(--radius)] border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
@@ -1419,12 +1585,25 @@ export default async function VoucherDetailPage({ params }: PageProps) {
       )}
 
       {receiptMatching && (
-        <ReceiptMatchingPanel
-          matching={receiptMatching}
-          currency={currency}
-          voucherId={v.id}
-          voucherStatus={v.status}
-        />
+        <>
+          <ReceiptMatchingPanel
+            matching={receiptMatching}
+            currency={currency}
+            voucherId={v.id}
+            voucherStatus={v.status}
+          />
+          {/* Sprint 4 gap UC2: Unapply receipt (rollback). */}
+          {v.voucherType === "receipt" && v.status === "verified" && (
+            <section className="rounded-[var(--radius)] border border-amber-200 bg-amber-50/30 p-4">
+              <div className="mb-2 text-sm font-medium">Rollback (nếu áp thu sai)</div>
+              <UnapplyReceiptButton voucherId={v.id} />
+              <p className="mt-2 text-[11px] italic text-[var(--color-muted-fg)]">
+                Xoá ledger rows đã ghi và khôi phục current_ar. Chỉ dùng khi cần sửa sai — voucher
+                sẽ rollback về status='extracted' để apply lại.
+              </p>
+            </section>
+          )}
+        </>
       )}
 
       {/* UC3 AP-side panels — mirror của AR panels ở trên. */}
@@ -1488,6 +1667,26 @@ export default async function VoucherDetailPage({ params }: PageProps) {
 
       {matchContext && matchContext.status === "found" && (
         <MatchContextPanel match={matchContext} currency={currency} />
+      )}
+
+      {/* Sprint 4: AP 3-way match (invoice_vat_in → PO → GRN). */}
+      {poMatchContext && poMatchContext.status === "found" && (
+        <PoMatchPanel match={poMatchContext} currency={currency} />
+      )}
+      {poMatchContext && poMatchContext.status === "no_match" && (
+        <section className="rounded-[var(--radius)] border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
+          <div className="flex items-start gap-2">
+            <FileText className="mt-0.5 size-4 shrink-0" />
+            <div>
+              <p className="font-medium">Không tìm thấy PO khớp</p>
+              <p className="text-xs">
+                HĐ NCC <span className="font-mono">{poMatchContext.document_number ?? "?"}</span>{" "}
+                chưa link tới đơn đặt hàng nào. Có thể là mua ngoài PO (nếu &lt; 100M) hoặc extract
+                sai số HĐ. Kiểm tra trước khi accept.
+              </p>
+            </div>
+          </div>
+        </section>
       )}
       {matchContext && matchContext.status === "no_match" && (
         <section className="rounded-[var(--radius)] border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
