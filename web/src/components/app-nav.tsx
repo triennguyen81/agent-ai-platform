@@ -14,6 +14,7 @@ import {
   ClipboardCheck,
   FileSignature,
   FileText,
+  GraduationCap,
   Heart,
   LayoutDashboard,
   MessageSquare,
@@ -72,6 +73,7 @@ export function AppNav({ roles }: AppNavProps) {
           { href: "/customers", label: "Khách hàng", icon: Building2 },
           { href: "/suppliers", label: "Nhà cung cấp", icon: Truck },
           { href: "/expenses", label: "Chi phí", icon: Banknote },
+          { href: "/mau-chung-tu", label: "Chứng từ mẫu", icon: GraduationCap },
         ],
       }
     : null;
