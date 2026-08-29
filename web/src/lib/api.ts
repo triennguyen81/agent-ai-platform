@@ -590,6 +590,35 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  // ---------- Suppliers (UC3 AP side) ----------
+  listSuppliers(token: string, params?: { country?: string; q?: string }) {
+    const qs = new URLSearchParams();
+    if (params?.country) qs.set("country", params.country);
+    if (params?.q) qs.set("q", params.q);
+    const url = qs.toString() ? `/suppliers/?${qs}` : "/suppliers/";
+    return call(GATEWAY_BASE, url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  supplierByMst(token: string, mst: string) {
+    return call(GATEWAY_BASE, `/suppliers/by-mst/${encodeURIComponent(mst)}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  supplierPayables(token: string, supplierId: string) {
+    return call(GATEWAY_BASE, `/suppliers/${supplierId}/payables`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  purchaseOrderByInvoice(token: string, documentNumber: string) {
+    return call(GATEWAY_BASE, `/purchase-orders/by-invoice/${encodeURIComponent(documentNumber)}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
 };
 
 export const agent = {

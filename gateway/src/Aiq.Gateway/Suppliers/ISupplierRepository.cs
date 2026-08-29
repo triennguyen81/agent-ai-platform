@@ -97,6 +97,12 @@ public sealed record ExpenseApplyResult(
     decimal DiscountAmount,
     int LedgerRowsInserted);
 
+public sealed record BookInvoiceResult(
+    decimal PreviousBalance,
+    decimal NewBalance,
+    decimal InvoiceTotal,
+    int LedgerRowsInserted);
+
 public interface ISupplierRepository
 {
     Task<IReadOnlyList<SupplierRecord>> ListAsync(Guid tenantId, string? country, string? search, CancellationToken ct);
@@ -121,6 +127,20 @@ public interface ISupplierRepository
         IReadOnlyList<ExpenseApplicationInput> applications,
         decimal discountAmount,
         string? discountReason,
+        CancellationToken ct);
+
+    // Book an incoming supplier invoice (invoice_vat_in) — inserts a single
+    // credit row in sim_ap_ledger (increases AP) and updates
+    // sim_suppliers.current_ap += invoiceTotal. Idempotent by voucherId.
+    // Semantics: Có 331 tăng phải trả NCC.
+    Task<BookInvoiceResult> BookInvoiceAsync(
+        Guid tenantId,
+        Guid supplierId,
+        Guid voucherId,
+        string invoiceDocumentNumber,
+        DateOnly invoiceDate,
+        DateOnly? dueDate,
+        decimal invoiceTotal,
         CancellationToken ct);
 }
 
@@ -413,5 +433,83 @@ public sealed class SupplierRepository : ISupplierRepository
             TotalApplied: totalApplied,
             DiscountAmount: discountAmount,
             LedgerRowsInserted: rowsInserted);
+    }
+
+    public async Task<BookInvoiceResult> BookInvoiceAsync(
+        Guid tenantId,
+        Guid supplierId,
+        Guid voucherId,
+        string invoiceDocumentNumber,
+        DateOnly invoiceDate,
+        DateOnly? dueDate,
+        decimal invoiceTotal,
+        CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // Idempotency guard: nếu voucher_id đã có row → coi như đã book.
+        const string dupSql = "SELECT COUNT(*) FROM sim_ap_ledger WHERE voucher_id = @voucherId";
+        var existing = await conn.ExecuteScalarAsync<int>(
+            new CommandDefinition(dupSql, new { voucherId }, transaction: tx, cancellationToken: ct));
+        if (existing > 0)
+        {
+            await tx.RollbackAsync(ct);
+            var supplier = await FindByIdAsync(tenantId, supplierId, ct)
+                ?? throw new InvalidOperationException("Supplier not found");
+            return new BookInvoiceResult(
+                PreviousBalance: supplier.CurrentAp,
+                NewBalance: supplier.CurrentAp,
+                InvoiceTotal: 0m,
+                LedgerRowsInserted: 0);
+        }
+
+        var prevBalance = await conn.ExecuteScalarAsync<decimal>(
+            new CommandDefinition(
+                "SELECT current_ap FROM sim_suppliers WHERE tenant_id = @tenantId AND id = @supplierId FOR UPDATE",
+                new { tenantId, supplierId },
+                transaction: tx,
+                cancellationToken: ct));
+
+        var newBalance = prevBalance + invoiceTotal;
+
+        const string insertSql = """
+            INSERT INTO sim_ap_ledger
+                (tenant_id, supplier_id, voucher_id, document_date, document_number, document_type,
+                 debit, credit, balance_after, due_date, reference_note)
+            VALUES
+                (@tenantId, @supplierId, @voucherId, @invoiceDate, @invoiceDocumentNumber, 'invoice',
+                 0, @credit, @balanceAfter, @dueDate, @refNote)
+            """;
+        await conn.ExecuteAsync(new CommandDefinition(
+            insertSql,
+            new
+            {
+                tenantId,
+                supplierId,
+                voucherId,
+                invoiceDate,
+                invoiceDocumentNumber,
+                credit = invoiceTotal,
+                balanceAfter = newBalance,
+                dueDate = (object?)dueDate ?? DBNull.Value,
+                refNote = $"voucher:{voucherId:N}|book_invoice",
+            },
+            transaction: tx,
+            cancellationToken: ct));
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            "UPDATE sim_suppliers SET current_ap = @newBalance WHERE tenant_id = @tenantId AND id = @supplierId",
+            new { newBalance, tenantId, supplierId },
+            transaction: tx,
+            cancellationToken: ct));
+
+        await tx.CommitAsync(ct);
+
+        return new BookInvoiceResult(
+            PreviousBalance: prevBalance,
+            NewBalance: newBalance,
+            InvoiceTotal: invoiceTotal,
+            LedgerRowsInserted: 1);
     }
 }

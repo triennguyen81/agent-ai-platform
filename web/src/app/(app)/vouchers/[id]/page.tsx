@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AlertTriangle, ArrowLeft, CheckCircle2, ClipboardCheck, FileText, Package, Receipt, ShieldAlert, TrendingUp, Users } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Banknote, CheckCircle2, ClipboardCheck, FileText, Package, Receipt, ShieldAlert, TrendingUp, Truck, UserCircle2, Users } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
 import { VoucherExtractForm } from "@/components/voucher-extract-form";
 import { AcceptReceiptButton } from "@/components/accept-receipt-button";
+import { AcceptExpenseButton } from "@/components/accept-expense-button";
 
 interface VoucherRecord {
   id: string;
@@ -155,12 +156,114 @@ interface ReceiptMatchingFound {
 
 type ReceiptMatching = ReceiptMatchingFound;
 
+// UC3 AP-side enrichment: extracted_fields.ap_context / payment_matching /
+// expense_claim_matching populated by VoucherExtractJobRunner.
+interface ApContextFound {
+  status: "found";
+  supplier: {
+    id: string;
+    supplierCode: string;
+    name: string;
+    mst: string | null;
+    country: string;
+    currency: string;
+    paymentTermsDays: number;
+    currentAp: number;
+  };
+  current_balance_331: number;
+  projected_balance_331: number;
+  aging: {
+    current: number;
+    bucket_0_30: number;
+    bucket_31_60: number;
+    bucket_61_90: number;
+    over90: number;
+  };
+  overdue_amount: number;
+  last_payment_date: string | null;
+  payment_term_default: number;
+  open_invoices: Array<{
+    documentNumber: string;
+    credit: number;
+    dueDate: string | null;
+    daysOverdue: number;
+  }>;
+  risk_flags: string[];
+  requires_l2_approval: boolean;
+}
+
+interface ApContextNotFound {
+  status: "supplier_not_found" | "ap_lookup_failed";
+  supplier_mst?: string;
+}
+
+type ApContext = ApContextFound | ApContextNotFound;
+
+interface PaymentApplication {
+  document_number: string;
+  document_date: string;
+  due_date: string | null;
+  invoice_remaining_before: number;
+  applied: number;
+  invoice_remaining_after: number;
+}
+
+interface PaymentMatchingFound {
+  status:
+    | "matched_full"
+    | "matched_partial"
+    | "matched_multiple"
+    | "overpaid"
+    | "no_open_payables";
+  payment_amount: number;
+  total_applied: number;
+  remaining_overpayment: number;
+  applications: PaymentApplication[];
+  message: string;
+}
+
+type PaymentMatching = PaymentMatchingFound;
+
+interface ExpenseClaimMatchingFound {
+  status: "found";
+  employee: {
+    id: string;
+    employeeCode: string;
+    fullName: string;
+    department: string | null;
+    monthlyExpenseBudget: number;
+    ytdExpense: number;
+    outstandingAdvance: number;
+  };
+  total_claim: number;
+  advance_taken: number;
+  advance_covered: number;
+  remaining_to_reimburse: number;
+  annual_ceiling: number;
+  budget_exceeded: boolean;
+  suggested_journal_hint: string;
+}
+
+interface ExpenseClaimMatchingNone {
+  status: "employee_not_found";
+  employee_code?: string;
+}
+
+type ExpenseClaimMatching = ExpenseClaimMatchingFound | ExpenseClaimMatchingNone;
+
 const RISK_FLAG_LABELS: Record<string, string> = {
+  // AR side (UC1)
   invoice_over_500m_requires_l2_approval: "Hoá đơn > 500 triệu → cần duyệt cấp 2 (Kế toán trưởng)",
-  has_overdue_90d: "Khách có nợ quá hạn > 90 ngày",
+  has_overdue_90d: "Khách/NCC có nợ quá hạn > 90 ngày",
   would_breach_credit_limit: "Vượt hạn mức tín dụng sau hoá đơn này",
   credit_used_gte_80pct: "Sử dụng ≥ 80% hạn mức tín dụng",
   has_overdue_amount: "Có công nợ quá hạn",
+  // AP side (UC3)
+  expense_over_30m_cash_payment: "Chi tiền mặt > 30M → KHÔNG được khấu trừ VAT (TT78 điều 6)",
+  expense_over_500m_requires_l2_approval: "Chi > 500 triệu → cần duyệt cấp 2 (Kế toán trưởng)",
+  has_overdue_payable: "Có phải trả NCC quá hạn",
+  first_transaction_with_supplier: "Giao dịch đầu tiên với NCC — cần verify hồ sơ KYC",
+  would_exceed_payment_terms: "Vượt điều khoản thanh toán NCC",
 };
 
 interface LineItem {
@@ -622,6 +725,394 @@ function AgingCell({
   );
 }
 
+// UC3 §5.9 mirror of ArContextPanel — AP payables snapshot cho NCC. Kế toán
+// viên thấy công nợ 331 hiện tại, projected sau khi book HĐ mới, aging, và
+// AP risk flags (TT78 cash > 30M, overdue, first transaction, v.v.)
+function ApContextPanel({
+  ap,
+  currency,
+  voucherId,
+  voucherType,
+  voucherStatus,
+}: {
+  ap: ApContextFound;
+  currency: string;
+  voucherId: string;
+  voucherType: string;
+  voucherStatus: string;
+}) {
+  const invoiceDelta = ap.projected_balance_331 - ap.current_balance_331;
+  const showBookButton = voucherType === "invoice_vat_in" && voucherStatus !== "verified";
+  return (
+    <section
+      className={`space-y-4 rounded-[var(--radius)] border p-5 ${
+        ap.requires_l2_approval ? "border-amber-300 bg-amber-50/40" : ""
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="font-serif text-lg">
+            <Truck className="mr-2 inline size-4" /> Công nợ nhà cung cấp
+          </h2>
+          <p className="text-xs text-[var(--color-muted-fg)]">
+            <span className="font-mono">{ap.supplier.supplierCode}</span> · {ap.supplier.name}
+            <span className="ml-2 rounded-full border px-1.5 py-0.5 text-[10px]">
+              {ap.supplier.country} · {ap.supplier.currency}
+            </span>
+          </p>
+        </div>
+        {ap.requires_l2_approval && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-amber-600 px-3 py-1 text-xs font-medium text-white">
+            <ShieldAlert className="size-3.5" /> Cần duyệt cấp 2
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+        <div>
+          <div className="text-xs text-[var(--color-muted-fg)]">Công nợ hiện tại (TK 331)</div>
+          <div className="font-mono">{fmtMoney(ap.current_balance_331, currency)}</div>
+        </div>
+        <div>
+          <div className="text-xs text-[var(--color-muted-fg)]">
+            <TrendingUp className="mr-0.5 inline size-3" /> Sau HĐ này
+          </div>
+          <div className={`font-mono font-bold ${invoiceDelta > 0 ? "text-amber-700" : ""}`}>
+            {fmtMoney(ap.projected_balance_331, currency)}
+            {invoiceDelta > 0 && (
+              <span className="ml-1 text-xs font-normal text-[var(--color-muted-fg)]">
+                (+{fmtMoney(invoiceDelta, currency)})
+              </span>
+            )}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-[var(--color-muted-fg)]">Điều khoản TT mặc định</div>
+          <div className="font-mono">
+            {ap.payment_term_default > 0 ? `Net ${ap.payment_term_default}` : "Trả trước"}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-[var(--color-muted-fg)]">Quá hạn</div>
+          <div
+            className={`font-mono font-bold ${
+              ap.overdue_amount > 0 ? "text-red-700" : "text-emerald-700"
+            }`}
+          >
+            {fmtMoney(ap.overdue_amount, currency)}
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        <div className="text-xs text-[var(--color-muted-fg)]">
+          Tuổi nợ NCC (Aging) — tổng: {fmtMoney(ap.current_balance_331, currency)}
+        </div>
+        <div className="grid grid-cols-5 gap-2 text-xs">
+          <AgingCell label="Trong hạn" amount={ap.aging.current} currency={currency} tone="emerald" />
+          <AgingCell label="1-30 ngày" amount={ap.aging.bucket_0_30} currency={currency} tone="amber" />
+          <AgingCell label="31-60 ngày" amount={ap.aging.bucket_31_60} currency={currency} tone="orange" />
+          <AgingCell label="61-90 ngày" amount={ap.aging.bucket_61_90} currency={currency} tone="red" />
+          <AgingCell label="> 90 ngày" amount={ap.aging.over90} currency={currency} tone="red-strong" />
+        </div>
+      </div>
+
+      {ap.risk_flags.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-xs text-[var(--color-muted-fg)]">Cảnh báo rủi ro (AP)</div>
+          <ul className="space-y-1">
+            {ap.risk_flags.map((flag) => (
+              <li
+                key={flag}
+                className="flex items-start gap-2 rounded-[var(--radius)] border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-800"
+              >
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                <span>{RISK_FLAG_LABELS[flag] ?? flag}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {ap.open_invoices.length > 0 && (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-[var(--color-muted-fg)]">
+            HĐ NCC chưa trả ({ap.open_invoices.length})
+          </summary>
+          <table className="mt-2 w-full text-xs">
+            <thead className="text-[10px] uppercase tracking-wider text-[var(--color-muted-fg)]">
+              <tr>
+                <th className="px-2 py-1 text-left">Số HĐ</th>
+                <th className="px-2 py-1 text-right">Số tiền</th>
+                <th className="px-2 py-1 text-left">Hạn TT</th>
+                <th className="px-2 py-1 text-right">Quá hạn</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ap.open_invoices.slice(0, 10).map((inv) => (
+                <tr key={inv.documentNumber} className="border-t">
+                  <td className="px-2 py-1 font-mono">{inv.documentNumber}</td>
+                  <td className="px-2 py-1 text-right font-mono">{fmtMoney(inv.credit, currency)}</td>
+                  <td className="px-2 py-1">{fmtDate(inv.dueDate)}</td>
+                  <td className={`px-2 py-1 text-right ${inv.daysOverdue > 0 ? "text-red-700" : ""}`}>
+                    {inv.daysOverdue > 0 ? `${inv.daysOverdue} ngày` : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
+
+      {ap.last_payment_date && (
+        <div className="text-[11px] text-[var(--color-muted-fg)]">
+          Lần thanh toán gần nhất:{" "}
+          <span className="font-medium">{fmtDate(ap.last_payment_date)}</span>
+        </div>
+      )}
+
+      {/* Book invoice button — chỉ show cho invoice_vat_in, tăng AP. */}
+      {showBookButton && (
+        <div className="border-t pt-3">
+          <AcceptExpenseButton voucherId={voucherId} voucherType={voucherType} />
+          <p className="mt-2 text-[11px] italic text-[var(--color-muted-fg)]">
+            Bấm để ghi HĐ NCC vào sổ AP + tăng công nợ 331 trong hệ thống. Idempotent.
+          </p>
+        </div>
+      )}
+      {voucherStatus === "verified" && voucherType === "invoice_vat_in" && (
+        <div className="rounded-[var(--radius)] border border-emerald-300 bg-emerald-100 px-3 py-2 text-sm text-emerald-900">
+          ✓ Đã ghi HĐ NCC vào sổ AP. Xem trong <a href="/suppliers" className="underline">/suppliers</a>.
+        </div>
+      )}
+    </section>
+  );
+}
+
+// Mirror ReceiptMatchingPanel cho phía AP — apply chi/uỷ nhiệm chi vào các
+// HĐ NCC open (FIFO oldest first, không auto-detect discount).
+function PaymentMatchingPanel({
+  matching,
+  currency,
+  voucherId,
+  voucherType,
+  voucherStatus,
+}: {
+  matching: PaymentMatchingFound;
+  currency: string;
+  voucherId: string;
+  voucherType: string;
+  voucherStatus: string;
+}) {
+  const tone =
+    matching.status === "overpaid"
+      ? "border-amber-300 bg-amber-50/40"
+      : matching.status === "no_open_payables"
+        ? "border-blue-200 bg-blue-50/40"
+        : "border-emerald-300 bg-emerald-50/40";
+  return (
+    <section className={`space-y-3 rounded-[var(--radius)] border p-5 ${tone}`}>
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="font-serif text-lg">
+            <Banknote className="mr-2 inline size-4" /> Áp chi vào công nợ NCC
+          </h2>
+          <p className="text-xs text-[var(--color-muted-fg)]">{matching.message}</p>
+        </div>
+        <div className="text-right">
+          <div className="text-xs text-[var(--color-muted-fg)]">Số tiền chi</div>
+          <div className="font-mono text-lg font-bold">
+            {fmtMoney(matching.payment_amount, currency)}
+          </div>
+        </div>
+      </div>
+
+      {matching.applications.length > 0 && (
+        <div className="overflow-hidden rounded-[var(--radius)] border bg-[var(--color-bg)]">
+          <table className="w-full text-sm">
+            <thead className="bg-[var(--color-muted)]/60 text-xs uppercase tracking-wider text-[var(--color-muted-fg)]">
+              <tr>
+                <th className="px-3 py-2 text-left">Số HĐ NCC</th>
+                <th className="px-3 py-2 text-left">Hạn TT</th>
+                <th className="px-3 py-2 text-right">Còn phải trả trước</th>
+                <th className="px-3 py-2 text-right">Áp chi</th>
+                <th className="px-3 py-2 text-right">Còn phải trả sau</th>
+              </tr>
+            </thead>
+            <tbody>
+              {matching.applications.map((app) => (
+                <tr key={app.document_number} className="border-t">
+                  <td className="px-3 py-2 font-mono">{app.document_number}</td>
+                  <td className="px-3 py-2 text-xs">{fmtDate(app.due_date)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-xs">
+                    {fmtMoney(app.invoice_remaining_before, currency)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-emerald-700">
+                    {fmtMoney(app.applied, currency)}
+                  </td>
+                  <td
+                    className={`px-3 py-2 text-right font-mono text-xs ${
+                      app.invoice_remaining_after === 0 ? "text-emerald-700 font-bold" : ""
+                    }`}
+                  >
+                    {fmtMoney(app.invoice_remaining_after, currency)}
+                    {app.invoice_remaining_after === 0 && " ✓"}
+                  </td>
+                </tr>
+              ))}
+              <tr className="border-t bg-[var(--color-muted)]/30">
+                <td colSpan={3} className="px-3 py-2 text-right text-xs font-medium">
+                  Tổng áp chi:
+                </td>
+                <td className="px-3 py-2 text-right font-mono font-bold text-emerald-800">
+                  {fmtMoney(matching.total_applied, currency)}
+                </td>
+                <td className="px-3 py-2" />
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {matching.remaining_overpayment > 0 && (
+        <div className="rounded-[var(--radius)] border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <b>Chi dư:</b> {fmtMoney(matching.remaining_overpayment, currency)} — treo TK 331 dư
+          Nợ (ứng trước NCC) hoặc yêu cầu NCC hoàn lại.
+        </div>
+      )}
+
+      {voucherStatus !== "verified" && matching.status !== "no_open_payables" && (
+        <div className="border-t pt-3">
+          <AcceptExpenseButton voucherId={voucherId} voucherType={voucherType} />
+          <p className="mt-2 text-[11px] italic text-[var(--color-muted-fg)]">
+            Bấm để ghi debit rows vào sổ AP + giảm công nợ NCC trong hệ thống. Idempotent.
+          </p>
+        </div>
+      )}
+      {voucherStatus === "verified" && (
+        <div className="rounded-[var(--radius)] border border-emerald-300 bg-emerald-100 px-3 py-2 text-sm text-emerald-900">
+          ✓ Đã áp chi vào công nợ NCC. Xem trong <a href="/suppliers" className="underline">/suppliers</a>.
+        </div>
+      )}
+    </section>
+  );
+}
+
+// Expense claim panel — hoàn ứng nhân viên (voucher_type=expense_claim). Show
+// employee info, ytd_expense vs budget, journal breakdown TK 6417/141/111.
+function ExpenseClaimPanel({
+  claim,
+  currency,
+  voucherId,
+  voucherType,
+  voucherStatus,
+}: {
+  claim: ExpenseClaimMatchingFound;
+  currency: string;
+  voucherId: string;
+  voucherType: string;
+  voucherStatus: string;
+}) {
+  const emp = claim.employee;
+  const budgetPct =
+    claim.annual_ceiling > 0
+      ? Math.round(((emp.ytdExpense + claim.total_claim) / claim.annual_ceiling) * 100)
+      : 0;
+  return (
+    <section
+      className={`space-y-4 rounded-[var(--radius)] border p-5 ${
+        claim.budget_exceeded ? "border-red-300 bg-red-50/40" : "border-emerald-300 bg-emerald-50/40"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="font-serif text-lg">
+            <UserCircle2 className="mr-2 inline size-4" /> Hoàn ứng nhân viên
+          </h2>
+          <p className="text-xs text-[var(--color-muted-fg)]">
+            <span className="font-mono">{emp.employeeCode}</span> · {emp.fullName}
+            {emp.department && (
+              <span className="ml-2 rounded-full border px-1.5 py-0.5 text-[10px]">
+                {emp.department}
+              </span>
+            )}
+          </p>
+        </div>
+        {claim.budget_exceeded && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-red-600 px-3 py-1 text-xs font-medium text-white">
+            <AlertTriangle className="size-3.5" /> Vượt ngân sách năm
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+        <div>
+          <div className="text-xs text-[var(--color-muted-fg)]">Tổng chi claim</div>
+          <div className="font-mono font-bold">{fmtMoney(claim.total_claim, currency)}</div>
+        </div>
+        <div>
+          <div className="text-xs text-[var(--color-muted-fg)]">Tạm ứng đã lấy (TK 141)</div>
+          <div className="font-mono">{fmtMoney(emp.outstandingAdvance, currency)}</div>
+        </div>
+        <div>
+          <div className="text-xs text-[var(--color-muted-fg)]">Đối trừ ứng</div>
+          <div className="font-mono text-blue-700">{fmtMoney(claim.advance_covered, currency)}</div>
+        </div>
+        <div>
+          <div className="text-xs text-[var(--color-muted-fg)]">Hoàn tiền cho NV</div>
+          <div className="font-mono font-bold text-emerald-700">
+            {fmtMoney(claim.remaining_to_reimburse, currency)}
+          </div>
+        </div>
+      </div>
+
+      {claim.annual_ceiling > 0 && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-[var(--color-muted-fg)]">
+              Chi năm nay (YTD): {fmtMoney(emp.ytdExpense, currency)} / {fmtMoney(claim.annual_ceiling, currency)}
+            </span>
+            <span
+              className={`font-mono font-bold ${
+                budgetPct >= 100 ? "text-red-700" : budgetPct >= 80 ? "text-amber-700" : "text-emerald-700"
+              }`}
+            >
+              {budgetPct}%
+            </span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-[var(--color-muted)]">
+            <div
+              className={`h-full ${
+                budgetPct >= 100 ? "bg-red-600" : budgetPct >= 80 ? "bg-amber-500" : "bg-emerald-500"
+              }`}
+              style={{ width: `${Math.min(100, budgetPct)}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-[var(--radius)] border bg-[var(--color-bg)] px-3 py-2">
+        <div className="mb-1 text-xs text-[var(--color-muted-fg)]">Bút toán suggest</div>
+        <div className="font-mono text-sm">{claim.suggested_journal_hint}</div>
+      </div>
+
+      {voucherStatus !== "verified" && (
+        <div className="border-t pt-3">
+          <AcceptExpenseButton voucherId={voucherId} voucherType={voucherType} />
+          <p className="mt-2 text-[11px] italic text-[var(--color-muted-fg)]">
+            Bấm để giảm TK 141 (tạm ứng) + tăng ytd_expense của nhân viên. Idempotent.
+          </p>
+        </div>
+      )}
+      {voucherStatus === "verified" && (
+        <div className="rounded-[var(--radius)] border border-emerald-300 bg-emerald-100 px-3 py-2 text-sm text-emerald-900">
+          ✓ Đã hoàn ứng. sim_employees.outstanding_advance đã cập nhật.
+        </div>
+      )}
+    </section>
+  );
+}
+
 interface PageProps {
   params: Promise<{ id: string }>;
 }
@@ -638,23 +1129,36 @@ export default async function VoucherDetailPage({ params }: PageProps) {
   const currency = v.currency ?? "VND";
 
   // UC-ACC-001 §5.5-5.7: parse A/R context enriched at upload time.
+  // UC3: parse AP-side context (ap_context, payment_matching, expense_claim_matching).
   let arContext: ArContext | null = null;
   let matchContext: MatchContext | null = null;
   let receiptMatching: ReceiptMatching | null = null;
+  let apContext: ApContext | null = null;
+  let paymentMatching: PaymentMatching | null = null;
+  let expenseClaimMatching: ExpenseClaimMatching | null = null;
   if (v.extractedFieldsJson) {
     try {
       const parsed = JSON.parse(v.extractedFieldsJson) as {
         ar_context?: ArContext;
         match_context?: MatchContext;
         receipt_matching?: ReceiptMatching;
+        ap_context?: ApContext;
+        payment_matching?: PaymentMatching;
+        expense_claim_matching?: ExpenseClaimMatching;
       };
       arContext = parsed.ar_context ?? null;
       matchContext = parsed.match_context ?? null;
       receiptMatching = parsed.receipt_matching ?? null;
+      apContext = parsed.ap_context ?? null;
+      paymentMatching = parsed.payment_matching ?? null;
+      expenseClaimMatching = parsed.expense_claim_matching ?? null;
     } catch {
       arContext = null;
       matchContext = null;
       receiptMatching = null;
+      apContext = null;
+      paymentMatching = null;
+      expenseClaimMatching = null;
     }
   }
 
@@ -830,6 +1334,65 @@ export default async function VoucherDetailPage({ params }: PageProps) {
           voucherId={v.id}
           voucherStatus={v.status}
         />
+      )}
+
+      {/* UC3 AP-side panels — mirror của AR panels ở trên. */}
+      {apContext && apContext.status === "found" && (
+        <ApContextPanel
+          ap={apContext}
+          currency={currency}
+          voucherId={v.id}
+          voucherType={v.voucherType}
+          voucherStatus={v.status}
+        />
+      )}
+      {apContext && apContext.status !== "found" && (
+        <section className="rounded-[var(--radius)] border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <div className="flex items-start gap-2">
+            <Truck className="mt-0.5 size-4 shrink-0" />
+            <div>
+              <p className="font-medium">Nhà cung cấp chưa có trong hệ thống</p>
+              <p className="text-xs">
+                MST <span className="font-mono">{apContext.supplier_mst ?? "?"}</span> không khớp với
+                bất kỳ NCC nào. Tạo hồ sơ NCC mới hoặc kiểm tra lại MST trên hoá đơn.
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {paymentMatching && (
+        <PaymentMatchingPanel
+          matching={paymentMatching}
+          currency={currency}
+          voucherId={v.id}
+          voucherType={v.voucherType}
+          voucherStatus={v.status}
+        />
+      )}
+
+      {expenseClaimMatching && expenseClaimMatching.status === "found" && (
+        <ExpenseClaimPanel
+          claim={expenseClaimMatching}
+          currency={currency}
+          voucherId={v.id}
+          voucherType={v.voucherType}
+          voucherStatus={v.status}
+        />
+      )}
+      {expenseClaimMatching && expenseClaimMatching.status === "employee_not_found" && (
+        <section className="rounded-[var(--radius)] border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <div className="flex items-start gap-2">
+            <UserCircle2 className="mt-0.5 size-4 shrink-0" />
+            <div>
+              <p className="font-medium">Nhân viên chưa có trong hệ thống</p>
+              <p className="text-xs">
+                Mã NV <span className="font-mono">{expenseClaimMatching.employee_code ?? "?"}</span>{" "}
+                không khớp. Cần tạo hồ sơ nhân viên trước khi hoàn ứng.
+              </p>
+            </div>
+          </div>
+        </section>
       )}
 
       {matchContext && matchContext.status === "found" && (

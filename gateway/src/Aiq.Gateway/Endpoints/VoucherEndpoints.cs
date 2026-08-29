@@ -66,6 +66,13 @@ public static class VoucherEndpoints
         // updates sim_customers.current_ar, marks voucher status='verified'.
         group.MapPost("/{id:guid}/apply-receipt", ApplyReceiptAsync);
 
+        // UC3 counterpart — kế toán viên bấm "Chấp nhận chi" trên voucher
+        // AP side detail page. Routes based on voucher_type:
+        //   invoice_vat_in → book credit row (Có 331 tăng)
+        //   payment/bank_transfer → apply debit rows per payment_matching.applications
+        //   expense_claim → update sim_employees.outstanding_advance + ytd_expense
+        group.MapPost("/{id:guid}/apply-expense", ApplyExpenseAsync);
+
         return app;
     }
 
@@ -181,6 +188,214 @@ public static class VoucherEndpoints
             discount_amount = result.DiscountAmount,
             ledger_rows_inserted = result.LedgerRowsInserted,
         });
+    }
+
+    private static async Task<IResult> ApplyExpenseAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Suppliers.ISupplierRepository suppliers,
+        Aiq.Gateway.Employees.IEmployeeRepository employees,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!TryGetUserId(ctx, out var userId))
+        {
+            return Results.Unauthorized();
+        }
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+        {
+            return Results.BadRequest(new { error = "tenant scope required" });
+        }
+
+        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        var vt = voucher.Voucher.VoucherType?.ToLowerInvariant() ?? "";
+        if (vt is not ("invoice_vat_in" or "payment" or "bank_transfer" or "expense_claim"))
+        {
+            return Results.BadRequest(new
+            {
+                error = "apply-expense chỉ áp dụng cho invoice_vat_in / payment / bank_transfer / expense_claim",
+            });
+        }
+        if (voucher.Voucher.Status == "verified")
+        {
+            return Results.Ok(new { voucherId = id, status = "already_applied", message = "Đã áp trước đó." });
+        }
+
+        var extractedJson = voucher.Voucher.ExtractedFieldsJson ?? "{}";
+        using var doc = System.Text.Json.JsonDocument.Parse(extractedJson);
+        var root = doc.RootElement;
+
+        object payload;
+        switch (vt)
+        {
+            case "invoice_vat_in":
+            {
+                if (!root.TryGetProperty("ap_context", out var apEl)
+                    || !apEl.TryGetProperty("supplier", out var supEl)
+                    || !supEl.TryGetProperty("Id", out var supIdEl))
+                {
+                    return Results.BadRequest(new { error = "voucher chưa có ap_context.supplier" });
+                }
+                var supplierId = supIdEl.GetGuid();
+                var invoiceTotal = voucher.Voucher.TotalAmount ?? 0m;
+                if (invoiceTotal <= 0m)
+                {
+                    return Results.BadRequest(new { error = "invoice_vat_in không có total_amount" });
+                }
+                var docNumber = voucher.Voucher.DocumentNumber ?? $"HDNCC-{id:N}";
+                var docDate = voucher.Voucher.DocumentDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+
+                // Due date = doc_date + supplier.payment_terms_days (nếu có).
+                DateOnly? dueDate = null;
+                if (supEl.TryGetProperty("PaymentTermsDays", out var termsEl)
+                    && termsEl.ValueKind == System.Text.Json.JsonValueKind.Number)
+                {
+                    var days = termsEl.GetInt32();
+                    if (days > 0) dueDate = docDate.AddDays(days);
+                }
+
+                var bookResult = await suppliers.BookInvoiceAsync(
+                    tenantId, supplierId, id, docNumber, docDate, dueDate, invoiceTotal, ct);
+                payload = new
+                {
+                    voucherId = id,
+                    status = bookResult.LedgerRowsInserted == 0 ? "already_applied" : "applied",
+                    voucher_type = vt,
+                    previous_balance = bookResult.PreviousBalance,
+                    new_balance = bookResult.NewBalance,
+                    invoice_total = bookResult.InvoiceTotal,
+                    ledger_rows_inserted = bookResult.LedgerRowsInserted,
+                };
+                break;
+            }
+
+            case "payment":
+            case "bank_transfer":
+            {
+                if (!root.TryGetProperty("ap_context", out var apEl)
+                    || !apEl.TryGetProperty("supplier", out var supEl)
+                    || !supEl.TryGetProperty("Id", out var supIdEl))
+                {
+                    return Results.BadRequest(new { error = "voucher chưa có ap_context.supplier" });
+                }
+                if (!root.TryGetProperty("payment_matching", out var matchEl))
+                {
+                    return Results.BadRequest(new { error = "voucher chưa có payment_matching — chạy trích xuất lại trước" });
+                }
+                var supplierId = supIdEl.GetGuid();
+
+                var apps = new List<Aiq.Gateway.Suppliers.ExpenseApplicationInput>();
+                if (matchEl.TryGetProperty("applications", out var appsEl)
+                    && appsEl.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    foreach (var a in appsEl.EnumerateArray())
+                    {
+                        var docNum = a.GetProperty("document_number").GetString() ?? "?";
+                        var applied = a.GetProperty("applied").GetDecimal();
+                        if (applied > 0m) apps.Add(new Aiq.Gateway.Suppliers.ExpenseApplicationInput(docNum, applied));
+                    }
+                }
+
+                decimal discount = 0m;
+                string? discountReason = null;
+                if (matchEl.TryGetProperty("discount", out var discEl)
+                    && discEl.ValueKind == System.Text.Json.JsonValueKind.Number)
+                {
+                    discount = discEl.GetDecimal();
+                }
+                if (matchEl.TryGetProperty("discount_reason", out var drEl)
+                    && drEl.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    discountReason = drEl.GetString();
+                }
+
+                if (apps.Count == 0 && discount == 0m)
+                {
+                    return Results.BadRequest(new { error = "không có khoản nào để áp chi" });
+                }
+
+                var payDocNumber = voucher.Voucher.DocumentNumber ?? $"PC-{id:N}";
+                var payDate = voucher.Voucher.DocumentDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+
+                var result = await suppliers.ApplyExpenseAsync(
+                    tenantId, supplierId, id, payDocNumber, payDate, apps, discount, discountReason, ct);
+                payload = new
+                {
+                    voucherId = id,
+                    status = "applied",
+                    voucher_type = vt,
+                    previous_balance = result.PreviousBalance,
+                    new_balance = result.NewBalance,
+                    total_applied = result.TotalApplied,
+                    discount_amount = result.DiscountAmount,
+                    ledger_rows_inserted = result.LedgerRowsInserted,
+                };
+                break;
+            }
+
+            case "expense_claim":
+            {
+                if (!root.TryGetProperty("expense_claim_matching", out var ecEl)
+                    || !ecEl.TryGetProperty("employee", out var empEl)
+                    || !empEl.TryGetProperty("Id", out var empIdEl))
+                {
+                    return Results.BadRequest(new { error = "voucher chưa có expense_claim_matching.employee" });
+                }
+                var employeeId = empIdEl.GetGuid();
+                decimal totalClaim = 0m, advanceTaken = 0m;
+                if (ecEl.TryGetProperty("total_claim", out var tcEl)
+                    && tcEl.ValueKind == System.Text.Json.JsonValueKind.Number)
+                {
+                    totalClaim = tcEl.GetDecimal();
+                }
+                if (ecEl.TryGetProperty("advance_taken", out var atEl)
+                    && atEl.ValueKind == System.Text.Json.JsonValueKind.Number)
+                {
+                    advanceTaken = atEl.GetDecimal();
+                }
+                if (totalClaim <= 0m)
+                {
+                    return Results.BadRequest(new { error = "expense_claim không có total_claim" });
+                }
+
+                var result = await employees.ApplyExpenseClaimAsync(
+                    tenantId, employeeId, voucher.Voucher.DocumentNumber, totalClaim, advanceTaken, ct);
+                payload = new
+                {
+                    voucherId = id,
+                    status = "applied",
+                    voucher_type = vt,
+                    previous_advance = result.PreviousAdvance,
+                    new_advance = result.NewAdvance,
+                    previous_ytd_expense = result.PreviousYtdExpense,
+                    new_ytd_expense = result.NewYtdExpense,
+                };
+                break;
+            }
+
+            default:
+                return Results.BadRequest(new { error = $"voucher_type không được hỗ trợ: {vt}" });
+        }
+
+        // Flip voucher to verified so the Accept button hides + auto-refresh.
+        await repo.UpdateAsync(
+            tenantId,
+            userId,
+            id,
+            new UpdateVoucherRequest(
+                Status: "verified",
+                DocumentNumber: null, DocumentSeries: null, DocumentDate: null,
+                SellerName: null, SellerMst: null, SellerAddress: null,
+                BuyerName: null, BuyerMst: null, BuyerAddress: null,
+                PaymentMethod: null, Subtotal: null, VatRate: null, VatAmount: null,
+                DiscountAmount: null, TotalAmount: null, Currency: null,
+                AmountInWords: null,
+                ErrorMessage: null,
+                Tags: null),
+            ct);
+
+        return Results.Ok(payload);
     }
 
     private static async Task<IResult> ReextractAsync(

@@ -21,6 +21,7 @@ import {
   Shield,
   ShieldAlert,
   Sparkles,
+  Truck,
   Users,
   UsersRound,
   Wrench,
@@ -68,6 +69,7 @@ export function AppNav({ roles }: AppNavProps) {
           { href: "/accounting", label: "Kế toán", icon: Calculator },
           { href: "/vouchers", label: "Chứng từ", icon: Receipt },
           { href: "/customers", label: "Khách hàng", icon: Building2 },
+          { href: "/suppliers", label: "Nhà cung cấp", icon: Truck },
         ],
       }
     : null;
