@@ -7,5 +7,6 @@ public sealed record UserRecord(
     string? DisplayName,
     bool IsActive,
     DateTime CreatedAt,
+    Guid? TenantId = null,
     string? ExternalProvider = null,
     string? ExternalId = null);

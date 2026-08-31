@@ -154,8 +154,10 @@ public sealed record PrincipalAgentRecord(
     Guid AgentId,
     string AgentCode,
     string AgentName,
+    string? Description,
     string AgentType,
     string LifecycleState,
+    int? PublishedVersion,
     string ActionTier,
     bool AgentDisabled,
     string AccessLevel);
@@ -466,6 +468,7 @@ public sealed class AgentRepository : IAgentRepository
             DO UPDATE SET access_level = EXCLUDED.access_level, granted_by = EXCLUDED.granted_by
             """;
         await using var conn = await _factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
         var n = await conn.ExecuteAsync(new CommandDefinition(sql, new
         {
             agentId,
@@ -473,7 +476,25 @@ public sealed class AgentRepository : IAgentRepository
             request.PrincipalType,
             request.AccessLevel,
             actorUserId
-        }, cancellationToken: ct));
+        }, transaction: tx, cancellationToken: ct));
+        if ((request.PrincipalType is null or "user") && request.AccessLevel == "user")
+        {
+            await conn.ExecuteAsync(new CommandDefinition("""
+                INSERT INTO agent_assignments (tenant_id, agent_id, user_id, assigned_by, status)
+                SELECT a.tenant_id, a.id, @PrincipalId, @actorUserId, 'active'
+                FROM agents a WHERE a.id = @agentId
+                ON CONFLICT (tenant_id, agent_id, user_id)
+                DO UPDATE SET status = 'active', assigned_by = EXCLUDED.assigned_by, revoked_at = NULL
+                """, new { agentId, request.PrincipalId, actorUserId }, transaction: tx, cancellationToken: ct));
+        }
+        else if (request.PrincipalType is null or "user")
+        {
+            await conn.ExecuteAsync(new CommandDefinition("""
+                UPDATE agent_assignments SET status = 'revoked', revoked_at = NOW()
+                WHERE agent_id = @agentId AND user_id = @PrincipalId AND status = 'active'
+                """, new { agentId, request.PrincipalId }, transaction: tx, cancellationToken: ct));
+        }
+        await tx.CommitAsync(ct);
         return n > 0;
     }
 
@@ -487,7 +508,16 @@ public sealed class AgentRepository : IAgentRepository
               AND principal_type = @principalType
             """;
         await using var conn = await _factory.OpenAsync(ct);
-        var n = await conn.ExecuteAsync(new CommandDefinition(sql, new { agentId, principalId, principalType }, cancellationToken: ct));
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var n = await conn.ExecuteAsync(new CommandDefinition(sql, new { agentId, principalId, principalType }, transaction: tx, cancellationToken: ct));
+        if (principalType == "user")
+        {
+            await conn.ExecuteAsync(new CommandDefinition("""
+                UPDATE agent_assignments SET status = 'revoked', revoked_at = NOW()
+                WHERE agent_id = @agentId AND user_id = @principalId AND status = 'active'
+                """, new { agentId, principalId }, transaction: tx, cancellationToken: ct));
+        }
+        await tx.CommitAsync(ct);
         return n > 0;
     }
 
@@ -514,16 +544,23 @@ public sealed class AgentRepository : IAgentRepository
                 a.id              AS AgentId,
                 a.code            AS AgentCode,
                 a.name            AS AgentName,
+                a.description     AS Description,
                 a.type            AS AgentType,
                 a.lifecycle_state AS LifecycleState,
+                version.version        AS PublishedVersion,
                 a.action_tier     AS ActionTier,
                 (a.disabled_at IS NOT NULL) AS AgentDisabled,
-                acl.access_level  AS AccessLevel
-            FROM agent_acl acl
-            JOIN agents a ON a.id = acl.agent_id
-            WHERE a.tenant_id = @tenantId
-              AND acl.principal_id = @principalId
-              AND acl.principal_type = 'user'
+                'user'            AS AccessLevel
+            FROM agent_assignments assignment
+            JOIN agents a ON a.id = assignment.agent_id
+            JOIN agent_tenant_assignments tenant_assignment
+              ON tenant_assignment.agent_id = a.id
+             AND tenant_assignment.tenant_id = assignment.tenant_id
+             AND tenant_assignment.status = 'active'
+            LEFT JOIN agent_versions version ON version.id = a.published_version_id
+            WHERE assignment.tenant_id = @tenantId
+              AND assignment.user_id = @principalId
+              AND assignment.status = 'active'
             ORDER BY a.name
             """;
         await using var conn = await _factory.OpenAsync(ct);

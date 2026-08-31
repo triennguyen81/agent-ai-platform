@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Notes;
+using Aiq.Gateway.Middleware;
 using Microsoft.AspNetCore.Http;
 
 namespace Aiq.Gateway.Endpoints;
@@ -32,7 +33,8 @@ public static class NoteEndpoints
             return Results.Unauthorized();
         }
 
-        var notes = await repo.ListAsync(userId, ct);
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
+        var notes = await repo.ListAsync(tenantId, userId, ct);
         return Results.Ok(new NotesListResponse(notes, notes.Count));
     }
 
@@ -51,8 +53,9 @@ public static class NoteEndpoints
             return Results.Unauthorized();
         }
 
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
         var note = await repo.CreateAsync(
-            userId,
+            tenantId, userId,
             request.Title,
             request.Content ?? string.Empty,
             request.Tags ?? Array.Empty<string>(),
@@ -71,7 +74,8 @@ public static class NoteEndpoints
         {
             return Results.Unauthorized();
         }
-        var note = await repo.FindAsync(userId, id, ct);
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
+        var note = await repo.FindAsync(tenantId, userId, id, ct);
         return note is null ? Results.NotFound() : Results.Ok(note);
     }
 
@@ -87,8 +91,9 @@ public static class NoteEndpoints
             return Results.Unauthorized();
         }
 
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
         var note = await repo.UpdateAsync(
-            userId, id, request.Title, request.Content, request.Tags, ct);
+            tenantId, userId, id, request.Title, request.Content, request.Tags, ct);
 
         return note is null ? Results.NotFound() : Results.Ok(note);
     }
@@ -104,7 +109,8 @@ public static class NoteEndpoints
             return Results.Unauthorized();
         }
 
-        var deleted = await repo.DeleteAsync(userId, id, ct);
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
+        var deleted = await repo.DeleteAsync(tenantId, userId, id, ct);
         return deleted ? Results.NoContent() : Results.NotFound();
     }
 

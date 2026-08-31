@@ -55,10 +55,10 @@ Sau khi container `aiq-postgres` `healthy`, schema khởi tạo trong `infra/pos
 
 | Service | URL / Port |
 |---------|------------|
-| Caddy (HTTPS) | https://localhost (route `/` → gateway, `/agent/*` → agent) |
+| Caddy (HTTPS) | https://localhost (public traffic routes to the gateway) |
 | Caddy (HTTP redirect) | http://localhost (→ HTTPS) |
 | Gateway (direct) | http://localhost:8080 |
-| Agent (direct) | http://localhost:8001 |
+| Agent runtime | Internal Docker network only (`agent:8000`) |
 | PostgreSQL | `localhost:5432` (user/db trong `.env`) |
 | Qdrant HTTP | http://localhost:6333 |
 | Qdrant gRPC | `localhost:6334` |
@@ -80,12 +80,8 @@ curl -X POST http://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"demo@aiq.local","password":"changeme123"}'
 
-# Agent (Planner-Executor-Critic, default tool=echo)
-curl http://localhost:8001/healthz/ready
-curl http://localhost:8001/tools
-curl -X POST http://localhost:8001/chat \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"Echo hello to confirm tools work","tool":"echo","tool_arguments":{"message":"hi"}}'
+# Agent runtime is intentionally not exposed on a host port. Authenticated
+# chat/execution requests go through the web application and Gateway policy.
 
 # Postgres
 docker exec -it aiq-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt"
@@ -96,6 +92,27 @@ curl http://localhost:6333/collections
 # Redis
 docker exec -it aiq-redis redis-cli -a "$REDIS_PASSWORD" ping
 ```
+
+### Bootstrap the first `super_admin`
+
+On a fresh installation, register exactly one ordinary account first, then
+promote it with the guarded bootstrap transaction. This process only works
+while no active `super_admin` exists:
+
+```bash
+curl -X POST http://localhost:8080/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"root@example.com","password":"replace-with-a-strong-password","displayName":"System administrator"}'
+
+docker exec -i aiq-postgres psql -U "${POSTGRES_USER:-aiq}" -d "${POSTGRES_DB:-aiq}" \
+  -v email='root@example.com' \
+  < infra/postgres/bootstrap/first-super-admin.sql
+```
+
+The transaction takes the same database advisory lock as the identity trigger,
+removes the bootstrap account's default-tenant membership, and refuses to run
+if another active `super_admin` already exists. Log in again after promotion
+to obtain a JWT containing the new role.
 
 ---
 
@@ -149,7 +166,31 @@ Production: copy `infra/caddy/Caddyfile.prod` → `infra/caddy/Caddyfile`, đổ
 Routes:
 
 - `/healthz/*` và `/auth/*`, `/uploads/*`, `/me` → Gateway
-- `/agent/*` → Agent (prefix `/agent` được strip trước khi forward — `/agent/chat` → `/chat`)
+- Agent runtime is internal-only; browser requests go through authenticated gateway/web BFF routes.
+
+## Claude SDK — production authentication
+
+Agents configured with `provider: claude_sdk` (`agentic/tools`, dynamic Agent
+Builder agents) run through `ClaudeSDKClient`, which spawns the `claude` CLI
+as a subprocess. It needs one of two credential sources — **never commit
+either to source or bake it into a Docker image**:
+
+1. **`ANTHROPIC_API_KEY` (recommended for production).** Set it in `.env`
+   (already plumbed through `docker-compose.yml` → the `agent` container's
+   environment). The CLI subprocess inherits the container's environment and
+   uses the API key automatically — no login step, no per-container session
+   state, billed per token instead of subscription-rate-limited. This is the
+   only path safe for concurrent multi-user traffic.
+2. **Subscription/OAuth login (dev/low-traffic only).** Run `docker compose
+   exec agent claude login` (or `claude setup-token`) once, interactively.
+   The session is written to `/home/app/.claude`, which is a **named Docker
+   volume** (`agent_claude_home`) so it survives `docker compose restart`/
+   `up -d` — but is wiped by `docker compose down -v`. Subscription auth is
+   rate-limited per Anthropic's plan tiers (e.g. Max ~50 msg/5h) and must not
+   be used for production multi-user load.
+
+If neither is configured, `claude_sdk`-provider agents fail closed with a
+clear "not logged in" error at execution time rather than hanging.
 
 ## Reset hạ tầng
 

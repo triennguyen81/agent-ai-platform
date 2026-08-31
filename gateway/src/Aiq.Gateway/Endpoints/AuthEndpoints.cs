@@ -66,28 +66,21 @@ public static class AuthEndpoints
 
         if (existing is null)
         {
-            // 3-tier model default: new external users start as plain `user`
-            // (can chat). `admin` / `super_admin` granted only via AdditionalRoles
-            // (bootstrap path) or later by a super_admin through /users.
-            await users.AssignRoleAsync(user.Id, "user", ct);
-        }
-
-        // Caller (web tier, authenticated via shared secret) may request extra
-        // roles for the user — used for bootstrapping INITIAL_ADMIN_EMAIL as
-        // super_admin so the founder account regains full access after roles
-        // refactor.
-        if (request.AdditionalRoles is { Length: > 0 })
-        {
-            var allowed = new HashSet<string>(
-                new[] { "super_admin", "admin", "user", "reviewer", "uploader", "viewer" },
-                StringComparer.OrdinalIgnoreCase);
-            foreach (var role in request.AdditionalRoles)
+            var requestedRole = request.AdditionalRoles?
+                .Select(r => r.ToLowerInvariant())
+                .FirstOrDefault(LoginRoleRules.IsAllowed) ?? "user";
+            var tenantId = requestedRole == "super_admin"
+                ? null
+                : await ResolveDefaultTenantAsync(tenants, user.Id, ct)
+                    ?? (await tenants.FindByCodeAsync("default", ct))?.Id;
+            await users.SetTenantAsync(user.Id, tenantId, ct);
+            if (tenantId is { } tid)
             {
-                if (allowed.Contains(role))
-                {
-                    await users.AssignRoleAsync(user.Id, role.ToLowerInvariant(), ct);
-                }
+                await tenants.UpsertMembershipAsync(
+                    tid, user.Id, requestedRole == "admin" ? "tenant_admin" : "member", ct);
             }
+            await users.AssignRoleAsync(user.Id, requestedRole, ct);
+            user = (await users.FindByIdAsync(user.Id, ct))!;
         }
 
         var roles = await users.GetRolesAsync(user.Id, ct);
@@ -126,18 +119,23 @@ public static class AuthEndpoints
 
         var hash = hasher.Hash(request.Password);
         var user = await users.CreateAsync(request.Email, hash, request.DisplayName, ct);
-        await users.AssignRoleAsync(user.Id, "user", ct);
 
         // Auto-add to default tenant as member so first login has a tenant context
         var defaultTenant = await tenants.FindByCodeAsync("default", ct);
         if (defaultTenant is not null)
         {
+            await users.SetTenantAsync(user.Id, defaultTenant.Id, ct);
             await tenants.UpsertMembershipAsync(defaultTenant.Id, user.Id, "member", ct);
         }
+        else
+        {
+            return Results.Problem("Default tenant is not configured.", statusCode: 503);
+        }
+        await users.AssignRoleAsync(user.Id, "user", ct);
+        user = (await users.FindByIdAsync(user.Id, ct))!;
 
         var roles = await users.GetRolesAsync(user.Id, ct);
-        var defaultTenantId = await ResolveDefaultTenantAsync(tenants, user.Id, ct);
-        var token = jwt.Issue(user, roles, defaultTenantId);
+        var token = jwt.Issue(user, roles, user.TenantId);
 
         return Results.Created($"/users/{user.Id}", new AuthResponse(
             token.Token, token.ExpiresAt, user.Id, user.Email, roles));
@@ -163,8 +161,7 @@ public static class AuthEndpoints
         }
 
         var roles = await users.GetRolesAsync(user.Id, ct);
-        var defaultTenantId = await ResolveDefaultTenantAsync(tenants, user.Id, ct);
-        var token = jwt.Issue(user, roles, defaultTenantId);
+        var token = jwt.Issue(user, roles, user.TenantId);
 
         return Results.Ok(new AuthResponse(
             token.Token, token.ExpiresAt, user.Id, user.Email, roles));

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     # 200K chars leaves headroom for the web tier to prepend a knowledge
     # block. Still well inside Claude Haiku 4.5's 200K-token context.
     prompt: str = Field(min_length=1, max_length=200_000)
@@ -24,6 +25,7 @@ class ChatRequest(BaseModel):
         description="Conversation id. When provided, prior turns are loaded from memory and the new exchange is appended.",
     )
     memory_limit: int = Field(default=20, ge=0, le=200)
+    agent_id: str | None = Field(default=None, max_length=64)
 
 
 class StepResponse(BaseModel):
@@ -62,8 +64,8 @@ class ThreadHistoryResponse(BaseModel):
 
 
 class AgentRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     task: str = Field(min_length=1, max_length=20_000)
-    user_token: str = Field(min_length=10, max_length=8_000)
     skills: list[str] | None = Field(
         default=None,
         description="Skill names to enable (default: all auto-discovered).",
@@ -72,9 +74,8 @@ class AgentRunRequest(BaseModel):
     agent_id: str | None = Field(
         default=None,
         description=(
-            "Optional governance agent id. When set, allowed_tools is fetched "
-            "from /agents/{id}/tools/allowed instead of the hardcoded default. "
-            "Backward-compatible: omit to use the legacy hardcoded tool list."
+            "Agent id. For agent-scoped execution, runtime settings, skills, "
+            "tools and max turns come only from the Gateway manifest."
         ),
     )
 
@@ -105,6 +106,18 @@ class AuditEntryResponse(BaseModel):
     ms: int
     ok: bool
     detail: str | None = None
+    user_id: str | None = None
+    tenant_id: str | None = None
+    agent_id: str | None = None
+    version: int | None = None
+    provider: str | None = None
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    estimated_cost_usd: float | None = None
+    tools_used: list[str] | None = None
+    delegations: list[str] | None = None
+    workflow_id: str | None = None
 
 
 class EmbeddingNoteInput(BaseModel):
@@ -116,8 +129,9 @@ class EmbeddingNoteInput(BaseModel):
 
 
 class EmbeddingQueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     query: str = Field(min_length=1, max_length=10_000)
-    user_id: str = Field(min_length=1, max_length=128)
+    user_id: str | None = Field(default=None, max_length=128, description="Deprecated; authenticated user is authoritative.")
     notes: list[EmbeddingNoteInput]
     k: int = Field(default=10, ge=1, le=50)
 

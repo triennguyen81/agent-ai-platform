@@ -24,6 +24,7 @@ from aiq_agent.api.schemas import (
     ThreadHistoryResponse,
     ThreadSummaryResponse,
 )
+from aiq_agent.api.security import RuntimePrincipal, require_agent_execution, require_principal
 from aiq_agent.embeddings import EmbeddingService
 from aiq_agent.embeddings.service import IngestNote
 from aiq_agent.config import get_settings
@@ -33,6 +34,19 @@ from aiq_agent.memory.base import MemoryStore
 from aiq_agent.orchestration import PlannerExecutorCritic
 from aiq_agent.skills import SkillRegistry, select_skills
 from aiq_agent.tools.registry import ToolExecutionError, ToolRegistry
+from aiq_agent.runtime import build_agent_executor
+
+
+def _tenant_thread_id(principal: RuntimePrincipal, thread_id: str) -> str:
+    if not principal.tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant context is required")
+    return f"tenant:{principal.tenant_id}:user:{principal.user_id}:thread:{thread_id}"
+
+
+def _tenant_thread_prefix(principal: RuntimePrincipal) -> str:
+    if not principal.tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant context is required")
+    return f"tenant:{principal.tenant_id}:user:{principal.user_id}:thread:"
 
 router = APIRouter()
 
@@ -142,6 +156,7 @@ async def ready(llm: LlmService = Depends(_llm)) -> HealthResponse:
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     body: ChatRequest,
+    principal: RuntimePrincipal = Depends(require_principal),
     llm: LlmService = Depends(_llm),
     tools: ToolRegistry = Depends(_tools),
     memory: MemoryStore = Depends(_memory),
@@ -151,7 +166,12 @@ async def chat(
     import time as _t
 
     _started = _t.monotonic()
-    if body.tool and tools.get(body.tool) is None:
+    if principal.is_user_only and not body.agent_id:
+        raise HTTPException(status_code=403, detail="An assigned agent is required")
+    manifest = None
+    if body.agent_id:
+        manifest = await require_agent_execution(principal, body.agent_id)
+    if body.tool and manifest is None and tools.get(body.tool) is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown tool: {body.tool!r}",
@@ -159,12 +179,36 @@ async def chat(
 
     prior_history: list[ChatMessage] = []
     if body.thread_id:
-        prior_history = await memory.get(body.thread_id, limit=body.memory_limit)
+        prior_history = await memory.get(_tenant_thread_id(principal, body.thread_id), limit=body.memory_limit)
 
     thinking: str | None = None
     steps: list[StepResponse] = []
 
-    if body.tool:
+    if manifest is not None:
+        # All client runtime knobs and client knowledge are intentionally
+        # ignored here. The signed Gateway manifest is the sole authority.
+        try:
+            executor = build_agent_executor(manifest, get_settings(), skills)
+            dynamic = await executor.execute(
+                prompt=body.prompt,
+                token=principal.token,
+                prior_history=prior_history,
+            )
+        except Exception as exc:  # fail closed and audit without prompt content
+            if audit is not None:
+                await audit.write(
+                    event="agent_execution", name="dynamic_chat",
+                    user_prefix=principal.user_id[:12],
+                    ms=int((_t.monotonic() - _started) * 1000), ok=False,
+                    detail=f"{exc.__class__.__name__}: {exc}"[:200],
+                    user_id=str(manifest.userId), tenant_id=str(manifest.tenantId),
+                    agent_id=str(manifest.agent.id), version=manifest.version,
+                    provider=manifest.provider, model=manifest.model,
+                )
+            raise HTTPException(status_code=502, detail="Dynamic agent execution failed") from exc
+        thinking, final_answer = _split_thinking(dynamic.final_answer)
+        steps = [StepResponse(role=step.role, content=step.text) for step in dynamic.steps]
+    elif body.tool:
         # Tool-augmented path keeps the Planner-Executor-Critic loop.
         orchestrator = PlannerExecutorCritic(llm=llm, tools=tools)
         try:
@@ -231,7 +275,7 @@ async def chat(
     history_length = len(prior_history)
     if body.thread_id:
         await memory.append(
-            body.thread_id,
+            _tenant_thread_id(principal, body.thread_id),
             [
                 ChatMessage("user", body.prompt),
                 ChatMessage("assistant", final_answer),
@@ -249,18 +293,30 @@ async def chat(
             except NameError:
                 audit_name = "no-skill"
         await audit.write(
-            event="chat",
+            event="agent_execution" if manifest is not None else "chat",
             name=audit_name,
             user_prefix=user_prefix,
             ms=int((_t.monotonic() - _started) * 1000),
             ok=True,
-            detail=body.prompt[:200],
+            detail=None if manifest is not None else body.prompt[:200],
+            user_id=str(manifest.userId) if manifest is not None else None,
+            tenant_id=str(manifest.tenantId) if manifest is not None else None,
+            agent_id=str(manifest.agent.id) if manifest is not None else None,
+            version=manifest.version if manifest is not None else None,
+            provider=manifest.provider if manifest is not None else None,
+            model=manifest.model if manifest is not None else None,
+            input_tokens=dynamic.input_tokens if manifest is not None else None,
+            output_tokens=dynamic.output_tokens if manifest is not None else None,
+            estimated_cost_usd=dynamic.estimated_cost_usd if manifest is not None else None,
+            tools_used=dynamic.tools_used if manifest is not None else None,
+            delegations=dynamic.delegations if manifest is not None else None,
+            workflow_id=dynamic.workflow_id if manifest is not None else None,
         )
 
     return ChatResponse(
         final_answer=final_answer,
-        provider=llm.provider,
-        model=llm.model,
+        provider=manifest.provider if manifest is not None else llm.provider,
+        model=manifest.model if manifest is not None else llm.model,
         thread_id=body.thread_id,
         history_length=history_length,
         thinking=thinking,
@@ -271,13 +327,15 @@ async def chat(
 @router.get("/chat/threads", response_model=list[ThreadSummaryResponse])
 async def list_threads(
     memory: MemoryStore = Depends(_memory),
+    principal: RuntimePrincipal = Depends(require_principal),
     prefix: str | None = None,
     limit: int = 50,
 ) -> list[ThreadSummaryResponse]:
-    summaries = await memory.list_threads(prefix=prefix, limit=limit)
+    scope = _tenant_thread_prefix(principal)
+    summaries = await memory.list_threads(prefix=scope + (prefix or ""), limit=limit)
     return [
         ThreadSummaryResponse(
-            thread_id=s.thread_id,
+            thread_id=s.thread_id.removeprefix(scope),
             title=s.title,
             message_count=s.message_count,
             updated_at=s.updated_at,
@@ -290,8 +348,9 @@ async def list_threads(
 async def get_thread(
     thread_id: str,
     memory: MemoryStore = Depends(_memory),
+    principal: RuntimePrincipal = Depends(require_principal),
 ) -> ThreadHistoryResponse:
-    history = await memory.get(thread_id)
+    history = await memory.get(_tenant_thread_id(principal, thread_id))
     return ThreadHistoryResponse(
         thread_id=thread_id,
         messages=[
@@ -303,8 +362,8 @@ async def get_thread(
 
 
 @router.delete("/chat/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def clear_thread(thread_id: str, memory: MemoryStore = Depends(_memory)) -> None:
-    await memory.clear(thread_id)
+async def clear_thread(thread_id: str, memory: MemoryStore = Depends(_memory), principal: RuntimePrincipal = Depends(require_principal)) -> None:
+    await memory.clear(_tenant_thread_id(principal, thread_id))
 
 
 @router.get("/tools", response_model=list[dict])
@@ -330,6 +389,7 @@ async def list_skills(skills: SkillRegistry = Depends(_skills)) -> list[SkillSum
 async def embeddings_query(
     body: EmbeddingQueryRequest,
     embeddings: EmbeddingService | None = Depends(_embeddings),
+    principal: RuntimePrincipal = Depends(require_principal),
 ) -> EmbeddingQueryResponse:
     """Lazy-upsert notes + return top-K nearest to the query.
 
@@ -349,7 +409,8 @@ async def embeddings_query(
         ingest_notes = [
             IngestNote(
                 note_id=n.id,
-                user_id=body.user_id,
+                tenant_id=principal.tenant_id or "",
+                user_id=principal.user_id,
                 title=n.title,
                 content=n.content,
             )
@@ -361,7 +422,8 @@ async def embeddings_query(
         hits = await asyncio.to_thread(
             embeddings.search,
             query=body.query,
-            user_id=body.user_id,
+            tenant_id=principal.tenant_id or "",
+            user_id=principal.user_id,
             k=body.k,
         )
         return EmbeddingQueryResponse(
@@ -382,11 +444,14 @@ async def embeddings_query(
 async def admin_audit(
     limit: int = 100,
     event: str | None = None,
+    tenant_id: str | None = None,
     audit: AuditStore | None = Depends(_audit),
 ) -> list[AuditEntryResponse]:
     if audit is None:
         return []
-    entries = await audit.list(limit=max(1, min(limit, 500)), event=event)
+    entries = await audit.list(
+        limit=max(1, min(limit, 500)), event=event, tenant_id=tenant_id
+    )
     return [
         AuditEntryResponse(
             ts=e.ts,
@@ -396,6 +461,18 @@ async def admin_audit(
             ms=e.ms,
             ok=e.ok,
             detail=e.detail,
+            user_id=e.user_id,
+            tenant_id=e.tenant_id,
+            agent_id=e.agent_id,
+            version=e.version,
+            provider=e.provider,
+            model=e.model,
+            input_tokens=e.input_tokens,
+            output_tokens=e.output_tokens,
+            estimated_cost_usd=e.estimated_cost_usd,
+            tools_used=e.tools_used,
+            delegations=e.delegations,
+            workflow_id=e.workflow_id,
         )
         for e in entries
     ]
@@ -404,7 +481,9 @@ async def admin_audit(
 @router.post("/agent/run", response_model=AgentRunResponse)
 async def agentic_run(
     body: AgentRunRequest,
+    principal: RuntimePrincipal = Depends(require_principal),
     audit: AuditStore | None = Depends(_audit),
+    skill_registry: SkillRegistry = Depends(_skills),
 ) -> AgentRunResponse:
     """Run a multi-step agentic task via the Claude Agent SDK.
 
@@ -420,30 +499,24 @@ async def agentic_run(
     import time as _t
 
     _started = _t.monotonic()
-    user_prefix = "anon"
-    try:
-        # Best-effort decode JWT to derive user prefix for audit; tools.py
-        # also uses this token verbatim so we don't want to verify it twice.
-        import base64
-        import json as _json
-
-        parts = body.user_token.split(".")
-        if len(parts) >= 2:
-            padded = parts[1] + "=" * (-len(parts[1]) % 4)
-            claims = _json.loads(base64.urlsafe_b64decode(padded))
-            user_prefix = str(claims.get("sub", "anon"))[:12]
-    except Exception:  # noqa: BLE001
-        pass
+    if principal.is_user_only and not body.agent_id:
+        raise HTTPException(status_code=403, detail="An assigned agent is required")
+    manifest = await require_agent_execution(principal, body.agent_id) if body.agent_id else None
+    user_prefix = principal.user_id[:12] or "anon"
 
     try:
-        result = await run_task(
-            task=body.task,
-            user_token=body.user_token,
-            gateway_base=settings.gateway_base_url,
-            skills=body.skills or "all",
-            max_turns=body.max_turns,
-            agent_id=body.agent_id,
-        )
+        if manifest is not None:
+            executor = build_agent_executor(manifest, settings, skill_registry)
+            result = await executor.execute(prompt=body.task, token=principal.token)
+        else:
+            result = await run_task(
+                task=body.task,
+                user_token=principal.token,
+                gateway_base=settings.gateway_base_url,
+                skills=body.skills or "all",
+                max_turns=body.max_turns,
+                agent_id=None,
+            )
     except Exception as exc:  # noqa: BLE001 — surface root cause to caller
         if audit is not None:
             await audit.write(
@@ -453,6 +526,12 @@ async def agentic_run(
                 ms=int((_t.monotonic() - _started) * 1000),
                 ok=False,
                 detail=f"{exc.__class__.__name__}: {exc}"[:200],
+                user_id=str(manifest.userId) if manifest else principal.user_id,
+                tenant_id=str(manifest.tenantId) if manifest else None,
+                agent_id=str(manifest.agent.id) if manifest else None,
+                version=manifest.version if manifest else None,
+                provider=manifest.provider if manifest else None,
+                model=manifest.model if manifest else None,
             )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -466,7 +545,21 @@ async def agentic_run(
             user_prefix=user_prefix,
             ms=int((_t.monotonic() - _started) * 1000),
             ok=True,
-            detail=body.task[:200],
+            detail=None if manifest else body.task[:200],
+            user_id=str(manifest.userId) if manifest else principal.user_id,
+            tenant_id=str(manifest.tenantId) if manifest else None,
+            agent_id=str(manifest.agent.id) if manifest else None,
+            version=manifest.version if manifest else None,
+            provider=manifest.provider if manifest else None,
+            model=manifest.model if manifest else None,
+            # result is ExecutionResult only on the manifest-driven path — the
+            # legacy AgenticRunResult (manifest is None) has no usage/cost data.
+            input_tokens=result.input_tokens if manifest else None,
+            output_tokens=result.output_tokens if manifest else None,
+            estimated_cost_usd=result.estimated_cost_usd if manifest else None,
+            tools_used=result.tools_used if manifest else None,
+            delegations=result.delegations if manifest else None,
+            workflow_id=result.workflow_id if manifest else None,
         )
 
     return AgentRunResponse(

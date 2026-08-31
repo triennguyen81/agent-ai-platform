@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Governance;
+using Aiq.Gateway.Middleware;
 
 namespace Aiq.Gateway.Endpoints;
 
@@ -78,8 +79,9 @@ public static class ToolEndpoints
     }
 
     private static async Task<IResult> ListAgentToolsAsync(
-        Guid agentId, IToolRepository repo, CancellationToken ct)
+        Guid agentId, IToolRepository repo, IAgentRepository agents, HttpContext ctx, CancellationToken ct)
     {
+        if (!await IsCurrentTenantAgent(agentId, agents, ctx, ct)) return Results.NotFound();
         var items = await repo.ListGrantsAsync(agentId, ct);
         return Results.Ok(new { items, total = items.Count });
     }
@@ -89,6 +91,8 @@ public static class ToolEndpoints
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
         if (!TryGetUserId(ctx, out var actorId)) return Results.Unauthorized();
+        var agents = ctx.RequestServices.GetRequiredService<IAgentRepository>();
+        if (!await IsCurrentTenantAgent(agentId, agents, ctx, ct)) return Results.NotFound();
         try
         {
             var ok = await repo.GrantAsync(agentId, request.ToolId, actorId, ct);
@@ -101,8 +105,10 @@ public static class ToolEndpoints
     }
 
     private static async Task<IResult> RevokeToolAsync(
-        Guid agentId, Guid toolId, IToolRepository repo, CancellationToken ct)
+        Guid agentId, Guid toolId, IToolRepository repo, IAgentRepository agents,
+        HttpContext ctx, CancellationToken ct)
     {
+        if (!await IsCurrentTenantAgent(agentId, agents, ctx, ct)) return Results.NotFound();
         var ok = await repo.RevokeAsync(agentId, toolId, ct);
         return ok ? Results.NoContent() : Results.NotFound();
     }
@@ -112,11 +118,18 @@ public static class ToolEndpoints
     /// codes the agent may actually invoke (active + tier-allowed).
     /// </summary>
     private static async Task<IResult> AllowedCodesAsync(
-        Guid agentId, IToolRepository repo, CancellationToken ct)
+        Guid agentId, IToolRepository repo, IAgentRepository agents,
+        HttpContext ctx, CancellationToken ct)
     {
+        if (!await IsCurrentTenantAgent(agentId, agents, ctx, ct)) return Results.NotFound();
         var codes = await repo.ListAllowedToolCodesAsync(agentId, ct);
         return Results.Ok(new { codes });
     }
+
+    private static async Task<bool> IsCurrentTenantAgent(
+        Guid agentId, IAgentRepository agents, HttpContext ctx, CancellationToken ct) =>
+        TenantContext.TryGet(ctx, out var tenantId)
+        && await agents.FindAsync(tenantId, agentId, ct) is not null;
 
     private static bool TryGetUserId(HttpContext ctx, out Guid userId)
     {

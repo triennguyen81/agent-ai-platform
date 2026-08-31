@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Governance;
 using Aiq.Gateway.Middleware;
+using Aiq.Gateway.Data;
 
 namespace Aiq.Gateway.Endpoints;
 
@@ -35,7 +36,25 @@ public static class AgentEndpoints
             .RequireAuthorization()
             .RequireRateLimiting("default");
 
+        app.MapGet("/runtime/agents/{id:guid}/authorization", AuthorizeExecutionAsync)
+            .RequireAuthorization("user")
+            .RequireRateLimiting("default");
+
         return app;
+    }
+
+    private static async Task<IResult> AuthorizeExecutionAsync(
+        Guid id, IAgentAssignmentRepository assignments, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
+        var isSuperAdmin = ctx.User.IsInRole("super_admin");
+        var isTenantAdmin = ctx.User.IsInRole("admin") || ctx.User.IsInRole("tenant_owner");
+        Guid? tenantId = TenantContext.TryGet(ctx, out var tid) ? tid : null;
+        var result = await assignments.AuthorizeExecutionAsync(
+            userId, tenantId, isSuperAdmin, isTenantAdmin, id, ct);
+        if (result is null) return Results.NotFound();
+        return result.Allowed ? Results.Ok(result) : Results.Json(
+            new { error = result.DenialReason }, statusCode: StatusCodes.Status403Forbidden);
     }
 
     private static async Task<IResult> UserAgentsAsync(
@@ -146,31 +165,46 @@ public static class AgentEndpoints
     }
 
     private static async Task<IResult> LifecycleAsync(
-        Guid id, IAgentRepository repo, CancellationToken ct)
+        Guid id, IAgentRepository repo, HttpContext ctx, CancellationToken ct)
     {
+        if (!TenantContext.TryGet(ctx, out var tenantId)
+            || await repo.FindAsync(tenantId, id, ct) is null) return Results.NotFound();
         var events = await repo.ListLifecycleEventsAsync(id, ct);
         return Results.Ok(new { items = events, total = events.Count });
     }
 
     private static async Task<IResult> AclAsync(
-        Guid id, IAgentRepository repo, CancellationToken ct)
+        Guid id, IAgentRepository repo, HttpContext ctx, CancellationToken ct)
     {
+        if (!TenantContext.TryGet(ctx, out var tenantId)
+            || await repo.FindAsync(tenantId, id, ct) is null) return Results.NotFound();
         var acl = await repo.ListAclAsync(id, ct);
         return Results.Ok(new { items = acl, total = acl.Count });
     }
 
     private static async Task<IResult> GrantAclAsync(
-        Guid id, GrantAclRequest request, IAgentRepository repo, HttpContext ctx, CancellationToken ct)
+        Guid id, GrantAclRequest request, IAgentRepository repo, IUserRepository users,
+        HttpContext ctx, CancellationToken ct)
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
         if (!TryGetUserId(ctx, out var actorUserId)) return Results.Unauthorized();
+        if (!TenantContext.TryGet(ctx, out var tenantId)
+            || await repo.FindAsync(tenantId, id, ct) is null) return Results.NotFound();
+        if (request.PrincipalType is null or "user")
+        {
+            var principal = await users.FindByIdAsync(request.PrincipalId, ct);
+            if (principal?.TenantId != tenantId) return Results.BadRequest(new { error = "principal must belong to the agent tenant" });
+        }
         var ok = await repo.GrantAclAsync(id, actorUserId, request, ct);
         return ok ? Results.NoContent() : Results.BadRequest();
     }
 
     private static async Task<IResult> RevokeAclAsync(
-        Guid id, Guid principalId, IAgentRepository repo, CancellationToken ct, string principalType = "user")
+        Guid id, Guid principalId, IAgentRepository repo, HttpContext ctx,
+        CancellationToken ct, string principalType = "user")
     {
+        if (!TenantContext.TryGet(ctx, out var tenantId)
+            || await repo.FindAsync(tenantId, id, ct) is null) return Results.NotFound();
         var ok = await repo.RevokeAclAsync(id, principalId, principalType, ct);
         return ok ? Results.NoContent() : Results.NotFound();
     }

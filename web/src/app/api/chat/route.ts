@@ -106,7 +106,7 @@ export async function POST(request: NextRequest) {
     const userId = decodeUserId(token);
     if (userId) {
       try {
-        const embRes = await agent.queryEmbeddings({
+        const embRes = await agent.queryEmbeddings(token, {
           query: prompt,
           user_id: userId,
           notes: allNotes.map((n) => ({
@@ -143,11 +143,12 @@ export async function POST(request: NextRequest) {
   // unchanged in memory (used for the sidebar thread title). The knowledge
   // block goes via the side-channel `knowledge_context` field — the agent
   // merges it into its system prompt only.
-  const res = await agent.chat({
+  const res = await agent.chat(token, {
     prompt,
     knowledge_context: knowledgeBlock || undefined,
     thread_id: namespacedThreadId(token, body.thread_id),
     temperature: body.temperature ?? 0.2,
+    agent_id: agentId ?? undefined,
   });
 
   const text = await res.text();

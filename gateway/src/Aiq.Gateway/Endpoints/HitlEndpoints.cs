@@ -33,13 +33,43 @@ public static class HitlEndpoints
         hitl.MapGet("/queue", QueueAsync);                // human reviewers
         hitl.MapPost("/{actionId:guid}/decide", DecideAsync);
 
+        // Phase 5D: the actual real-execution integration point. Called by
+        // the dynamic runtime, using the same short-lived tool_execution
+        // token minted alongside the manifest (see DynamicAgentEndpoints) —
+        // never a role a real login can carry, never handed to the browser.
+        app.MapPost("/runtime/agents/{agentId:guid}/hitl/evaluate", EvaluateAsync)
+            .RequireAuthorization("resource_or_tool").RequireRateLimiting("default");
+
         return app;
     }
 
-    private static async Task<IResult> ListGatesAsync(
-        Guid agentId, IHitlRepository repo, CancellationToken ct)
+    public sealed record EvaluateRequest(
+        [Required, StringLength(200, MinimumLength = 1)] string ToolCode,
+        [Required] System.Text.Json.JsonElement Payload);
+
+    private static async Task<IResult> EvaluateAsync(
+        Guid agentId, EvaluateRequest request, IHitlRepository repo, HttpContext ctx, CancellationToken ct)
     {
-        var items = await repo.ListGatesAsync(agentId, ct);
+        if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest(new { error = "tenant_context_missing" });
+        if (!TryGetUserId(ctx, out var actorId)) return Results.Unauthorized();
+
+        var result = await repo.EvaluateAsync(tenantId, agentId, actorId, request.ToolCode, request.Payload, ct);
+        var outcome = result.Outcome switch
+        {
+            HitlOutcome.Allowed => "allowed",
+            HitlOutcome.Rejected => "rejected",
+            _ => "pending",
+        };
+        return Results.Ok(new { outcome, actionId = result.ActionId, gateName = result.GateName });
+    }
+
+    private static async Task<IResult> ListGatesAsync(
+        Guid agentId, IHitlRepository repo, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TenantContext.TryGet(ctx, out var tenantId)
+            || !await repo.IsAgentVisibleToTenantAsync(tenantId, agentId, ct)) return Results.NotFound();
+        var items = await repo.ListGatesAsync(tenantId, agentId, ct);
         return Results.Ok(new { items, total = items.Count });
     }
 
@@ -49,6 +79,7 @@ public static class HitlEndpoints
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
         if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
+        if (!await repo.IsAgentVisibleToTenantAsync(tenantId, agentId, ct)) return Results.NotFound();
         if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
         try
         {
@@ -62,16 +93,18 @@ public static class HitlEndpoints
     }
 
     private static async Task<IResult> UpdateGateAsync(
-        Guid gateId, UpdateGateRequest request, IHitlRepository repo, CancellationToken ct)
+        Guid gateId, UpdateGateRequest request, IHitlRepository repo, HttpContext ctx, CancellationToken ct)
     {
-        var g = await repo.UpdateGateAsync(gateId, request, ct);
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
+        var g = await repo.UpdateGateAsync(tenantId, gateId, request, ct);
         return g is null ? Results.NotFound() : Results.Ok(g);
     }
 
     private static async Task<IResult> DeleteGateAsync(
-        Guid gateId, IHitlRepository repo, CancellationToken ct)
+        Guid gateId, IHitlRepository repo, HttpContext ctx, CancellationToken ct)
     {
-        var ok = await repo.DeleteGateAsync(gateId, ct);
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
+        var ok = await repo.DeleteGateAsync(tenantId, gateId, ct);
         return ok ? Results.NoContent() : Results.NotFound();
     }
 
@@ -106,8 +139,9 @@ public static class HitlEndpoints
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
         if (!TryGetUserId(ctx, out var deciderId)) return Results.Unauthorized();
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
 
-        var action = await repo.DecideAsync(actionId, deciderId, request, ct);
+        var action = await repo.DecideAsync(tenantId, actionId, deciderId, request, ct);
         return action is null
             ? Results.BadRequest(new { error = "Action không tồn tại hoặc đã được quyết định" })
             : Results.Ok(action);

@@ -11,7 +11,7 @@ public static class ChecklistEndpoints
     {
         var perContract = app
             .MapGroup("/contracts/{contractId:guid}/checklist")
-            .RequireAuthorization("admin")
+            .RequireAuthorization("resource_or_tool")
             .RequireRateLimiting("default");
 
         perContract.MapGet("/", ListAsync);
@@ -19,7 +19,7 @@ public static class ChecklistEndpoints
 
         var perItem = app
             .MapGroup("/checklist/{itemId:guid}")
-            .RequireAuthorization("admin")
+            .RequireAuthorization("resource_or_tool")
             .RequireRateLimiting("default");
 
         perItem.MapPatch("/", UpdateAsync);

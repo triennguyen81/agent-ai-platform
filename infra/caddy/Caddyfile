@@ -1,8 +1,7 @@
 # AIQ Agentic AI — Caddy reverse proxy
 #
-# Routes:
-#   /agent/*  → aiq-agent:8000 (FastAPI)  — prefix stripped before forward
-#   else      → aiq-gateway:8080 (ASP.NET Core)
+# Public routes terminate at aiq-gateway:8080. The FastAPI agent runtime is
+# reachable only on the internal Docker network.
 #
 # Local development:
 #   Caddy auto-issues a locally-trusted cert via its `internal` issuer.
@@ -31,7 +30,7 @@
 # ---------------------------------------------------------------------------
 # HTTPS — :443
 # ---------------------------------------------------------------------------
-:443 {
+localhost {
     encode zstd gzip
 
     # Security headers (HSTS off in dev; enable in prod template).
@@ -46,13 +45,6 @@
     # Health passthrough — keep these cheap and unauthenticated upstream.
     handle /healthz/* {
         reverse_proxy aiq-gateway:8080
-    }
-
-    # Agent service — strip /agent prefix so /agent/chat → /chat upstream.
-    handle_path /agent/* {
-        reverse_proxy aiq-agent:8000 {
-            header_up Host {upstream_hostport}
-        }
     }
 
     # Everything else → gateway.

@@ -57,7 +57,16 @@ public sealed class VoucherExtractJobRunner
         _logger.LogInformation(
             "Voucher extract job start · id={VoucherId} type={Type}", voucherId, voucherType);
 
-        var stub = await _vouchers.FindAsync(tenantId, userId, voucherId, ct);
+        // Tenant context required — colleague's IVoucherRepository signatures
+        // enforce non-nullable Guid tenantId. If Hangfire enqueue lost tenant
+        // context (should not happen in normal flow), skip gracefully.
+        if (tenantId is not Guid tenantIdValue)
+        {
+            _logger.LogWarning("Voucher {VoucherId} has no tenant context — extract skipped", voucherId);
+            return;
+        }
+
+        var stub = await _vouchers.FindAsync(tenantIdValue, userId, voucherId, ct);
         if (stub is null)
         {
             _logger.LogWarning("Voucher {VoucherId} not found — extract skipped", voucherId);
@@ -291,7 +300,7 @@ public sealed class VoucherExtractJobRunner
             }
         }
 
-        await _vouchers.ReplaceExtractedAsync(voucherId, applyRequest, ct);
+        await _vouchers.ReplaceExtractedAsync(tenantIdValue, userId, voucherId, applyRequest, ct);
 
         // Save journal entries if agent produced valid ones.
         if (entries is not null && entries.Count > 0)
@@ -300,6 +309,8 @@ public sealed class VoucherExtractJobRunner
             if (normalized.Count > 0)
             {
                 await _vouchers.SaveJournalSuggestionsAsync(
+                    tenantIdValue,
+                    userId,
                     voucherId,
                     new SaveJournalSuggestionsRequest(normalized, ReplaceExisting: true),
                     ct);

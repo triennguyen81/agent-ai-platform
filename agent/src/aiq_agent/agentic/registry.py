@@ -32,7 +32,7 @@ async def fetch_allowed_tool_codes(
     apply the legacy hardcoded list instead. An empty list means the agent
     legitimately has no grants.
     """
-    url = f"{gateway_base.rstrip('/')}/agents/{agent_id}/tools/allowed"
+    url = f"{gateway_base.rstrip('/')}/runtime/agents/{agent_id}/authorization"
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             res = await client.get(
@@ -47,7 +47,7 @@ async def fetch_allowed_tool_codes(
             )
             return None
         body = res.json()
-        codes = body.get("codes")
+        codes = body.get("allowedToolCodes")
         if not isinstance(codes, list):
             return None
         return [str(c) for c in codes]
@@ -69,7 +69,7 @@ async def fetch_agent_model(
     settings default. The gateway exposes the full config document at
     GET /agents/{id}; we just pick the `model` field.
     """
-    url = f"{gateway_base.rstrip('/')}/agents/{agent_id}"
+    url = f"{gateway_base.rstrip('/')}/runtime/agents/{agent_id}/authorization"
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             res = await client.get(
@@ -79,7 +79,9 @@ async def fetch_agent_model(
         if res.status_code != 200:
             return None
         body = res.json()
-        config = body.get("config") or {}
+        import json
+
+        config = json.loads(body.get("configJson") or "{}")
         model = config.get("model")
         return str(model) if model else None
     except (httpx.RequestError, ValueError) as exc:

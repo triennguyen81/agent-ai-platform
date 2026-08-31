@@ -17,7 +17,10 @@ async function loginAction(formData: FormData) {
 
   const body = (await res.json()) as AuthResponse;
   await setSession(body.token, new Date(body.expiresAt));
-  redirect("/chat");
+  const isManager = body.roles.some((role) =>
+    role === "super_admin" || role === "tenant_owner" || role === "admin",
+  );
+  redirect(isManager ? "/dashboard" : "/my-agents");
 }
 
 export default async function LoginPage({

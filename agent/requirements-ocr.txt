@@ -1,0 +1,24 @@
+# Known-working CPU OCR combination. Keep these exact to make the large layer
+# reproducible and independent from normal application source changes.
+setuptools==84.0.0
+numpy==1.26.4
+paddleocr==2.9.1
+paddlepaddle==2.6.2
+pypdfium2==5.13.0
+Pillow==12.3.0
+# PaddleOCR declares unconstrained GUI OpenCV packages. Pin the known-working
+# ABI during resolution; Docker removes these after install and leaves only the
+# equivalent headless wheel.
+opencv-python==4.11.0.86
+opencv-contrib-python==4.11.0.86
+opencv-python-headless==4.11.0.86
+scipy==1.17.1
+scikit-image==0.26.0
+scikit-learn==1.9.0
+tifffile==2026.3.3
+
+# RapidOCR fallback — ONNX runtime avoids PaddlePaddle SIGSEGV bug
+# on some VN invoice images (verified 2026-08 on cosmos). Extractor
+# code in aiq_agent/ocr/extractor.py:RapidOcrExtractor.
+rapidocr-onnxruntime==1.3.24
+onnxruntime==1.17.0

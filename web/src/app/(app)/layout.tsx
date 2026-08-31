@@ -1,11 +1,9 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { gateway } from "@/lib/api";
-import { clearSession, decodeTenantId, getSession } from "@/lib/auth";
+import { clearSession, getSession } from "@/lib/auth";
 import { isClerkConfigured } from "@/lib/env";
-import { Button } from "@/components/ui/button";
 import { NotificationBell } from "@/components/notification-bell";
-import { TenantSwitcher } from "@/components/tenant-switcher";
 import { AppNav } from "@/components/app-nav";
 
 interface MeResponse {
@@ -16,6 +14,11 @@ interface MeResponse {
 
 async function logoutAction() {
   "use server";
+  // Temporary verification marker, pairs with the client-side onSelect log
+  // in app-nav.tsx — confirms the server action actually executed (not just
+  // that the click fired). Safe to keep; remove once logout is trusted in
+  // production.
+  console.debug("[logout] logoutAction executing, clearing session cookie");
   await clearSession();
   // When Clerk is on, we'd also want to call signOut() but the user can
   // click Clerk's own UserButton for that. Cookie clear is sufficient to
@@ -42,29 +45,26 @@ export default async function AppLayout({
   }
   const me = (await meRes.json()) as MeResponse;
   const roles = me.roles ?? [];
-  const activeTenantId = decodeTenantId(token);
+  const isSuperAdmin = roles.includes("super_admin");
+  const isTenantOwner = roles.includes("tenant_owner");
+  const isTenantAdmin = roles.includes("admin");
 
   return (
     <div className="min-h-dvh">
-      <header className="sticky top-0 z-10 border-b bg-[var(--color-bg)]/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center gap-6 px-6 py-3">
-          <Link href="/chat" className="font-serif text-xl shrink-0">
+      <header className="sticky top-0 z-10 border-b border-[var(--color-border)] bg-[var(--color-bg)]/95 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
+          <Link href={isSuperAdmin || isTenantOwner || isTenantAdmin ? "/dashboard" : "/my-agents"} className="font-serif text-xl tracking-tight">
             Cát Tường AI
           </Link>
-          <div className="flex flex-1 items-center justify-end gap-3">
-            <AppNav roles={roles} />
-            <div className="flex items-center gap-2 border-l pl-3">
-              <TenantSwitcher activeTenantId={activeTenantId} />
-              <NotificationBell />
-              <span className="hidden text-xs text-[var(--color-muted-fg)] md:inline">
-                {me.email ?? "you"}
-              </span>
-              <form action={logoutAction}>
-                <Button variant="ghost" size="sm" type="submit">
-                  Sign out
-                </Button>
-              </form>
-            </div>
+          <div className="flex items-center gap-2">
+            <AppNav
+              email={me.email ?? "you"}
+              isSuperAdmin={isSuperAdmin}
+              isTenantOwner={isTenantOwner}
+              isTenantAdmin={isTenantAdmin}
+              signOutAction={logoutAction}
+            />
+            {!isSuperAdmin && <NotificationBell />}
           </div>
         </div>
       </header>

@@ -31,6 +31,20 @@ class AuditEntry:
     ms: int  # duration milliseconds
     ok: bool
     detail: str | None = None
+    user_id: str | None = None
+    tenant_id: str | None = None
+    agent_id: str | None = None
+    version: int | None = None
+    provider: str | None = None
+    model: str | None = None
+    # Phase 5E: usage/cost/audit. Identifiers and counts only — never prompt
+    # text, tool arguments, tool output content, or knowledge content.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    estimated_cost_usd: float | None = None
+    tools_used: list[str] | None = None
+    delegations: list[str] | None = None
+    workflow_id: str | None = None
 
 
 class AuditStore:
@@ -50,6 +64,18 @@ class AuditStore:
         ms: int,
         ok: bool,
         detail: str | None = None,
+        user_id: str | None = None,
+        tenant_id: str | None = None,
+        agent_id: str | None = None,
+        version: int | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        estimated_cost_usd: float | None = None,
+        tools_used: list[str] | None = None,
+        delegations: list[str] | None = None,
+        workflow_id: str | None = None,
     ) -> None:
         entry = AuditEntry(
             ts=time.time(),
@@ -59,6 +85,18 @@ class AuditStore:
             ms=ms,
             ok=ok,
             detail=(detail[:300] if detail else None),
+            user_id=user_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            version=version,
+            provider=provider,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            estimated_cost_usd=estimated_cost_usd,
+            tools_used=(tools_used[:50] if tools_used else None),
+            delegations=(delegations[:50] if delegations else None),
+            workflow_id=workflow_id,
         )
         try:
             payload = json.dumps(asdict(entry))
@@ -69,7 +107,13 @@ class AuditStore:
         except Exception as exc:  # noqa: BLE001 — audit must never break callers
             logger.warning("Audit write failed: %s", exc)
 
-    async def list(self, *, limit: int = 100, event: str | None = None) -> list[AuditEntry]:
+    async def list(
+        self,
+        *,
+        limit: int = 100,
+        event: str | None = None,
+        tenant_id: str | None = None,
+    ) -> list[AuditEntry]:
         try:
             raw = await self._redis.lrange(self._key, 0, max(0, limit * 4 - 1))
         except Exception as exc:  # noqa: BLE001
@@ -81,6 +125,8 @@ class AuditStore:
             try:
                 data = json.loads(item)
                 if event and data.get("event") != event:
+                    continue
+                if tenant_id and data.get("tenant_id") != tenant_id:
                     continue
                 out.append(AuditEntry(**data))
                 if len(out) >= limit:

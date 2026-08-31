@@ -45,30 +45,50 @@ public sealed class TenantContextMiddleware
 
     public async Task InvokeAsync(
         HttpContext ctx,
-        Aiq.Gateway.Governance.ITenantRepository tenants)
+        Aiq.Gateway.Governance.ITenantRepository tenants,
+        Aiq.Gateway.Data.IUserRepository users)
     {
         if (ctx.User?.Identity?.IsAuthenticated == true)
         {
-            var raw = ctx.User.FindFirst("tenant_id")?.Value;
-            if (Guid.TryParse(raw, out var tenantId))
+            var subRaw = ctx.User.FindFirst("sub")?.Value;
+            if (!Guid.TryParse(subRaw, out var userId))
             {
-                ctx.Items[TenantContext.ItemKey] = tenantId;
+                ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
             }
-            else
+            var user = await users.FindByIdAsync(userId, ctx.RequestAborted);
+            if (user is null || !user.IsActive)
             {
-                // Legacy token without tenant_id — default to user's first membership.
-                var subRaw = ctx.User.FindFirst("sub")?.Value;
-                if (Guid.TryParse(subRaw, out var userId))
+                ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
+            var persistedRoles = await users.GetRolesAsync(userId, ctx.RequestAborted);
+            var tokenRoles = ctx.User.FindAll("role").Select(c => c.Value).ToHashSet(StringComparer.Ordinal);
+            if (!persistedRoles.ToHashSet(StringComparer.Ordinal).SetEquals(tokenRoles))
+            {
+                _logger.LogWarning("Rejected stale role claims for user {UserId}", userId);
+                ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
+
+            var raw = ctx.User.FindFirst("tenant_id")?.Value;
+            if (user.TenantId is { } expectedTenant
+                && Guid.TryParse(raw, out var claimedTenant)
+                && claimedTenant == expectedTenant)
+            {
+                var tenant = await tenants.FindByIdAsync(expectedTenant, ctx.RequestAborted);
+                if (tenant is null || tenant.Status != "active")
                 {
-                    var memberships = await tenants.ListMembershipsForUserAsync(userId, ctx.RequestAborted);
-                    if (memberships.Count > 0)
-                    {
-                        ctx.Items[TenantContext.ItemKey] = memberships[0].TenantId;
-                        _logger.LogDebug(
-                            "Tenant fallback applied for user {UserId} -> {TenantCode}",
-                            userId, memberships[0].TenantCode);
-                    }
+                    ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    return;
                 }
+                ctx.Items[TenantContext.ItemKey] = expectedTenant;
+            }
+            else if (user.TenantId is not null)
+            {
+                _logger.LogWarning("Rejected stale or mismatched tenant claim for user {UserId}", userId);
+                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return;
             }
         }
 

@@ -23,7 +23,7 @@ public interface IAgentKnowledgeRepository
     /// Notes attached to the agent, with full content (for chat RAG context).
     /// </summary>
     Task<IReadOnlyList<AgentKnowledgeNote>> ListForAgentAsync(
-        Guid agentId, CancellationToken ct);
+        Guid tenantId, Guid agentId, CancellationToken ct);
 
     /// <summary>
     /// Same shape as ListForAgentAsync but returns only summaries — used by
@@ -40,9 +40,9 @@ public interface IAgentKnowledgeRepository
         Guid tenantId, Guid agentId, CancellationToken ct);
 
     Task<bool> AttachAsync(
-        Guid agentId, Guid noteId, Guid attachedBy, CancellationToken ct);
+        Guid tenantId, Guid agentId, Guid noteId, Guid attachedBy, CancellationToken ct);
 
-    Task<bool> DetachAsync(Guid agentId, Guid noteId, CancellationToken ct);
+    Task<bool> DetachAsync(Guid tenantId, Guid agentId, Guid noteId, CancellationToken ct);
 }
 
 public sealed class AgentKnowledgeRepository : IAgentKnowledgeRepository
@@ -55,7 +55,7 @@ public sealed class AgentKnowledgeRepository : IAgentKnowledgeRepository
     }
 
     public async Task<IReadOnlyList<AgentKnowledgeNote>> ListForAgentAsync(
-        Guid agentId, CancellationToken ct)
+        Guid tenantId, Guid agentId, CancellationToken ct)
     {
         const string sql = """
             SELECT
@@ -67,12 +67,13 @@ public sealed class AgentKnowledgeRepository : IAgentKnowledgeRepository
                 ak.attached_at  AS AttachedAt
             FROM agent_knowledge ak
             JOIN notes n ON n.id = ak.note_id
-            WHERE ak.agent_id = @agentId
+            JOIN agents a ON a.id = ak.agent_id
+            WHERE ak.agent_id = @agentId AND a.tenant_id = @tenantId AND n.tenant_id = @tenantId
             ORDER BY ak.attached_at DESC
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<AgentKnowledgeNote>(
-            new CommandDefinition(sql, new { agentId }, cancellationToken: ct));
+            new CommandDefinition(sql, new { tenantId, agentId }, cancellationToken: ct));
         return rows.AsList();
     }
 
@@ -122,28 +123,31 @@ public sealed class AgentKnowledgeRepository : IAgentKnowledgeRepository
     }
 
     public async Task<bool> AttachAsync(
-        Guid agentId, Guid noteId, Guid attachedBy, CancellationToken ct)
+        Guid tenantId, Guid agentId, Guid noteId, Guid attachedBy, CancellationToken ct)
     {
         const string sql = """
             INSERT INTO agent_knowledge (agent_id, note_id, attached_by)
-            VALUES (@agentId, @noteId, @attachedBy)
+            SELECT @agentId, @noteId, @attachedBy
+            WHERE EXISTS (SELECT 1 FROM agents WHERE id = @agentId AND tenant_id = @tenantId)
+              AND EXISTS (SELECT 1 FROM notes WHERE id = @noteId AND tenant_id = @tenantId)
             ON CONFLICT (agent_id, note_id) DO NOTHING
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var n = await conn.ExecuteAsync(new CommandDefinition(
-            sql, new { agentId, noteId, attachedBy }, cancellationToken: ct));
+            sql, new { tenantId, agentId, noteId, attachedBy }, cancellationToken: ct));
         return n > 0;
     }
 
-    public async Task<bool> DetachAsync(Guid agentId, Guid noteId, CancellationToken ct)
+    public async Task<bool> DetachAsync(Guid tenantId, Guid agentId, Guid noteId, CancellationToken ct)
     {
         const string sql = """
             DELETE FROM agent_knowledge
             WHERE agent_id = @agentId AND note_id = @noteId
+              AND EXISTS (SELECT 1 FROM agents WHERE id = @agentId AND tenant_id = @tenantId)
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var n = await conn.ExecuteAsync(new CommandDefinition(
-            sql, new { agentId, noteId }, cancellationToken: ct));
+            sql, new { tenantId, agentId, noteId }, cancellationToken: ct));
         return n > 0;
     }
 }

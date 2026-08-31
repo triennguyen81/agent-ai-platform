@@ -41,4 +41,10 @@
     <PackageReference Include="AWSSDK.S3" Version="3.7.416" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="Data/Migrations/*.sql">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

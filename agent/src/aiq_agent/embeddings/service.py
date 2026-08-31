@@ -24,13 +24,13 @@ logger = logging.getLogger(__name__)
 _NOTE_ID_NAMESPACE = uuid.UUID("00000000-1111-2222-3333-444455556666")
 
 
-def _note_id_to_point_id(note_id: str) -> str:
+def _note_id_to_point_id(tenant_id: str, note_id: str) -> str:
     """Map any note_id string to a deterministic UUID Qdrant will accept."""
     try:
-        # If note_id already is a UUID, keep it (real notes from gateway).
-        return str(uuid.UUID(note_id))
+        uuid.UUID(note_id)
     except ValueError:
-        return str(uuid.uuid5(_NOTE_ID_NAMESPACE, note_id))
+        pass
+    return str(uuid.uuid5(_NOTE_ID_NAMESPACE, f"{tenant_id}:{note_id}"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +38,7 @@ class IngestNote:
     """A note as the embedding service sees it for upsert."""
 
     note_id: str
+    tenant_id: str
     user_id: str
     title: str
     content: str
@@ -118,11 +119,14 @@ class EmbeddingService:
                         distance=qmodels.Distance.COSINE,
                     ),
                 )
-                # Index on user_id for fast filter
+            # Idempotent for existing collections too: Phase 6 deployments
+            # must not leave a legacy collection without tenant indexing.
+            for field_name in ("tenant_id", "user_id"):
                 client.create_payload_index(
                     collection_name=self._collection,
-                    field_name="user_id",
+                    field_name=field_name,
                     field_schema=qmodels.PayloadSchemaType.KEYWORD,
+                    wait=True,
                 )
             self._qdrant = client
         return self._qdrant
@@ -157,7 +161,9 @@ class EmbeddingService:
 
         # Fetch current state for these note ids — Qdrant only accepts
         # UUID or uint for point IDs, so map note_id strings to UUIDs.
-        point_ids = [_note_id_to_point_id(n.note_id) for n in notes]
+        if any(not n.tenant_id or not n.user_id for n in notes):
+            raise ValueError("Tenant and user context are required for vector writes")
+        point_ids = [_note_id_to_point_id(n.tenant_id, n.note_id) for n in notes]
         existing = client.retrieve(
             collection_name=self._collection,
             ids=point_ids,
@@ -181,9 +187,10 @@ class EmbeddingService:
 
         points = [
             qmodels.PointStruct(
-                id=_note_id_to_point_id(note.note_id),
+                id=_note_id_to_point_id(note.tenant_id, note.note_id),
                 vector=vector,
                 payload={
+                    "tenant_id": note.tenant_id,
                     "user_id": note.user_id,
                     "note_id": note.note_id,
                     "title": note.title,
@@ -199,12 +206,15 @@ class EmbeddingService:
         self,
         *,
         query: str,
+        tenant_id: str,
         user_id: str,
         k: int,
     ) -> list[TopKHit]:
         """Return top-K nearest note ids for this user."""
         from qdrant_client.http import models as qmodels
 
+        if not tenant_id or not user_id:
+            raise ValueError("Tenant and user context are required for vector search")
         client = self._ensure_qdrant()
         # paraphrase-multilingual: no special prefix needed.
         vector = self._embed_one(query)
@@ -214,6 +224,10 @@ class EmbeddingService:
             query=vector,
             query_filter=qmodels.Filter(
                 must=[
+                    qmodels.FieldCondition(
+                        key="tenant_id",
+                        match=qmodels.MatchValue(value=tenant_id),
+                    ),
                     qmodels.FieldCondition(
                         key="user_id",
                         match=qmodels.MatchValue(value=user_id),

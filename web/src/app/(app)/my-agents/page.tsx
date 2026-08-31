@@ -7,8 +7,10 @@ interface MyAgent {
   agentId: string;
   agentCode: string;
   agentName: string;
+  description: string | null;
   agentType: string;
   lifecycleState: string;
+  publishedVersion: number | null;
   actionTier: string;
   agentDisabled: boolean;
   accessLevel: string;
@@ -80,6 +82,7 @@ export default async function MyAgentsPage() {
                         <p className="font-mono text-[10px] text-[var(--color-muted-fg)]">
                           {a.agentCode}
                         </p>
+                        {a.description && <p className="mt-1 text-sm text-[var(--color-muted-fg)]">{a.description}</p>}
                       </div>
                       <span
                         className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] ${
@@ -95,6 +98,9 @@ export default async function MyAgentsPage() {
                       </span>
                       <span className="rounded-full border px-2 py-0.5 text-[10px] text-[var(--color-muted-fg)]">
                         tier: {a.actionTier}
+                      </span>
+                      <span className="rounded-full border px-2 py-0.5 text-[10px] text-[var(--color-muted-fg)]">
+                        version: {a.publishedVersion ?? "unpublished"}
                       </span>
                       <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] text-white">
                         {a.accessLevel}
@@ -136,7 +142,7 @@ export default async function MyAgentsPage() {
                         <td className="px-3 py-2">
                           <div className="font-medium">{a.agentName}</div>
                           <div className="font-mono text-[10px] text-[var(--color-muted-fg)]">
-                            {a.agentCode}
+                            {a.agentCode} · version {a.publishedVersion ?? "unpublished"}
                           </div>
                         </td>
                         <td className="px-3 py-2">

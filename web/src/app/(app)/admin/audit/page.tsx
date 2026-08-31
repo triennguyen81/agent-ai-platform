@@ -1,7 +1,6 @@
-import { redirect } from "next/navigation";
 import { Activity, CheckCircle2, XCircle } from "lucide-react";
-import { agent, gateway } from "@/lib/api";
-import { requireSession } from "@/lib/auth";
+import { agent } from "@/lib/api";
+import { requireViewer } from "@/lib/authorization";
 
 interface AuditEntry {
   ts: number;
@@ -11,6 +10,18 @@ interface AuditEntry {
   ms: number;
   ok: boolean;
   detail: string | null;
+  user_id: string | null;
+  tenant_id: string | null;
+  agent_id: string | null;
+  version: number | null;
+  provider: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  estimated_cost_usd: number | null;
+  tools_used: string[] | null;
+  delegations: string[] | null;
+  workflow_id: string | null;
 }
 
 function formatTimestamp(ts: number): string {
@@ -45,20 +56,17 @@ interface Props {
 }
 
 export default async function AuditPage({ searchParams }: Props) {
-  const token = await requireSession();
-  const meRes = await gateway.me(token);
-  if (meRes.ok) {
-    const me = (await meRes.json()) as { roles?: string[] };
-    if (!(me.roles ?? []).includes("super_admin")) {
-      redirect("/chat");
-    }
-  }
+  const viewer = await requireViewer(["super_admin", "tenant_owner", "admin"]);
+  const isSuperAdmin = viewer.roles.includes("super_admin");
 
   const { event, limit: limitParam } = await searchParams;
   const limit = Math.min(Math.max(Number(limitParam ?? 100), 1), 500);
 
-  const res = await agent.listAudit(limit, event);
-  const entries: AuditEntry[] = res.ok ? await res.json() : [];
+  const res = await agent.listAudit(limit, event, isSuperAdmin ? undefined : viewer.tenantId ?? undefined);
+  const allEntries: AuditEntry[] = res.ok ? await res.json() : [];
+  const entries = isSuperAdmin
+    ? allEntries
+    : allEntries.filter((entry) => entry.tenant_id === viewer.tenantId);
 
   // Aggregate stats
   const stats = entries.reduce(
@@ -67,6 +75,9 @@ export default async function AuditPage({ searchParams }: Props) {
       acc.ok += e.ok ? 1 : 0;
       acc.failed += e.ok ? 0 : 1;
       acc.totalMs += e.ms;
+      acc.inputTokens += e.input_tokens ?? 0;
+      acc.outputTokens += e.output_tokens ?? 0;
+      acc.cost += e.estimated_cost_usd ?? 0;
       acc.byEvent[e.event] = (acc.byEvent[e.event] ?? 0) + 1;
       return acc;
     },
@@ -75,6 +86,9 @@ export default async function AuditPage({ searchParams }: Props) {
       ok: 0,
       failed: 0,
       totalMs: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cost: 0,
       byEvent: {} as Record<string, number>,
     },
   );
@@ -87,16 +101,18 @@ export default async function AuditPage({ searchParams }: Props) {
       <header className="space-y-2">
         <h1 className="font-serif text-3xl">Audit log</h1>
         <p className="text-sm text-[var(--color-muted-fg)]">
-          Log các sự kiện chat + agentic gần nhất (lưu trong Redis, cap 5000
-          dòng). Chỉ super_admin xem được.
+          {isSuperAdmin ? "System-wide" : "Tenant-scoped"} execution, usage, and cost metadata.
+          Prompt and tool argument content is not displayed.
         </p>
       </header>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <StatCard label="Tổng events" value={stats.total} />
         <StatCard label="Thành công" value={stats.ok} accent="emerald" />
         <StatCard label="Lỗi" value={stats.failed} accent="red" />
         <StatCard label="Latency TB" value={formatDuration(avgMs)} />
+        <StatCard label="Tokens" value={stats.inputTokens + stats.outputTokens} />
+        <StatCard label="Estimated cost" value={`$${stats.cost.toFixed(4)}`} />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -136,6 +152,7 @@ export default async function AuditPage({ searchParams }: Props) {
                 <th className="px-3 py-2 text-left">Thời gian</th>
                 <th className="px-3 py-2 text-left">Event</th>
                 <th className="px-3 py-2 text-left">Skill / Tool</th>
+                <th className="px-3 py-2 text-left">Agent / Model</th>
                 <th className="px-3 py-2 text-left">User</th>
                 <th className="px-3 py-2 text-right">Latency</th>
                 <th className="px-3 py-2 text-center">OK</th>
@@ -157,6 +174,13 @@ export default async function AuditPage({ searchParams }: Props) {
                   </td>
                   <td className="max-w-xs truncate px-3 py-2 font-mono text-xs" title={entry.name}>
                     {entry.name}
+                  </td>
+                  <td className="max-w-xs px-3 py-2 font-mono text-xs text-[var(--color-muted-fg)]">
+                    <div>{entry.agent_id ?? "—"}{entry.version ? ` v${entry.version}` : ""}</div>
+                    <div>{entry.provider && entry.model ? `${entry.provider}/${entry.model}` : "—"}</div>
+                    {(entry.input_tokens !== null || entry.output_tokens !== null) && (
+                      <div>{entry.input_tokens ?? 0} in / {entry.output_tokens ?? 0} out</div>
+                    )}
                   </td>
                   <td className="px-3 py-2 font-mono text-xs text-[var(--color-muted-fg)]">
                     {entry.user_prefix}

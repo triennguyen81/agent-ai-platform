@@ -2,244 +2,191 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
 import {
-  Activity,
   Banknote,
   BookOpen,
   Bot,
   Building2,
-  Calculator,
-  ChevronDown,
   ClipboardCheck,
-  FileSignature,
   FileText,
+  Gauge,
   GraduationCap,
-  Heart,
-  LayoutDashboard,
-  MessageSquare,
+  HeartPulse,
+  ListChecks,
+  LogOut,
+  Puzzle,
   Receipt,
-  Settings,
-  Shield,
-  ShieldAlert,
-  Sparkles,
+  ScrollText,
+  ShieldCheck,
   Truck,
+  UserCog,
   Users,
-  UsersRound,
   Wrench,
+  Workflow,
 } from "lucide-react";
+import { cn } from "@/lib/cn";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  NavTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface NavItem {
   href: string;
   label: string;
-  icon: React.ElementType;
+  icon: React.ComponentType<{ className?: string }>;
 }
 
-interface NavGroup {
-  label: string;
-  icon: React.ElementType;
-  items: NavItem[];
-}
-
-interface AppNavProps {
-  roles: string[];
-}
-
-export function AppNav({ roles }: AppNavProps) {
-  const pathname = usePathname();
-  const isSuperAdmin = roles.includes("super_admin");
-  const isAdmin = isSuperAdmin || roles.includes("admin");
-  // Kế toán viên (role=user) is the daily-driver persona for the
-  // business modules — they upload chứng từ, look up KH, view kế toán
-  // tools. Everyone with any authenticated session gets these.
-  const isAuthenticated = roles.length > 0;
-
-  // Primary — always visible.
-  const primary: NavItem[] = [
-    { href: "/chat", label: "Chat", icon: MessageSquare },
-    { href: "/my-agents", label: "Trợ lý", icon: Bot },
-  ];
-
-  // Nghiệp vụ — daily accounting work. Available to kế toán viên (user)
-  // AND above. Hợp đồng moved out to Workspace (admin-only) because
-  // signing contracts is a manager task.
-  const business: NavGroup | null = isAuthenticated
-    ? {
-        label: "Nghiệp vụ",
-        icon: Calculator,
-        items: [
-          { href: "/accounting", label: "Kế toán", icon: Calculator },
-          { href: "/vouchers", label: "Chứng từ", icon: Receipt },
-          { href: "/customers", label: "Khách hàng", icon: Building2 },
-          { href: "/suppliers", label: "Nhà cung cấp", icon: Truck },
-          { href: "/expenses", label: "Chi phí", icon: Banknote },
-          { href: "/mau-chung-tu", label: "Chứng từ mẫu", icon: GraduationCap },
-        ],
-      }
-    : null;
-
-  // Workspace — knowledge base + agent config + contract management.
-  // Admin persona: kế toán trưởng / trưởng phòng.
-  const workspace: NavGroup | null = isAdmin
-    ? {
-        label: "Workspace",
-        icon: BookOpen,
-        items: [
-          { href: "/knowledge", label: "Kiến thức", icon: BookOpen },
-          { href: "/contracts", label: "Hợp đồng", icon: FileSignature },
-          { href: "/admin/agents", label: "Agents", icon: Bot },
-          { href: "/admin/review-queue", label: "Reviews", icon: ClipboardCheck },
-          { href: "/admin/hitl-queue", label: "HITL", icon: ShieldAlert },
-        ],
-      }
-    : null;
-
-  // Quản trị hệ thống — super_admin only.
-  const admin: NavGroup | null = isSuperAdmin
-    ? {
-        label: "Quản trị",
-        icon: Settings,
-        items: [
-          { href: "/admin/tenants", label: "Tenants", icon: Building2 },
-          { href: "/admin/users", label: "Người dùng", icon: Users },
-          { href: "/admin/tools", label: "Tools", icon: Wrench },
-          { href: "/admin/skills", label: "Skills", icon: Sparkles },
-          { href: "/admin/audit", label: "Audit", icon: Shield },
-          { href: "/admin/health", label: "Health", icon: Heart },
-        ],
-      }
-    : null;
-
-  const isActive = (href: string) => {
-    if (href === "/chat") return pathname === "/chat" || pathname.startsWith("/chat/");
-    return pathname === href || pathname.startsWith(href + "/");
-  };
-
-  const groupActive = (group: NavGroup | null) =>
-    group?.items.some((i) => isActive(i.href)) ?? false;
-
-  return (
-    <nav className="flex items-center gap-1 text-sm">
-      {primary.map((item) => (
-        <NavLink key={item.href} item={item} active={isActive(item.href)} />
-      ))}
-      {business && <NavDropdown group={business} isActive={isActive} active={groupActive(business)} />}
-      {workspace && <NavDropdown group={workspace} isActive={isActive} active={groupActive(workspace)} />}
-      {admin && <NavDropdown group={admin} isActive={isActive} active={groupActive(admin)} />}
-    </nav>
-  );
-}
-
-function NavLink({ item, active }: { item: NavItem; active: boolean }) {
-  const Icon = item.icon;
+function DirectLink({ href, label, active }: { href: string; label: string; active: boolean }) {
   return (
     <Link
-      href={item.href}
-      className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 transition ${
+      href={href}
+      className={cn(
+        "rounded-[var(--radius)] px-3 py-1.5 text-sm transition",
         active
-          ? "bg-[var(--color-primary)] text-white shadow-sm"
-          : "text-[var(--color-fg)] hover:bg-[var(--color-muted)]"
-      }`}
+          ? "bg-[var(--color-muted)] font-medium text-[var(--color-fg)]"
+          : "text-[var(--color-fg)] hover:bg-[var(--color-muted)]",
+      )}
     >
-      <Icon className="size-3.5" />
-      <span>{item.label}</span>
+      {label}
     </Link>
   );
 }
 
-function NavDropdown({
-  group,
-  isActive,
-  active,
-}: {
-  group: NavGroup;
-  isActive: (href: string) => boolean;
-  active: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const Icon = group.icon;
+function ModuleMenu({ label, items, pathname }: { label: string; items: NavItem[]; pathname: string }) {
+  if (items.length === 0) return null;
+  const isActive = items.some((i) => pathname.startsWith(i.href));
+  return (
+    <DropdownMenu>
+      <NavTrigger className={isActive ? "bg-[var(--color-muted)] font-medium" : undefined}>{label}</NavTrigger>
+      <DropdownMenuContent>
+        {items.map((item) => (
+          <DropdownMenuItem key={item.href} asChild>
+            <Link href={item.href} className="flex items-center gap-2">
+              <item.icon className="size-4 text-[var(--color-muted-fg)]" />
+              {item.label}
+            </Link>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
-  // Small delay before closing so the cursor can cross the gap between
-  // the trigger button and the dropdown panel without the menu vanishing.
-  const scheduleClose = () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-    closeTimer.current = setTimeout(() => setOpen(false), 200);
-  };
-  const cancelClose = () => {
-    if (closeTimer.current) {
-      clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-  };
+function AccountTrigger({ email }: { email: string }) {
+  const initial = email.trim().charAt(0).toUpperCase() || "?";
+  return (
+    <DropdownMenuTrigger className="flex items-center gap-2 rounded-[var(--radius)] px-2 py-1.5 text-sm outline-none transition hover:bg-[var(--color-muted)] data-[state=open]:bg-[var(--color-muted)]">
+      <span className="flex size-7 items-center justify-center rounded-full bg-[var(--color-primary)] text-xs font-medium text-[var(--color-primary-fg)]">
+        {initial}
+      </span>
+    </DropdownMenuTrigger>
+  );
+}
 
-  // Click-outside closes the menu (needed for the tap-to-open path on
-  // touch devices where mouseleave never fires).
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (!containerRef.current?.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [open]);
+export interface AppNavProps {
+  email: string;
+  isSuperAdmin: boolean;
+  isTenantOwner: boolean;
+  isTenantAdmin: boolean;
+  signOutAction: () => void | Promise<void>;
+}
 
-  useEffect(() => () => cancelClose(), []);
+export function AppNav({ email, isSuperAdmin, isTenantOwner, isTenantAdmin, signOutAction }: AppNavProps) {
+  const pathname = usePathname();
+  const isAdminOrAbove = isSuperAdmin || isTenantOwner || isTenantAdmin;
+  const isManagementRole = isAdminOrAbove;
+
+  // Nghiệp vụ — daily accounting work. Available to all authenticated users
+  // (including 'user' role = kế toán viên) because that's their primary
+  // daily job (upload chứng từ, xem KH/NCC, xem báo cáo).
+  // UC3 (Sprint 1-4.5) added: Khách hàng, Nhà cung cấp, Chi phí, Chứng từ mẫu.
+  const nghiepVu: NavItem[] = [
+    { href: "/accounting", label: "Kế toán", icon: Receipt },
+    { href: "/vouchers", label: "Chứng từ", icon: FileText },
+    { href: "/customers", label: "Khách hàng", icon: Building2 },
+    { href: "/suppliers", label: "Nhà cung cấp", icon: Truck },
+    { href: "/expenses", label: "Chi phí", icon: Banknote },
+    { href: "/mau-chung-tu", label: "Chứng từ mẫu", icon: GraduationCap },
+    ...(isAdminOrAbove ? [{ href: "/contracts", label: "Hợp đồng", icon: ScrollText }] : []),
+  ];
+
+  const workspace: NavItem[] = isAdminOrAbove
+    ? [
+        { href: "/knowledge", label: "Kiến thức", icon: BookOpen },
+        { href: "/admin/agents", label: "Trợ lý AI", icon: Bot },
+        ...(isSuperAdmin ? [{ href: "/admin/workflows", label: "Workflows", icon: Workflow }] : []),
+        { href: "/admin/review-queue", label: "Reviews", icon: ListChecks },
+        { href: "/admin/hitl-queue", label: "HITL", icon: ClipboardCheck },
+      ]
+    : [];
+
+  const quanTri: NavItem[] = isSuperAdmin
+    ? [
+        { href: "/admin/agent-builder", label: "Agent Builder", icon: Puzzle },
+        { href: "/admin/tenants", label: "Tenants", icon: Building2 },
+        { href: "/admin/users", label: "Users", icon: UserCog },
+        { href: "/admin/tools", label: "Tools", icon: Wrench },
+        { href: "/admin/skills", label: "Skills", icon: GraduationCap },
+        { href: "/admin/audit", label: "Audit", icon: ShieldCheck },
+        { href: "/admin/health", label: "Health", icon: HeartPulse },
+      ]
+    : isTenantOwner
+      ? [
+          { href: "/admin/tenant-admins", label: "Administrators", icon: UserCog },
+          { href: "/admin/tenant-users", label: "Users", icon: Users },
+          { href: "/admin/tenant-agents", label: "Tenant Agents", icon: Bot },
+          { href: "/knowledge", label: "Knowledge", icon: BookOpen },
+          { href: "/admin/hitl-queue", label: "HITL", icon: ClipboardCheck },
+          { href: "/admin/audit", label: "Audit / Usage", icon: ShieldCheck },
+          { href: "/admin/tenant-status", label: "Tenant Status", icon: Gauge },
+        ]
+      : isTenantAdmin
+        ? [
+            { href: "/admin/tenant-users", label: "Users", icon: Users },
+            { href: "/admin/tenant-agents", label: "Tenant Agents", icon: Bot },
+            { href: "/knowledge", label: "Knowledge", icon: BookOpen },
+            { href: "/admin/hitl-queue", label: "HITL / Reviews", icon: ClipboardCheck },
+            { href: "/admin/audit", label: "Audit / Usage", icon: ShieldCheck },
+          ]
+      : [];
 
   return (
-    <div
-      ref={containerRef}
-      className="relative"
-      onMouseEnter={() => {
-        cancelClose();
-        setOpen(true);
-      }}
-      onMouseLeave={scheduleClose}
-    >
-      <button
-        type="button"
-        className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 transition ${
-          active
-            ? "bg-[var(--color-primary)]/15 text-[var(--color-primary)] font-medium"
-            : "text-[var(--color-fg)] hover:bg-[var(--color-muted)]"
-        }`}
-        onClick={() => setOpen((prev) => !prev)}
-        aria-expanded={open}
-      >
-        <Icon className="size-3.5" />
-        <span>{group.label}</span>
-        <ChevronDown className={`size-3 transition ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && (
-        // top-full puts the panel flush against the button (no gap for the
-        // cursor to fall through). pt-1 inside the panel gives visual room.
-        <div className="absolute right-0 top-full z-30 w-56 pt-1">
-          <div className="rounded-lg border bg-[var(--color-bg)] p-1 shadow-lg">
-            {group.items.map((item) => {
-              const ItemIcon = item.icon;
-              const isItemActive = isActive(item.href);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={() => setOpen(false)}
-                  className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm transition ${
-                    isItemActive
-                      ? "bg-[var(--color-primary)] text-white"
-                      : "text-[var(--color-fg)] hover:bg-[var(--color-muted)]"
-                  }`}
-                >
-                  <ItemIcon className="size-4" />
-                  <span>{item.label}</span>
-                </Link>
-              );
-            })}
-          </div>
-        </div>
+    <nav className="flex items-center gap-1">
+      {isManagementRole ? (
+        <DirectLink href="/dashboard" label="Dashboard" active={pathname === "/dashboard"} />
+      ) : (
+        <>
+          <DirectLink href="/my-agents" label="My Agents" active={pathname.startsWith("/my-agents")} />
+          <DirectLink href="/chat" label="Chat" active={pathname === "/chat"} />
+        </>
       )}
-    </div>
+      <ModuleMenu label="Nghiệp vụ" items={nghiepVu} pathname={pathname} />
+      <ModuleMenu label="Workspace" items={workspace} pathname={pathname} />
+      <ModuleMenu label="Quản trị" items={quanTri} pathname={pathname} />
+
+      <div className="mx-1 h-5 w-px bg-[var(--color-border)]" />
+
+      <DropdownMenu>
+        <AccountTrigger email={email} />
+        <DropdownMenuContent align="end">
+          <div className="px-2.5 py-1.5 text-xs text-[var(--color-muted-fg)]">{email}</div>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            className="text-red-700"
+            onSelect={() => {
+              console.debug("[logout] onSelect fired, invoking signOutAction");
+              void signOutAction();
+            }}
+          >
+            <LogOut className="size-4" />
+            Đăng xuất
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </nav>
   );
 }

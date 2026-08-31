@@ -54,7 +54,7 @@ public sealed class ContractDeadlineJob
                 END AS kind,
                 (ci.due_date - CURRENT_DATE) AS days_remaining
             FROM contract_checklist_items ci
-            JOIN contracts c ON c.id = ci.contract_id
+            JOIN contracts c ON c.id = ci.contract_id AND c.tenant_id = ci.tenant_id
             WHERE ci.status IN ('open', 'in_progress')
               AND ci.due_date IS NOT NULL
               AND ci.due_date - ci.remind_days_before <= CURRENT_DATE

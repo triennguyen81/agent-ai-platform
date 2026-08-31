@@ -81,8 +81,9 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_doc_number ON vouchers(document_number) 
 -- (Partial unique — only enforced when all 3 fields populated to allow
 -- in-flight rows with NULL fields during processing.)
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_voucher_document
-    ON vouchers(seller_mst, document_number, document_date)
-    WHERE seller_mst IS NOT NULL
+    ON vouchers(tenant_id, seller_mst, document_number, document_date)
+    WHERE tenant_id IS NOT NULL
+      AND seller_mst IS NOT NULL
       AND document_number IS NOT NULL
       AND document_date IS NOT NULL;
 

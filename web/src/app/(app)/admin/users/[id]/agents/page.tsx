@@ -131,9 +131,14 @@ export default async function AssignAgentsPage({
       </Link>
 
       <header className="space-y-1">
-        <h1 className="font-serif text-3xl">
-          <UserCog className="mr-2 inline size-6" /> Gán agent cho user
-        </h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="font-serif text-3xl">
+            <UserCog className="mr-2 inline size-6" /> ACL legacy
+          </h1>
+          <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border)] bg-[var(--color-muted)] px-2 py-0.5 text-xs text-[var(--color-muted-fg)]">
+            legacy
+          </span>
+        </div>
         <p className="text-sm text-[var(--color-muted-fg)]">
           {targetUser ? (
             <>
@@ -144,6 +149,14 @@ export default async function AssignAgentsPage({
           ) : (
             "User không tồn tại"
           )}
+        </p>
+        <p className="text-xs text-[var(--color-muted-fg)]">
+          Đây là quyền ACL (owner/editor/user) của hệ thống agent legacy trước Agent Builder — không phải
+          execution assignment. Để gán agent cho user sử dụng thật (chat/execute), dùng{" "}
+          <Link href="/admin/tenant-agents" className="text-[var(--color-primary)] hover:underline">
+            Tenant Agents
+          </Link>{" "}
+          của tenant ADMIN.
         </p>
       </header>
 

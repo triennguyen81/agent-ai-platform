@@ -39,9 +39,8 @@ export async function POST(
     "- Item nào có due date gần nhất (trong 30 ngày)",
   ].join("\n");
 
-  const res = await agent.runTask({
+  const res = await agent.runTask(token, {
     task,
-    user_token: token,
     skills: ["contract-checklist-builder", "vietnamese-style"],
     max_turns: 6,
   });
