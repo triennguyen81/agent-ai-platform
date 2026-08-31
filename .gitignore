@@ -62,3 +62,13 @@ secrets/
 .claude/session-pids.json
 .claude/scheduled_tasks.lock
 .claude/hooks/log-attribution.sh
+
+# MCP test artifacts (Playwright browser session snapshots)
+.playwright-mcp/
+
+# Test screenshots (ad-hoc, session-specific — should not be committed)
+test-*.png
+test-*.jpg
+
+# TypeScript incremental build info
+*.tsbuildinfo
