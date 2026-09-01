@@ -5,6 +5,7 @@ from aiq_agent.ocr.extractor import (
     OcrExtractor,
     OcrPage,
     PaddleOcrExtractor,
+    RapidOcrExtractor,
     StubOcrExtractor,
 )
 from aiq_agent.ocr.pipeline import (
@@ -23,6 +24,7 @@ __all__ = [
     "OcrValidator",
     "PaddleOcrExtractor",
     "PassthroughValidator",
+    "RapidOcrExtractor",
     "PipelineResult",
     "PipelineStage",
     "StubOcrExtractor",

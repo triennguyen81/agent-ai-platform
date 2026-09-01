@@ -110,3 +110,69 @@ def _pil_to_array(image: object) -> object:
     import numpy as np  # type: ignore[import-not-found]
 
     return np.array(image)
+
+
+class RapidOcrExtractor(OcrExtractor):
+    """rapidocr-onnxruntime adapter — ONNX runtime avoids PaddlePaddle segfaults.
+
+    Same PP-OCRv4 models as PaddleOCR, packaged as ONNX so we don't have
+    to depend on the paddle framework (which SIGSEGVs on some VN invoice
+    images and takes the whole uvicorn process down).
+    """
+
+    def __init__(self) -> None:
+        self._engine = None
+
+    def _ensure_engine(self) -> object:
+        if self._engine is not None:
+            return self._engine
+        try:
+            from rapidocr_onnxruntime import RapidOCR  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "rapidocr-onnxruntime is not installed. Add to Dockerfile."
+            ) from exc
+        # Default constructor — pulls the PP-OCRv4 models on first use +
+        # caches them under ~/.cache/rapidocr. Set det/rec/cls thresholds
+        # to defaults; VN diacritic correction happens downstream in
+        # DiacriticCorrector so we don't tune rec_score_thresh here.
+        self._engine = RapidOCR()
+        return self._engine
+
+    async def extract(self, pages: Sequence[bytes]) -> list[OcrPage]:
+        engine = self._ensure_engine()
+        return await asyncio.to_thread(_run_rapid, engine, list(pages))
+
+
+def _run_rapid(engine: object, pages: list[bytes]) -> list[OcrPage]:
+    """RapidOCR call — takes image bytes/np.array directly, returns
+    [(bbox, text, confidence), ...]."""
+    import io
+
+    import numpy as np  # type: ignore[import-not-found]
+    from PIL import Image  # type: ignore[import-not-found]
+
+    results: list[OcrPage] = []
+    for index, png_bytes in enumerate(pages):
+        image = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+        arr = np.array(image)
+        # RapidOCR returns tuple: (results, elapsed_dict). results is
+        # None if nothing detected, otherwise list of [box, text, score].
+        raw, _elapsed = engine(arr)  # type: ignore[operator]
+        lines: list[str] = []
+        confidences: list[float] = []
+        for row in raw or []:
+            if not row or len(row) < 3:
+                continue
+            _bbox, text, score = row[0], str(row[1]), float(row[2])
+            lines.append(text)
+            confidences.append(score)
+        avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
+        results.append(
+            OcrPage(
+                page_number=index + 1,
+                text="\n".join(lines),
+                confidence=avg_conf,
+            )
+        )
+    return results

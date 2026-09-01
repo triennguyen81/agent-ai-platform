@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Banknote,
   BookOpen,
   Bot,
   Building2,
@@ -17,6 +18,7 @@ import {
   Receipt,
   ScrollText,
   ShieldCheck,
+  Truck,
   UserCog,
   Users,
   Wrench,
@@ -98,13 +100,19 @@ export function AppNav({ email, isSuperAdmin, isTenantOwner, isTenantAdmin, sign
   const isAdminOrAbove = isSuperAdmin || isTenantOwner || isTenantAdmin;
   const isManagementRole = isAdminOrAbove;
 
-  const nghiepVu: NavItem[] = isAdminOrAbove
-    ? [
-        { href: "/accounting", label: "Kế toán", icon: Receipt },
-        { href: "/vouchers", label: "Chứng từ", icon: FileText },
-        { href: "/contracts", label: "Hợp đồng", icon: ScrollText },
-      ]
-    : [];
+  // Nghiệp vụ — daily accounting work. Available to all authenticated users
+  // (including 'user' role = kế toán viên) because that's their primary
+  // daily job (upload chứng từ, xem KH/NCC, xem báo cáo).
+  // UC3 (Sprint 1-4.5) added: Khách hàng, Nhà cung cấp, Chi phí, Chứng từ mẫu.
+  const nghiepVu: NavItem[] = [
+    { href: "/accounting", label: "Kế toán", icon: Receipt },
+    { href: "/vouchers", label: "Chứng từ", icon: FileText },
+    { href: "/customers", label: "Khách hàng", icon: Building2 },
+    { href: "/suppliers", label: "Nhà cung cấp", icon: Truck },
+    { href: "/expenses", label: "Chi phí", icon: Banknote },
+    { href: "/mau-chung-tu", label: "Chứng từ mẫu", icon: GraduationCap },
+    ...(isAdminOrAbove ? [{ href: "/contracts", label: "Hợp đồng", icon: ScrollText }] : []),
+  ];
 
   const workspace: NavItem[] = isAdminOrAbove
     ? [
@@ -170,9 +178,6 @@ export function AppNav({ email, isSuperAdmin, isTenantOwner, isTenantAdmin, sign
           <DropdownMenuItem
             className="text-red-700"
             onSelect={() => {
-              // Temporary verification marker — confirms Radix's onSelect
-              // actually fires before the server action runs. Safe to keep;
-              // remove once logout is trusted in production.
               console.debug("[logout] onSelect fired, invoking signOutAction");
               void signOutAction();
             }}

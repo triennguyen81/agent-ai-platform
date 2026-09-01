@@ -52,9 +52,7 @@ COPY --from=builder /wheels /wheels
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     pip install --no-index --find-links /wheels aiq-agent && rm -rf /wheels
 
-# OCR extras — enables /ocr/pdf + /ocr/image endpoints (PaddleOCR VN language
-# model + PIL image normalizer + pypdfium2 PDF renderer). Adds ~500 MB to
-# the image.
+# OCR extras — enables /ocr/pdf + /ocr/image endpoints.
 #
 # Pinned to PaddleOCR 2.9.x / PaddlePaddle 2.6.x on purpose:
 #   - PaddleOCR 3.0 rewrote the API (dropped use_angle_cls, use_gpu, cls=True)
@@ -63,8 +61,10 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 #     oneDNN on CPU (verified in agent logs 2026-08).
 #   - 2.9.1 + paddlepaddle 2.6.2 = last combo with stable, working CPU OCR.
 #   - When paddleocr 3.x + paddlepaddle 3.x ship a fixed CPU path,
-#     unpin here and update agent/src/aiq_agent/ocr/extractor.py to
-#     use the new predict() signature.
+#     unpin here and update agent/src/aiq_agent/ocr/extractor.py.
+# We also ship rapidocr-onnxruntime as fallback (in requirements-ocr.txt) —
+# PaddleOCR SIGSEGVs randomly on some VN invoice images; RapidOCR uses same
+# PP-OCRv4 models but on ONNX runtime, no PaddlePaddle framework, no segfault.
 # SKILL.md packages — loaded at app startup, see aiq_agent/main.py.
 # Shipped outside the wheel so a skill change ships with a runtime
 # rebuild only (no need to re-wheel the package).

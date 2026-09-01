@@ -16,6 +16,17 @@ public interface IAgentClient
         string filename,
         string contentType,
         CancellationToken ct);
+
+    /// <summary>
+    /// Generic /agent/run passthrough — task text + skill list, returns
+    /// the final_answer string. Used by background extraction jobs.
+    /// </summary>
+    Task<string> RunAgentTaskAsync(
+        string task,
+        string userToken,
+        string[] skills,
+        int maxTurns,
+        CancellationToken ct);
 }
 
 public sealed class AgentClient : IAgentClient
@@ -88,7 +99,40 @@ public sealed class AgentClient : IAgentClient
 
         return payload;
     }
+
+    public async Task<string> RunAgentTaskAsync(
+        string task,
+        string userToken,
+        string[] skills,
+        int maxTurns,
+        CancellationToken ct)
+    {
+        var payload = new
+        {
+            task,
+            user_token = userToken,
+            skills,
+            max_turns = maxTurns,
+        };
+        using var response = await _http.PostAsJsonAsync("/agent/run", payload, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogWarning(
+                "Agent runTask rejected: status={Status} body={Body}",
+                (int)response.StatusCode, body);
+            throw new AgentRequestException(
+                $"Agent /agent/run HTTP {(int)response.StatusCode}: {body}",
+                (int)response.StatusCode);
+        }
+        var doc = await response.Content.ReadFromJsonAsync<AgentRunResult>(cancellationToken: ct)
+            ?? throw new AgentRequestException("Agent returned empty run body.", 502);
+        return doc.FinalAnswer ?? string.Empty;
+    }
 }
+
+public sealed record AgentRunResult(
+    [property: JsonPropertyName("final_answer")] string? FinalAnswer);
 
 public sealed class AgentRequestException : Exception
 {

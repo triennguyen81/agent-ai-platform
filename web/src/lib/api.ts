@@ -775,13 +775,20 @@ export const gateway = {
   // ---------- Vouchers (kế toán chứng từ) ----------
   listVouchers(
     token: string,
-    params?: { voucherType?: string; status?: string; q?: string; limit?: number },
+    params?: {
+      voucherType?: string;
+      status?: string;
+      q?: string;
+      limit?: number;
+      offset?: number;
+    },
   ) {
     const search = new URLSearchParams();
     if (params?.voucherType) search.set("voucherType", params.voucherType);
     if (params?.status) search.set("status", params.status);
     if (params?.q) search.set("q", params.q);
     if (params?.limit) search.set("limit", String(params.limit));
+    if (params?.offset) search.set("offset", String(params.offset));
     const qs = search.toString();
     return call(GATEWAY_BASE, `/vouchers${qs ? `?${qs}` : ""}`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -847,6 +854,63 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
       body: formData,
       cache: "no-store",
+    });
+  },
+  customerByMst(token: string, mst: string) {
+    return call(GATEWAY_BASE, `/customers/by-mst/${encodeURIComponent(mst)}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  customerReceivables(token: string, customerId: string) {
+    return call(GATEWAY_BASE, `/customers/${customerId}/receivables`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  salesOrderByInvoice(token: string, documentNumber: string) {
+    return call(GATEWAY_BASE, `/sales-orders/by-invoice/${encodeURIComponent(documentNumber)}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listCustomers(token: string, params?: { category?: string; q?: string }) {
+    const qs = new URLSearchParams();
+    if (params?.category) qs.set("category", params.category);
+    if (params?.q) qs.set("q", params.q);
+    const url = qs.toString() ? `/customers/?${qs}` : "/customers/";
+    return call(GATEWAY_BASE, url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // ---------- Suppliers (UC3 AP side) ----------
+  listSuppliers(token: string, params?: { country?: string; q?: string }) {
+    const qs = new URLSearchParams();
+    if (params?.country) qs.set("country", params.country);
+    if (params?.q) qs.set("q", params.q);
+    const url = qs.toString() ? `/suppliers/?${qs}` : "/suppliers/";
+    return call(GATEWAY_BASE, url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  supplierByMst(token: string, mst: string) {
+    return call(GATEWAY_BASE, `/suppliers/by-mst/${encodeURIComponent(mst)}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  supplierPayables(token: string, supplierId: string) {
+    return call(GATEWAY_BASE, `/suppliers/${supplierId}/payables`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  purchaseOrderByInvoice(token: string, documentNumber: string) {
+    return call(GATEWAY_BASE, `/purchase-orders/by-invoice/${encodeURIComponent(documentNumber)}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
     });
   },
 };

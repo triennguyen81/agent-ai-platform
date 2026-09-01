@@ -62,6 +62,25 @@ public interface IVoucherRepository
         CancellationToken ct);
 
     Task<bool> DeleteAsync(Guid tenantId, Guid userId, Guid id, CancellationToken ct);
+
+    // UC-ACC-001 E2: dedup by (seller_mst + document_number) within a tenant.
+    // Nullable tenant vì có thể gọi từ Hangfire job (no user context).
+    Task<VoucherRecord?> FindDuplicateAsync(
+        Guid? tenantId,
+        string sellerMst,
+        string documentNumber,
+        Guid excludeId,
+        CancellationToken ct);
+
+    // P1 async OCR: called from Hangfire job (no tenant/user context).
+    // Updates just status + rawText + confidence + errorMessage. Idempotent.
+    Task UpdateOcrResultAsync(
+        Guid id,
+        string status,
+        string? rawText,
+        decimal? ocrConfidence,
+        string? errorMessage,
+        CancellationToken ct);
 }
 
 public sealed class VoucherRepository : IVoucherRepository
@@ -104,6 +123,7 @@ public sealed class VoucherRepository : IVoucherRepository
             raw_ocr_text      AS RawOcrText,
             ocr_confidence    AS OcrConfidence,
             error_message     AS ErrorMessage,
+            extracted_fields::text AS ExtractedFieldsJson,
             tags              AS Tags,
             created_at        AS CreatedAt,
             updated_at        AS UpdatedAt
@@ -437,6 +457,10 @@ public sealed class VoucherRepository : IVoucherRepository
         Guid id,
         CancellationToken ct)
     {
+        // Voucher visibility is tenant-scoped: every kế toán viên at the
+        // tenant needs to see the same set of chứng từ so admin uploads
+        // and kế toán actions share one queue. The user_id column is
+        // retained for audit ("who uploaded") but no longer gates reads.
         var voucherSql = $"""
             SELECT {VoucherSelectColumns}
             FROM vouchers
@@ -489,6 +513,8 @@ public sealed class VoucherRepository : IVoucherRepository
         var hasStatus = !string.IsNullOrWhiteSpace(statusFilter);
         var hasSearch = !string.IsNullOrWhiteSpace(search);
 
+        // Tenant-scoped list (same as FindAsync). userId retained on
+        // command for audit logging but not filtered on.
         var sql = $"""
             SELECT {VoucherSelectColumns}
             FROM vouchers
@@ -691,6 +717,8 @@ public sealed class VoucherRepository : IVoucherRepository
 
     public async Task<bool> DeleteAsync(Guid tenantId, Guid userId, Guid id, CancellationToken ct)
     {
+        // Delete is admin-only at the endpoint layer (RequireAuthorization
+        // "admin"), so any admin in the tenant can remove any voucher.
         const string sql = """
             DELETE FROM vouchers
             WHERE id = @id
@@ -701,6 +729,55 @@ public sealed class VoucherRepository : IVoucherRepository
         var rows = await conn.ExecuteAsync(
             new CommandDefinition(sql, new { id, tenantId, userId }, cancellationToken: ct));
         return rows > 0;
+    }
+
+    public async Task UpdateOcrResultAsync(
+        Guid id,
+        string status,
+        string? rawText,
+        decimal? ocrConfidence,
+        string? errorMessage,
+        CancellationToken ct)
+    {
+        const string sql = """
+            UPDATE vouchers
+            SET status         = @status,
+                raw_ocr_text   = COALESCE(@rawText, raw_ocr_text),
+                ocr_confidence = COALESCE(@ocrConfidence, ocr_confidence),
+                error_message  = @errorMessage,
+                updated_at     = NOW()
+            WHERE id = @id
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            sql,
+            new { id, status, rawText, ocrConfidence, errorMessage },
+            cancellationToken: ct));
+    }
+
+    public async Task<VoucherRecord?> FindDuplicateAsync(
+        Guid? tenantId,
+        string sellerMst,
+        string documentNumber,
+        Guid excludeId,
+        CancellationToken ct)
+    {
+        var sql = $"""
+            SELECT {VoucherSelectColumns}
+            FROM vouchers
+            WHERE seller_mst = @sellerMst
+              AND document_number = @documentNumber
+              AND id <> @excludeId
+              AND (@tenantId::uuid IS NULL OR tenant_id = @tenantId)
+              AND status NOT IN ('rejected')
+            LIMIT 1;
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.QueryFirstOrDefaultAsync<VoucherRecord>(
+            new CommandDefinition(
+                sql,
+                new { tenantId, sellerMst, documentNumber, excludeId },
+                cancellationToken: ct));
     }
 
     private static string SerializeExtracted(object? fields)

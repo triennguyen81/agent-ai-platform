@@ -22,6 +22,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Logging.Console;
 using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
 using Prometheus;
 
 // Npgsql 8 returns `DateTime` (kind=Utc) for `timestamptz` columns. Our records
@@ -133,6 +134,9 @@ builder.Services.AddScoped<IWorkflowRepository, WorkflowRepository>();
 builder.Services.AddScoped<IReviewBoardRepository, ReviewBoardRepository>();
 builder.Services.AddScoped<IHitlRepository, HitlRepository>();
 builder.Services.AddScoped<IAgentKnowledgeRepository, AgentKnowledgeRepository>();
+builder.Services.AddScoped<Aiq.Gateway.Customers.ICustomerRepository, Aiq.Gateway.Customers.CustomerRepository>();
+builder.Services.AddScoped<Aiq.Gateway.Suppliers.ISupplierRepository, Aiq.Gateway.Suppliers.SupplierRepository>();
+builder.Services.AddScoped<Aiq.Gateway.Employees.IEmployeeRepository, Aiq.Gateway.Employees.EmployeeRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IFileUploadGuard, FileUploadGuard>();
@@ -143,6 +147,7 @@ builder.Services.AddSingleton<IBookAccessControl, BookAccessControl>();
 // smoke-test connectivity via /healthz/ready and stage the migration behind
 // a feature flag (see docs/arch/s3-migration-plan.md).
 builder.Services.Configure<S3Options>(builder.Configuration.GetSection(S3Options.SectionName));
+builder.Services.Configure<Aiq.Gateway.Jobs.ExpenseRiskOptions>(builder.Configuration.GetSection(Aiq.Gateway.Jobs.ExpenseRiskOptions.SectionName));
 builder.Services.AddSingleton<IObjectStorage, S3ObjectStorage>();
 
 builder.Services
@@ -170,7 +175,11 @@ builder.Services.AddHangfireServer(server =>
 });
 
 builder.Services.AddScoped<OcrJobRunner>();
+builder.Services.AddScoped<Aiq.Gateway.Jobs.VoucherOcrJobRunner>();
+builder.Services.AddScoped<Aiq.Gateway.Jobs.VoucherExtractJobRunner>();
 builder.Services.AddScoped<IOcrJobScheduler, OcrJobScheduler>();
+builder.Services.AddScoped<Aiq.Gateway.Jobs.IVoucherOcrJobScheduler, Aiq.Gateway.Jobs.VoucherOcrJobScheduler>();
+builder.Services.AddScoped<Aiq.Gateway.Jobs.IVoucherExtractJobScheduler, Aiq.Gateway.Jobs.VoucherExtractJobScheduler>();
 builder.Services.AddScoped<ContractDeadlineJob>();
 
 builder.Services.AddScoped<IAuditLogger, PostgresAuditLogger>();
@@ -187,10 +196,19 @@ var observabilityOptions = builder.Configuration
 
 builder.Services.AddAiqOpenTelemetry(observabilityOptions);
 
+// Disable .NET's default claim renaming so "sub" stays "sub", "email"
+// stays "email", "role" stays "role" (matches what our /me endpoint +
+// TokenValidationParameters.RoleClaimType expect).
+JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
+
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        // MapInboundClaims=false — stops .NET from rewriting JWT claims
+        // ("role", "sub", "email") to ClaimTypes URI equivalents. Without
+        // this, IsInRole("admin") never matches because claims land as
+        // ClaimTypes.Role URI, while RoleClaimType="role" expects raw name.
         options.MapInboundClaims = false;
         options.TokenValidationParameters = new TokenValidationParameters
         {
@@ -343,6 +361,8 @@ app.MapNoteEndpoints();
 app.MapContractEndpoints();
 app.MapChecklistEndpoints();
 app.MapVoucherEndpoints();
+app.MapCustomerEndpoints();
+app.MapSupplierEndpoints();
 app.MapNotificationEndpoints();
 app.MapTenantEndpoints();
 app.MapAgentEndpoints();

@@ -160,7 +160,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "file trống" }, { status: 400 });
   }
 
-  // Step 1 — upload to gateway (S3 + OCR)
+  // P1 (part 2): gateway chains OCR job → extract job (both Hangfire).
+  // Web just relays the fast response — no polling, no bg promise, no
+  // Next.js lifecycle risk. Detail page auto-refreshes while pipeline
+  // runs and stops once status='extracted'.
   const uploadForm = new FormData();
   uploadForm.append("file", file, file.name);
   const uploadRes = await gateway.uploadVoucher(token, uploadForm, voucherType);
@@ -170,86 +173,14 @@ export async function POST(request: NextRequest) {
   }
   const uploadJson = (await uploadRes.json()) as UploadResponse;
 
-  if (uploadJson.status === "rejected" || !uploadJson.rawText) {
-    return NextResponse.json(uploadJson, { status: 200 });
-  }
-
-  // Step 2 — ask agent for the 2 JSON blocks in one shot
-  const task = [
-    "Bạn là chuyên viên kế toán VN. Xử lý raw OCR text của 1 hoá đơn GTGT bên dưới.",
-    "",
-    "**BLOCK 1** — Áp dụng skill `voucher-invoice-vat` để trích xuất fields.",
-    `Trả về JSON object có voucher_type="${voucherType}", document_number, document_series, document_date (YYYY-MM-DD), seller_name, seller_mst, seller_address, buyer_name, buyer_mst, buyer_address, payment_method (CK/TM/MIXED), subtotal, vat_rate, vat_amount, discount_amount, total_amount, currency, amount_in_words, line_items[] (mỗi item: ordinal, description, unit, quantity, unit_price, subtotal, vat_rate, vat_amount, total_amount), tags[].`,
-    "",
-    "**BLOCK 2** — Áp dụng skill `journal-entry-formatter` + `accounting-vietnam` để đề xuất bút toán N/C theo TT200.",
-    "Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credit_account, amount, description, confidence}.",
-    "Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331 / Có 331 (công nợ) hoặc 111/112 (trả ngay). Hoá đơn đầu ra (bán) → Nợ 131/111/112 / Có 511 + Có 3331.",
-    "",
-    "**QUAN TRỌNG**: chỉ trả 2 code block JSON, KHÔNG kèm markdown khác:",
-    "```json",
-    "{ ...fields object... }",
-    "```",
-    "```json",
-    "[ ...entries array... ]",
-    "```",
-    "",
-    "===== RAW OCR TEXT =====",
-    (uploadJson.rawText || "").slice(0, 50_000),
-    "===== END =====",
-  ].join("\n");
-
-  const agentRes = await agent.runTask(token, {
-    task,
-    skills: [
-      "voucher-invoice-vat",
-      "accounting-vietnam",
-      "journal-entry-formatter",
-      "vietnamese-style",
-    ],
-    max_turns: 3,
-  });
-  const agentJson = (await agentRes.json().catch(() => ({}))) as AgentRunResponse;
-  const agentText = agentJson.final_answer ?? "";
-
-  // Step 3 — parse JSON blocks, PATCH voucher + POST journal
-  const { fields, entries } = extractJsonBlocks(agentText);
-
-  let extractedOk = false;
-  let journalCount = 0;
-
-  if (fields && typeof fields === "object") {
-    const payload = toGatewayFieldsPayload(fields as Record<string, unknown>, uploadJson.rawText || "");
-    const applyRes = await fetch(
-      `${process.env.GATEWAY_BASE_URL ?? "http://aiq-gateway:8080"}/vouchers/${uploadJson.voucherId}/apply-extraction`,
-      {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-        cache: "no-store",
-      },
-    );
-    extractedOk = applyRes.ok;
-  }
-
-  if (entries && Array.isArray(entries) && entries.length > 0) {
-    const payload = toJournalPayload(entries);
-    if (payload.entries.length > 0) {
-      const saveRes = await gateway.saveVoucherJournal(token, uploadJson.voucherId, payload);
-      if (saveRes.ok) {
-        journalCount = payload.entries.length;
-      }
-    }
-  }
-
+  // P1 async fix (67e1dab): return immediately, let Hangfire pipeline chain
+  // OCR → LLM extract → save. Detail page auto-polls status until 'extracted'.
+  // Trước: sync agent.runTask ở đây → CF 504 timeout ở invoice > 30s OCR.
   return NextResponse.json({
     voucherId: uploadJson.voucherId,
-    status: extractedOk ? "extracted" : "ocr_complete",
-    ocrConfidence: uploadJson.ocrConfidence,
-    extractedFieldsOk: extractedOk,
-    journalEntriesSaved: journalCount,
-    agentResponse: agentText.slice(0, 2000),
+    status: "uploading",
+    ocrConfidence: 0,
+    extractedFieldsOk: false,
+    journalEntriesSaved: 0,
   });
 }

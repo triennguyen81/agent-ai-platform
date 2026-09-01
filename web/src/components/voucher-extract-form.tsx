@@ -12,6 +12,11 @@ interface VoucherExtractFormProps {
   voucherId: string;
   voucherType: string;
   initialRawText?: string | null;
+  /** Voucher.status — decides which panel to show (processing / OCR done /
+   *  OCR unavailable). Was previously ignored, so users saw "OCR chưa khả
+   *  dụng" + a sample placeholder even while the OCR job was still running.
+   */
+  voucherStatus?: string;
 }
 
 interface ExtractResponse {
@@ -47,12 +52,18 @@ export function VoucherExtractForm({
   voucherId,
   voucherType,
   initialRawText,
+  voucherStatus,
 }: VoucherExtractFormProps): React.ReactElement {
   const router = useRouter();
-  const [rawText, setRawText] = useState(initialRawText || SAMPLE_INVOICE_TEXT);
+  const hasRealOcr = Boolean(initialRawText && initialRawText.trim().length > 0);
+  const [rawText, setRawText] = useState(hasRealOcr ? initialRawText! : SAMPLE_INVOICE_TEXT);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  const isProcessing = voucherStatus === "processing" || voucherStatus === "uploading";
+  const isOcrReady = voucherStatus === "ocr_complete" && hasRealOcr;
+  const isOcrUnavailable = voucherStatus === "ocr_unavailable" || !hasRealOcr;
 
   async function submit(): Promise<void> {
     if (loading || rawText.trim().length < 20) return;
@@ -68,7 +79,21 @@ export function VoucherExtractForm({
       });
       if (!res.ok) {
         const text = await res.text();
-        setError(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+        const looksLikeHtml = /^\s*<(!doctype|html|head|body)/i.test(text);
+        let msg: string;
+        if (looksLikeHtml) {
+          msg = res.status === 504
+            ? "Extract chạy quá 100s — hệ thống chuyển sang chế độ nền, thử refresh trang sau 30-60s."
+            : "Máy chủ tạm thời không phản hồi. Vui lòng thử lại sau ít giây.";
+        } else {
+          try {
+            const parsed = JSON.parse(text) as { error?: string; detail?: string };
+            msg = parsed.error ?? parsed.detail ?? text.slice(0, 300);
+          } catch {
+            msg = text.slice(0, 300);
+          }
+        }
+        setError(`Lỗi ${res.status}: ${msg}`);
         return;
       }
       const body = (await res.json()) as ExtractResponse;
@@ -82,24 +107,57 @@ export function VoucherExtractForm({
     }
   }
 
+  // Processing panel — no textarea, just a spinner. Prevents user seeing
+  // the sample placeholder while the OCR job is still working.
+  if (isProcessing) {
+    return (
+      <section className="space-y-3 rounded-[var(--radius)] border border-blue-200 bg-blue-50/50 p-5">
+        <div className="flex items-start gap-2">
+          <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-blue-700" />
+          <div>
+            <h2 className="font-serif text-lg text-blue-900">
+              Đang xử lý chứng từ…
+            </h2>
+            <p className="mt-1 text-xs text-blue-800">
+              File đã lên S3, Hangfire đang chạy OCR + trích xuất fields ở nền.
+              Trang tự refresh mỗi 5 giây — chờ 30-90s tuỳ độ phức tạp của ảnh.
+              Không cần bấm gì.
+            </p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  // OCR done + text available. Fields not yet populated → let user trigger
+  // extraction manually (or wait for the chained extract job to finish).
+  const heading = isOcrReady
+    ? "OCR xong — AI đang trích fields, hoặc bấm nút để chạy lại"
+    : "OCR chưa khả dụng — paste raw text để AI trích xuất";
+  const subtext = isOcrReady
+    ? "Text đã đọc từ ảnh sẵn ở ô dưới. Nếu fields chưa xuất hiện sau 60s (extract job chậm hoặc LLM trả rỗng) — bấm nút để chạy lại thủ công."
+    : "Pipeline OCR (PaddleOCR) hoặc không cài hoặc gặp lỗi runtime. Bạn có thể copy nội dung chứng từ từ PDF/ảnh và paste vào đây, AI sẽ trích xuất fields + đề xuất bút toán N/C theo TT200.";
+  const bannerTone = isOcrReady
+    ? "border-blue-200 bg-blue-50/50"
+    : "border-amber-200 bg-amber-50/50";
+  const iconTone = isOcrReady ? "text-blue-700" : "text-amber-700";
+  const headingTone = isOcrReady ? "text-blue-900" : "text-amber-900";
+  const bodyTone = isOcrReady ? "text-blue-800" : "text-amber-800";
+
   return (
-    <section className="space-y-3 rounded-[var(--radius)] border border-amber-200 bg-amber-50/50 p-5">
+    <section className={`space-y-3 rounded-[var(--radius)] border p-5 ${bannerTone}`}>
       <div className="flex items-start gap-2">
-        <Wand2 className="mt-0.5 size-4 shrink-0 text-amber-700" />
+        <Wand2 className={`mt-0.5 size-4 shrink-0 ${iconTone}`} />
         <div>
-          <h2 className="font-serif text-lg text-amber-900">
-            OCR chưa khả dụng — paste raw text để AI trích xuất
-          </h2>
-          <p className="mt-1 text-xs text-amber-800">
-            Pipeline OCR (PaddleOCR) chưa cài trong agent runtime. Bạn có thể copy
-            nội dung chứng từ từ PDF/ảnh và paste vào đây, AI sẽ trích xuất fields
-            + đề xuất bút toán N/C theo TT200.
-          </p>
+          <h2 className={`font-serif text-lg ${headingTone}`}>{heading}</h2>
+          <p className={`mt-1 text-xs ${bodyTone}`}>{subtext}</p>
         </div>
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="raw-text">Nội dung chứng từ</Label>
+        <Label htmlFor="raw-text">
+          Nội dung chứng từ {!hasRealOcr && "(mẫu — thay bằng nội dung thật)"}
+        </Label>
         <Textarea
           id="raw-text"
           value={rawText}

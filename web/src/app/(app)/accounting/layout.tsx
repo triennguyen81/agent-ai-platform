@@ -11,7 +11,9 @@ const NAV_ITEMS = [
 ];
 
 export default async function AccountingLayout({ children }: { children: React.ReactNode }) {
-  await requireViewer(["super_admin", "tenant_owner", "admin"]);
+  // Kế toán viên (role=user) là daily-driver persona cho accounting tools.
+  // Include 'user' để không block workflow (theo b28504f RBAC design).
+  await requireViewer(["super_admin", "tenant_owner", "admin", "user"]);
   return (
     <div className="space-y-6">
       <nav className="-mx-1 flex flex-wrap gap-1 overflow-x-auto pb-2 text-sm">
