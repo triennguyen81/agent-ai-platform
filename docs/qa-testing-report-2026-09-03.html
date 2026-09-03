@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QA Testing Report — Sprint 1-4.5 UC3 Expense/AP + Bug Fixes</title>
+<style>
+  :root {
+    --bg: #fafaf7;
+    --bg-card: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #666;
+    --border: #e5e5e0;
+    --primary: #4f46e5;
+    --primary-fg: #ffffff;
+    --primary-tint: #eef2ff;
+    --success: #059669;
+    --success-tint: #ecfdf5;
+    --warning: #d97706;
+    --warning-tint: #fffbeb;
+    --danger: #dc2626;
+    --danger-tint: #fef2f2;
+    --code-bg: #f5f5f2;
+    --radius: 6px;
+    --sidebar-w: 280px;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, 'Segoe UI', 'Inter', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    margin: 0;
+    line-height: 1.65;
+    font-size: 15px;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: var(--sidebar-w) 1fr;
+    min-height: 100vh;
+  }
+
+  /* Sidebar TOC */
+  aside {
+    background: var(--bg-card);
+    border-right: 1px solid var(--border);
+    padding: 24px 20px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+  aside .brand {
+    font-family: 'Georgia', 'Times New Roman', serif;
+    font-size: 20px;
+    font-weight: bold;
+    color: var(--primary);
+    margin-bottom: 4px;
+  }
+  aside .subtitle {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 20px;
+    line-height: 1.4;
+  }
+  aside .toc-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    margin: 20px 0 8px;
+    font-weight: 600;
+  }
+  aside ol {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    counter-reset: item;
+  }
+  aside ol li {
+    counter-increment: item;
+    margin: 2px 0;
+  }
+  aside ol li a {
+    display: flex;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: var(--radius);
+    color: var(--fg);
+    text-decoration: none;
+    font-size: 13px;
+    transition: all 0.15s;
+  }
+  aside ol li a::before {
+    content: counter(item, decimal-leading-zero);
+    color: var(--muted);
+    font-family: 'SF Mono', 'Consolas', monospace;
+    font-size: 11px;
+    flex-shrink: 0;
+    padding-top: 1px;
+  }
+  aside ol li a:hover {
+    background: var(--primary-tint);
+    color: var(--primary);
+  }
+
+  /* Main content */
+  main {
+    max-width: 1000px;
+    padding: 40px 60px;
+  }
+  main header {
+    padding-bottom: 24px;
+    border-bottom: 2px solid var(--border);
+    margin-bottom: 32px;
+  }
+  main header h1 {
+    font-family: 'Georgia', serif;
+    font-size: 32px;
+    margin: 0 0 8px;
+    line-height: 1.2;
+  }
+  main header .meta {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px 24px;
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 16px;
+  }
+  main header .meta strong {
+    color: var(--fg);
+    font-weight: 600;
+  }
+
+  h2 {
+    font-family: 'Georgia', serif;
+    font-size: 24px;
+    margin: 48px 0 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 .section-num {
+    color: var(--primary);
+    font-family: 'SF Mono', 'Consolas', monospace;
+    font-size: 16px;
+    margin-right: 8px;
+    font-weight: normal;
+  }
+  h3 {
+    font-size: 18px;
+    margin: 28px 0 8px;
+    color: var(--fg);
+  }
+  h4 {
+    font-size: 15px;
+    margin: 20px 0 6px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+
+  p { margin: 0 0 12px; }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: 'SF Mono', 'Consolas', 'Courier New', monospace;
+    font-size: 0.9em;
+    color: #7c3aed;
+  }
+  pre {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 16px 20px;
+    border-radius: var(--radius);
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.5;
+    margin: 12px 0 20px;
+  }
+  pre code {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    font-size: inherit;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 20px;
+    font-size: 13.5px;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  th, td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    background: var(--code-bg);
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--primary-tint); transition: background 0.1s; }
+
+  ul, ol {
+    margin: 8px 0 16px;
+    padding-left: 24px;
+  }
+  ul li, ol li { margin: 4px 0; }
+
+  blockquote {
+    border-left: 3px solid var(--primary);
+    background: var(--primary-tint);
+    padding: 12px 16px;
+    margin: 16px 0;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    color: var(--fg);
+    font-size: 14px;
+  }
+  blockquote p:last-child { margin-bottom: 0; }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  .badge-ok { background: var(--success-tint); color: var(--success); }
+  .badge-warn { background: var(--warning-tint); color: var(--warning); }
+  .badge-danger { background: var(--danger-tint); color: var(--danger); }
+  .badge-info { background: var(--primary-tint); color: var(--primary); }
+
+  .callout {
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    margin: 16px 0;
+    display: flex;
+    gap: 12px;
+    font-size: 14px;
+  }
+  .callout-icon { flex-shrink: 0; font-size: 18px; line-height: 1.4; }
+  .callout-ok { background: var(--success-tint); border-left: 3px solid var(--success); }
+  .callout-warn { background: var(--warning-tint); border-left: 3px solid var(--warning); }
+  .callout-danger { background: var(--danger-tint); border-left: 3px solid var(--danger); }
+  .callout strong { font-weight: 600; }
+
+  hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 32px 0;
+  }
+
+  .footer {
+    margin-top: 60px;
+    padding: 20px 0;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    font-style: italic;
+    text-align: center;
+  }
+
+  /* Print styles */
+  @media print {
+    aside { display: none; }
+    .layout { grid-template-columns: 1fr; }
+    main { padding: 20px; max-width: 100%; }
+    tr:hover td { background: transparent; }
+    pre { border: 1px solid var(--border); background: #f8f8f8; color: #333; }
+  }
+
+  /* Mobile */
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    aside { position: static; height: auto; }
+    main { padding: 24px 20px; }
+    main header .meta { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <aside>
+    <div class="brand">Cát Tường AI</div>
+    <div class="subtitle">QA Testing Report<br>2026-09-03 · v1.0</div>
+
+    <div class="toc-title">Mục lục</div>
+    <ol>
+      <li><a href="#s1">Tổng quan — Đã ship gì</a></li>
+      <li><a href="#s2">Test environment</a></li>
+      <li><a href="#s3">Test accounts</a></li>
+      <li><a href="#s4">Test cases theo Sprint</a></li>
+      <li><a href="#s5">Test data available</a></li>
+      <li><a href="#s6">Known issues + limitations</a></li>
+      <li><a href="#s7">Regression scenarios</a></li>
+      <li><a href="#s8">Cách report bug</a></li>
+      <li><a href="#s9">Reference docs</a></li>
+      <li><a href="#s10">Session context</a></li>
+    </ol>
+
+    <div class="toc-title">Actions</div>
+    <a href="qa-testing-report-2026-09-03.md" style="display: block; padding: 8px 12px; background: var(--primary-tint); color: var(--primary); text-decoration: none; border-radius: var(--radius); font-size: 13px; margin-top: 8px;">📄 Xem bản Markdown</a>
+    <a href="https://github.com/tuongna247/agent_claude_sdk/blob/master/docs/qa-testing-report-2026-09-03.md" style="display: block; padding: 8px 12px; background: var(--code-bg); color: var(--fg); text-decoration: none; border-radius: var(--radius); font-size: 13px; margin-top: 8px;">🔗 GitHub link</a>
+  </aside>
+
+  <main>
+    <header>
+      <h1>QA Testing Report</h1>
+      <div style="font-size: 15px; color: var(--muted);">Sprint 1-4.5 UC3 Expense/AP + Bug Fixes</div>
+      <div class="meta">
+        <div><strong>Sprint:</strong> UC3 Expense/AP end-to-end + Merge + Bug fixes</div>
+        <div><strong>Deploy date:</strong> 2026-09-01 → 2026-09-03</div>
+        <div><strong>Environment:</strong> Production <code>https://app.cattuong.ai</code></div>
+        <div><strong>Branch:</strong> <code>master</code> (via PR #1)</div>
+        <div><strong>Audience:</strong> QA team</div>
+        <div><strong>Ship type:</strong> 8 commits, 5 sprint + 2 fixes + 1 docs</div>
+      </div>
+    </header>
+
+    <!-- SECTION 1 -->
+    <h2 id="s1"><span class="section-num">01</span>Tổng quan — Đã ship gì</h2>
+
+    <h3>8 commits chính trên master</h3>
+    <table>
+      <thead><tr><th>#</th><th>Commit</th><th>Nội dung</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><code>292a573</code></td><td>Sprint 1 — Backend AP core (sim_ap_ledger, Supplier + Employee repos, extract enrichment)</td></tr>
+        <tr><td>2</td><td><code>ea19a7d</code></td><td>Sprint 2 — UI <code>/suppliers</code> page + AP panels + AcceptExpenseButton</td></tr>
+        <tr><td>3</td><td><code>a58096d</code></td><td>Sprint 3 — Expense per-category breakdown + 4 demo templates PNG</td></tr>
+        <tr><td>4</td><td><code>7185f69</code></td><td>Sprint 4 — PO 3-way match + risk config + gap UC1/UC2 + <code>/expenses</code> dashboard</td></tr>
+        <tr><td>5</td><td><code>4b56710</code></td><td>Sprint 4.5 — Artifact Library + 3-step training walkthrough</td></tr>
+        <tr><td>6</td><td><code>5b01d40</code></td><td>Merge origin/master multi-tenant refactor vào UC3 branch</td></tr>
+        <tr><td>7</td><td><code>6345e56</code></td><td>Fix bug 403 "An assigned agent is required" (auto-fallback agent_id)</td></tr>
+        <tr><td>8</td><td><code>c288c3c</code></td><td>Docs AccAgent spec v0.1 (reference)</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Coverage — 6 usecase types</h3>
+    <p>Hệ thống giờ xử lý được tất cả 6 loại chứng từ kế toán:</p>
+    <table>
+      <thead><tr><th>voucher_type</th><th>Chiều</th><th>UC</th></tr></thead>
+      <tbody>
+        <tr><td><code>invoice_vat_out</code></td><td>AR (bán)</td><td>UC1 (đã có từ trước)</td></tr>
+        <tr><td><code>receipt</code></td><td>AR (thu)</td><td>UC2 (đã có từ trước)</td></tr>
+        <tr><td><code>invoice_vat_in</code></td><td>AP (mua)</td><td><span class="badge badge-info">UC3 mới ⭐</span></td></tr>
+        <tr><td><code>payment</code></td><td>AP (chi TM)</td><td><span class="badge badge-info">UC3 mới ⭐</span></td></tr>
+        <tr><td><code>bank_transfer</code></td><td>AP (UNC)</td><td><span class="badge badge-info">UC3 mới ⭐</span></td></tr>
+        <tr><td><code>expense_claim</code></td><td>AP (hoàn ứng NV)</td><td><span class="badge badge-info">UC3 mới ⭐</span></td></tr>
+      </tbody>
+    </table>
+
+    <!-- SECTION 2 -->
+    <h2 id="s2"><span class="section-num">02</span>Test environment</h2>
+    <table>
+      <thead><tr><th>Item</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>Production URL</td><td><a href="https://app.cattuong.ai">https://app.cattuong.ai</a></td></tr>
+        <tr><td>Backend gateway</td><td><code>https://app.cattuong.ai/api</code> (proxy qua Next.js)</td></tr>
+        <tr><td>Database</td><td>PostgreSQL 16 (aiq-postgres container)</td></tr>
+        <tr><td>OCR engine</td><td>RapidOCR (ONNX runtime, fallback từ PaddleOCR)</td></tr>
+        <tr><td>LLM extract</td><td>Claude via subscription CLI</td></tr>
+        <tr><td>Tenant test</td><td><code>vietdang</code> (CTCP Thiết bị Nha khoa Việt Đăng)</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Docker containers cần healthy</h3>
+    <pre><code>aiq-web       (Next.js 15 frontend)
+aiq-gateway   (ASP.NET Core 9)
+aiq-agent     (FastAPI Python 3.12)
+aiq-postgres  (PostgreSQL 16 + pgvector)
+aiq-redis
+aiq-minio     (S3-compatible object store)</code></pre>
+
+    <!-- SECTION 3 -->
+    <h2 id="s3"><span class="section-num">03</span>Test accounts (tenant Việt Đăng)</h2>
+    <table>
+      <thead><tr><th>Email</th><th>Password</th><th>Role</th><th>Dùng để test gì</th></tr></thead>
+      <tbody>
+        <tr><td><code>admin@vietdang.vn</code></td><td><code>VD@2026</code></td><td>admin</td><td>Full nghiệp vụ + workspace + admin</td></tr>
+        <tr><td><code>ketoan1@vietdang.vn</code></td><td><code>VD@2026</code></td><td>user (kế toán viên)</td><td><strong>Daily driver</strong> — upload + extract + accept</td></tr>
+        <tr><td><code>ketoan2@vietdang.vn</code></td><td><code>VD@2026</code></td><td>user (kế toán viên)</td><td>Test collab (2 người cùng tenant)</td></tr>
+        <tr><td><code>giamdoc@vietdang.vn</code></td><td><code>VD@2026</code></td><td>user</td><td>Xem báo cáo</td></tr>
+        <tr><td><code>tuong247@gmail.com</code></td><td>(anh giữ)</td><td>super_admin</td><td>Cross-tenant admin</td></tr>
+      </tbody>
+    </table>
+    <div class="callout callout-warn">
+      <div class="callout-icon">⚠</div>
+      <div><strong>Note:</strong> Kế toán viên (<code>user</code> role) chỉ được assign agent <code>vd-accounting</code> trong tenant Việt Đăng — hạn chế cross-tenant.</div>
+    </div>
+
+    <!-- SECTION 4 -->
+    <h2 id="s4"><span class="section-num">04</span>Test cases theo Sprint</h2>
+
+    <h3>Sprint 1 — Backend AP core (verify qua API)</h3>
+    <h4>Endpoint mới</h4>
+    <table>
+      <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Expected</th></tr></thead>
+      <tbody>
+        <tr><td>GET</td><td><code>/suppliers/</code></td><td>user+</td><td>200 + 6 NCC (KaVo, Sirona, Morita + 3 VN)</td></tr>
+        <tr><td>GET</td><td><code>/suppliers/by-mst/{mst}</code></td><td>user+</td><td>200 + supplier record hoặc 404</td></tr>
+        <tr><td>GET</td><td><code>/suppliers/{id}</code></td><td>user+</td><td>200 + full supplier detail</td></tr>
+        <tr><td>GET</td><td><code>/suppliers/{id}/payables</code></td><td>user+</td><td>200 + aging buckets + open payables</td></tr>
+        <tr><td>GET</td><td><code>/purchase-orders/by-invoice/{docNumber}</code></td><td>user+</td><td>200 + PO+GRN match hoặc null</td></tr>
+      </tbody>
+    </table>
+
+    <h4>Test qua UI</h4>
+    <ul>
+      <li>Login <code>ketoan1@vietdang.vn</code> → nav "Nghiệp vụ ▼" → click "Nhà cung cấp"</li>
+      <li>Verify: 6 NCC hiển thị, có 3 summary card (Tổng phải trả / NCC ≥ 500M / NCC nhập khẩu)</li>
+      <li>Filter theo country (VN/DE/JP/US) — verify list filter đúng</li>
+      <li>Search "KaVo" — verify chỉ NCC-DE-001 hiện</li>
+    </ul>
+
+    <h3>Sprint 2 — UI Suppliers + AP panels + Accept expense</h3>
+    <h4>Test AP context panel (upload invoice_vat_in)</h4>
+    <ol>
+      <li>Login <code>ketoan1@vietdang.vn</code></li>
+      <li>Nav → "Chứng từ" → "Thêm chứng từ" → chọn voucher type <code>invoice_vat_in</code></li>
+      <li>Upload <code>docs/demo-templates/07-hoa-don-ncc-kavo.png</code> (HĐ KaVo 1.375 tỷ)</li>
+      <li>Chờ ~30-60s pipeline OCR + extract</li>
+      <li>Auto-refresh trang → verify:
+        <ul>
+          <li>AR context panel: <span class="badge badge-danger">✗ không hiện</span> (đúng, invoice_vat_in là AP)</li>
+          <li>AP context panel: <span class="badge badge-ok">✓ hiện</span> với supplier KaVo (NCC-DE-001), country DE, currency EUR</li>
+          <li>Current balance 331 = 750,000,000 → Projected = 2,125,000,000 (+1.375 tỷ)</li>
+          <li>Risk flags đỏ: <code>expense_over_500m_requires_l2_approval</code> + <code>has_overdue_90d</code></li>
+        </ul>
+      </li>
+      <li>Click "Chấp nhận HĐ · Ghi công nợ 331" → verify success card với công nợ trước 750M / sau 2,125M</li>
+      <li>Refresh trang → button không còn hiện + banner "✓ Đã ghi HĐ NCC vào sổ AP"</li>
+      <li><strong>Idempotency test:</strong> upload lại cùng file → verify voucher bị reject vì duplicate <code>document_number</code></li>
+    </ol>
+
+    <h3>Sprint 3 — Expense claim per-category + TT96 warning</h3>
+    <ol>
+      <li>Login <code>ketoan1@vietdang.vn</code></li>
+      <li>Upload <code>docs/demo-templates/08-hoan-ung-cong-tac.png</code> (NV-0007 Trần Văn Đức, 11.35M)</li>
+      <li>Verify <strong>ExpenseClaimPanel</strong>: Employee NV-0007, Total 11.35M, Advance 5M, Remaining 6.35M</li>
+      <li>Items table hiển thị 5 khoản với <strong>Tiếp khách 2.7M → TK 6428</strong> badge màu amber (TT96 flag)</li>
+      <li>Warning box đỏ TT96 nhắc 15% cap tiếp khách</li>
+      <li>Click "Chấp nhận hoàn ứng · Ghi TK 141" → <code>sim_employees.outstanding_advance</code> 5M → 0</li>
+    </ol>
+
+    <h3>Sprint 4 — PO 3-way match + risk + gap UC1/UC2 + /expenses dashboard</h3>
+
+    <h4>Test PO 3-way match (invoice_vat_in với PO khớp)</h4>
+    <ol>
+      <li>Upload <code>07-hoa-don-ncc-kavo.png</code> (KAV-2026-0812) — khớp PO-2026-0032 + GRN-2026-078</li>
+      <li>Verify <strong>PoMatchPanel</strong> hiện với 2 card (PO + GRN), badge quality "Khớp đầy đủ" (xanh)</li>
+    </ol>
+
+    <h4>Test risk flag TT78 (chi TM > 30M)</h4>
+    <ol>
+      <li>Upload <code>docs/demo-templates/10-phieu-chi-tien-mat.png</code> (phiếu chi TM 35M)</li>
+      <li>Verify AP context panel có risk flag <span class="badge badge-danger">ĐỎ</span>: <code>Chi TM > 30M — không khấu trừ VAT (TT78 điều 6)</code></li>
+      <li>Bút toán suggest KHÔNG có TK 1331</li>
+    </ol>
+
+    <h4>Test gap UC1 Accept invoice + gap UC2 Unapply receipt</h4>
+    <ul>
+      <li>UC1: Với invoice_vat_out đã extract → button "Chấp nhận HĐ · Ghi công nợ khách" xuất hiện → click ghi lên sim_ar_ledger</li>
+      <li>UC2: Với receipt đã verified → button "Huỷ áp thu" → confirmation dialog đỏ → rollback voucher về extracted</li>
+    </ul>
+
+    <h4>Test /expenses dashboard</h4>
+    <ul>
+      <li>Nav "Nghiệp vụ ▼" → "Chi phí"</li>
+      <li>Verify 4 summary cards + Top 5 NCC nợ nhiều nhất (KaVo dẫn đầu)</li>
+    </ul>
+
+    <h3>Sprint 4.5 — Artifact Library / Training center</h3>
+    <ol>
+      <li>Nav "Nghiệp vụ ▼" → "Chứng từ mẫu"</li>
+      <li>Verify 10 mẫu grid, 3 summary cards, group 6 categories</li>
+      <li>Click mẫu 01 → 3-step walkthrough interactive:
+        <ul>
+          <li><strong>Bước 1</strong>: Quiz 4 option → reveal correct + explanation</li>
+          <li><strong>Bước 2</strong>: Table 6 fields với hint + risk flags</li>
+          <li><strong>Bước 3</strong>: Bút toán Nợ đỏ / Có xanh + quiz + bài học chốt</li>
+          <li><strong>Bước 4</strong>: Completion card + Học mẫu tiếp</li>
+        </ul>
+      </li>
+      <li>Test tất cả 10 mẫu — verify không lỗi</li>
+    </ol>
+
+    <h3>Bug 403 fix — Auto-fallback agent_id</h3>
+    <div class="callout callout-danger">
+      <div class="callout-icon">🐛</div>
+      <div><strong>Trước fix:</strong> <code>/accounting/tax-calc</code> khi user (ketoan1) bấm "Tính" → HTTP 403 "An assigned agent is required"</div>
+    </div>
+    <ol>
+      <li>Login <code>ketoan1@vietdang.vn</code></li>
+      <li>Nav "Nghiệp vụ ▼" → "Kế toán" → tab "Tính thuế"</li>
+      <li>Chọn tab TNDN, nhập Doanh thu 50 tỷ, Chi phí 38 tỷ, Thuế suất 20%</li>
+      <li>Click "Tính"</li>
+      <li><strong>Expected (sau fix):</strong> Kết quả markdown hiển thị breakdown TNDN, KHÔNG có lỗi 403</li>
+    </ol>
+
+    <!-- SECTION 5 -->
+    <h2 id="s5"><span class="section-num">05</span>Test data available (seed on cosmos)</h2>
+
+    <h3>Bảng master</h3>
+    <table>
+      <thead><tr><th>Bảng</th><th>Rows</th><th>Highlights</th></tr></thead>
+      <tbody>
+        <tr><td><code>sim_customers</code></td><td>12</td><td>8 PK + 2 BV + 2 đại lý; Nha Xinh 187.5M nợ, BV RHM 1.25B nợ</td></tr>
+        <tr><td><code>sim_suppliers</code></td><td>6</td><td>KaVo 750M nợ (overdue), Sirona 420M nợ (overdue), 3 NCC VN trong hạn, Morita 0</td></tr>
+        <tr><td><code>sim_employees</code></td><td>12</td><td>NV-0007 Trần Văn Đức có outstanding_advance 5M</td></tr>
+        <tr><td><code>sim_purchase_orders</code></td><td>6</td><td>PO-2026-0032 KaVo 1.375 tỷ khớp GRN-2026-078</td></tr>
+        <tr><td><code>sim_goods_received_notes</code></td><td>6</td><td>GRN cho 6 PO</td></tr>
+        <tr><td><code>sim_ap_ledger</code></td><td>5</td><td>Opening balances khớp current_ap</td></tr>
+        <tr><td><code>sim_expense_claims</code></td><td>5</td><td>2 approved, 2 submitted, 1 paid</td></tr>
+        <tr><td><code>sim_bank_transactions</code></td><td>14</td><td>Mix receipt + payment history</td></tr>
+        <tr><td><code>sim_contracts</code></td><td>4</td><td>BV RHM 3-giai đoạn, Ngọc Anh distribution</td></tr>
+        <tr><td><code>sim_delivery_notes</code></td><td>11</td><td>Cho AR side 3-way match</td></tr>
+      </tbody>
+    </table>
+
+    <h3>10 demo template files có sẵn upload test</h3>
+    <p>Path: <code>docs/demo-templates/</code></p>
+    <table>
+      <thead><tr><th>#</th><th>File</th><th>Voucher type</th><th>Amount</th><th>Case highlight</th></tr></thead>
+      <tbody>
+        <tr><td>01</td><td><code>01-hoa-don-vat-nha-xinh-30tr.png</code></td><td>invoice_vat_out</td><td>30M</td><td>AR bán chịu cơ bản</td></tr>
+        <tr><td>02</td><td><code>02-hoa-don-vat-bv-rhm-650tr.png</code></td><td>invoice_vat_out</td><td>651M</td><td>L2 approval + VAT 5% TB y tế</td></tr>
+        <tr><td>03</td><td><code>03-hoa-don-vat-dong-a-15tr.png</code></td><td>invoice_vat_out</td><td>15M</td><td>customer_not_found fallback</td></tr>
+        <tr><td>04</td><td><code>04-phieu-thu-nha-xinh.png</code></td><td>receipt</td><td>183.75M</td><td>FIFO + auto discount 3.75M</td></tr>
+        <tr><td>05</td><td><code>05-uy-nhiem-chi-kavo.png</code></td><td>bank_transfer</td><td>412.5M</td><td>T/T deposit 30%</td></tr>
+        <tr><td>06</td><td><code>06-de-nghi-hoan-ung.png</code></td><td>expense_claim</td><td>11.35M</td><td>Hoàn ứng NV-0007 (4 items)</td></tr>
+        <tr><td>07</td><td><code>07-hoa-don-ncc-kavo.png</code></td><td>invoice_vat_in</td><td>1.375B</td><td>Import EUR + PO match</td></tr>
+        <tr><td>08</td><td><code>08-hoan-ung-cong-tac.png</code></td><td>expense_claim</td><td>11.35M</td><td>5 items có TT96 tiếp khách</td></tr>
+        <tr><td>09</td><td><code>09-uy-nhiem-chi-vn.png</code></td><td>bank_transfer</td><td>828M</td><td>Payment matching FIFO</td></tr>
+        <tr><td>10</td><td><code>10-phieu-chi-tien-mat.png</code></td><td>payment</td><td>35M</td><td>TT78 flag TM > 30M</td></tr>
+      </tbody>
+    </table>
+
+    <!-- SECTION 6 -->
+    <h2 id="s6"><span class="section-num">06</span>Known issues + limitations</h2>
+
+    <h3>Đã biết (không phải bug — design decision)</h3>
+    <div class="callout callout-warn">
+      <div class="callout-icon">💡</div>
+      <div>
+        <strong>Accept button write vào sim_* ledger nội bộ</strong> — không tự động export sang MISA/Fast/Bravo. Đây là design intent (AIQ Accounting standalone), khác với AccAgent spec (chỉ đề xuất, không ghi).
+      </div>
+    </div>
+    <ul>
+      <li><strong>Kế toán viên collab</strong> — hiện query filter <code>AND user_id = @userId</code> sau merge PR #1. Nghĩa là kế toán A upload → kế toán B <strong>không thấy</strong> trong list voucher</li>
+      <li><strong>Sim data</strong>: Tất cả data KH/NCC/HĐ/PO là simulator, không phải data thật của Việt Đăng</li>
+      <li><strong>Payment matching AP KHÔNG auto-detect discount</strong> — khác AR side. Design intent</li>
+    </ul>
+
+    <h3>Bug có thể còn (chưa verify)</h3>
+    <ul>
+      <li>Kế toán viên không có agent assigned → tính năng dùng <code>/agent/run</code> sẽ trả 400 "Tài khoản chưa được assign trợ lý"</li>
+      <li>Duplicate document_number cross-tenant — chưa test kỹ</li>
+      <li>Upload PDF nhiều trang — support code có nhưng chưa test kỹ</li>
+    </ul>
+
+    <h3>Environment-specific</h3>
+    <ul>
+      <li>Web nếu bị 404 sau khi rebuild → clear browser cache Ctrl+Shift+R</li>
+      <li>Login redirect loop nếu JWT expired → xoá cookie <code>auth_token</code> + login lại</li>
+      <li>Upload chậm ≥ 60s = OCR timeout, retry được. Nếu > 3 lần fail → check <code>docker logs aiq-agent</code></li>
+    </ul>
+
+    <!-- SECTION 7 -->
+    <h2 id="s7"><span class="section-num">07</span>Regression scenarios (UC1 + UC2 phải vẫn work)</h2>
+
+    <h3>UC1 — HĐ bán regression</h3>
+    <ol>
+      <li>Login <code>ketoan1@vietdang.vn</code></li>
+      <li>Upload <code>02-hoa-don-vat-bv-rhm-650tr.png</code> (voucher_type=invoice_vat_out)</li>
+      <li>Verify <strong>ArContextPanel</strong> hiện với BV RHM data</li>
+      <li>Verify <strong>MatchContextPanel</strong> (3-way SO/DN/Contract) nếu có SO khớp</li>
+      <li>Verify journal entries suggest đúng (Nợ 131 / Có 511 + 3331)</li>
+      <li>Click "Chấp nhận HĐ · Ghi công nợ khách" (Sprint 4 gap UC1 mới)</li>
+      <li>Verify <code>sim_customers.current_ar</code> tăng</li>
+    </ol>
+
+    <h3>UC2 — Phiếu thu regression</h3>
+    <ol>
+      <li>Login <code>ketoan1@vietdang.vn</code></li>
+      <li>Upload <code>04-phieu-thu-nha-xinh.png</code> (voucher_type=receipt)</li>
+      <li>Verify <strong>ReceiptMatchingPanel</strong> hiện với FIFO oldest apply + discount 3.75M</li>
+      <li>Click "Chấp nhận thu · Cập nhật công nợ"</li>
+      <li>Verify <code>sim_customers.current_ar</code> giảm đúng</li>
+      <li>Click "Huỷ áp thu" (Sprint 4 gap UC2 mới) → verify rollback</li>
+    </ol>
+
+    <!-- SECTION 8 -->
+    <h2 id="s8"><span class="section-num">08</span>Cách report bug</h2>
+
+    <h3>Template khi log bug</h3>
+    <pre><code>Title: [module] short description
+Env: production (app.cattuong.ai)
+Account: [email dùng để test]
+Steps to reproduce:
+1. ...
+2. ...
+3. ...
+Expected: ...
+Actual: ...
+Screenshot: [attach]
+Browser console errors: [paste]
+Network tab (nếu API lỗi): status code + response body</code></pre>
+
+    <h3>Channels</h3>
+    <ul>
+      <li>Zalo direct anh Tường</li>
+      <li>Email: <code>tuong247@gmail.com</code></li>
+      <li>Github issue: <a href="https://github.com/tuongna247/agent_claude_sdk/issues">https://github.com/tuongna247/agent_claude_sdk/issues</a></li>
+    </ul>
+
+    <h3>Priority levels</h3>
+    <table>
+      <thead><tr><th>P</th><th>Định nghĩa</th><th>Fix SLA</th></tr></thead>
+      <tbody>
+        <tr><td><span class="badge badge-danger">P0</span></td><td>System down, không login được, data loss</td><td>2 giờ</td></tr>
+        <tr><td><span class="badge badge-warn">P1</span></td><td>Feature core bị block, không có workaround</td><td>1 ngày làm việc</td></tr>
+        <tr><td><span class="badge badge-info">P2</span></td><td>Feature phụ bị lỗi, có workaround</td><td>3 ngày</td></tr>
+        <tr><td><span class="badge badge-ok">P3</span></td><td>UI polish, wording, edge case</td><td>Sprint sau</td></tr>
+      </tbody>
+    </table>
+
+    <!-- SECTION 9 -->
+    <h2 id="s9"><span class="section-num">09</span>Reference — Docs khác</h2>
+    <ul>
+      <li><code>docs/accagent-spec-v0.1-dac-ta-ky-thuat.md</code> — Spec kỹ thuật AccAgent v0.1 (chưa implement, reference)</li>
+      <li><code>docs/accagent-spec-v0.1-quy-trinh-nghiep-vu.md</code> — Quy trình nghiệp vụ AccAgent v0.1</li>
+      <li><code>docs/plan-agent-tro-ly-ke-toan.md</code> — Plan session cũ (UC1/UC2/UC3 original design)</li>
+      <li><code>use-case-spec-xu-ly-chung-tu-ke-toan.md</code> — Use case spec chi tiết</li>
+      <li><code>docs/demo-templates/</code> — 10 file PNG mẫu để upload test</li>
+    </ul>
+
+    <!-- SECTION 10 -->
+    <h2 id="s10"><span class="section-num">10</span>Session context — 2026-08-28 → 2026-09-03</h2>
+    <p>Tổng 6 ngày ship intensive:</p>
+    <ul>
+      <li><strong>Ngày 1-2:</strong> Sprint 1 backend AP core</li>
+      <li><strong>Ngày 3:</strong> Sprint 2 UI + Accept expense</li>
+      <li><strong>Ngày 4:</strong> Sprint 3 per-category + templates + Sprint 4 PO match + gaps</li>
+      <li><strong>Ngày 5:</strong> Sprint 4.5 Artifact Library + Merge colleague's PR (10 conflicts resolved)</li>
+      <li><strong>Ngày 5-6:</strong> Deploy cosmos + fix bug 403 + docs</li>
+    </ul>
+    <div class="callout callout-warn">
+      <div class="callout-icon">📌</div>
+      <div>Solo dev + continuous deploy strategy. Không có test tự động E2E — QA cần <strong>manual test 6 flow chính</strong> (5 sprint + regression UC1/UC2).</div>
+    </div>
+
+    <div class="footer">
+      Report v1.0 · 2026-09-03 · Tuong Nguyenanh · Câu hỏi trực tiếp anh Tường qua Zalo/email.
+    </div>
+  </main>
+</div>
+
+</body>
+</html>
