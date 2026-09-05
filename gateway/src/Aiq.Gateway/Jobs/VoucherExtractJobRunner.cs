@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Aiq.Gateway.Approvals;
 using Aiq.Gateway.Books;
 using Aiq.Gateway.Customers;
 using Aiq.Gateway.Employees;
@@ -23,6 +24,7 @@ public sealed class VoucherExtractJobRunner
     private readonly ICustomerRepository _customers;
     private readonly ISupplierRepository _suppliers;
     private readonly IEmployeeRepository _employees;
+    private readonly IApprovalRepository _approvals;
     private readonly ExpenseRiskOptions _riskOptions;
     private readonly ILogger<VoucherExtractJobRunner> _logger;
 
@@ -32,6 +34,7 @@ public sealed class VoucherExtractJobRunner
         ICustomerRepository customers,
         ISupplierRepository suppliers,
         IEmployeeRepository employees,
+        IApprovalRepository approvals,
         IOptions<ExpenseRiskOptions> riskOptions,
         ILogger<VoucherExtractJobRunner> logger)
     {
@@ -40,6 +43,7 @@ public sealed class VoucherExtractJobRunner
         _customers = customers;
         _suppliers = suppliers;
         _employees = employees;
+        _approvals = approvals;
         _riskOptions = riskOptions.Value;
         _logger = logger;
     }
@@ -317,9 +321,79 @@ public sealed class VoucherExtractJobRunner
             }
         }
 
+        // Sprint 5 HITL: check requires_l2_approval trong ar_context / ap_context.
+        // Nếu có → enqueue approval queue để kế toán trưởng duyệt trước khi
+        // apply. Không set voucher status thành 'awaiting_approval' — giữ
+        // 'extracted' để UI vẫn hiển thị. Approval banner sẽ hiện dựa trên
+        // extract fields.
+        await MaybeEnqueueForApprovalAsync(tenantIdValue, voucherId, userId, fields, applyRequest, ct);
+
         _logger.LogInformation(
             "Voucher extract job done · id={VoucherId} fields={FieldCount} entries={EntryCount}",
             voucherId, fields.Count, entries?.Count ?? 0);
+    }
+
+    private async Task MaybeEnqueueForApprovalAsync(
+        Guid tenantId,
+        Guid voucherId,
+        Guid userId,
+        Dictionary<string, object?> fields,
+        CreateVoucherRequest applyRequest,
+        CancellationToken ct)
+    {
+        try
+        {
+            var triggers = new List<string>();
+
+            // Aggregate flags from both ar_context and ap_context. Chỉ enqueue
+            // nếu có ít nhất 1 trigger cứng (L2 threshold, cash > 30M, overdue).
+            foreach (var contextKey in new[] { "ar_context", "ap_context", "po_match_context" })
+            {
+                if (!fields.TryGetValue(contextKey, out var ctxObj) || ctxObj is null) continue;
+                var json = System.Text.Json.JsonSerializer.Serialize(ctxObj);
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+
+                // Check requires_l2_approval boolean
+                if (doc.RootElement.TryGetProperty("requires_l2_approval", out var l2El)
+                    && l2El.ValueKind == System.Text.Json.JsonValueKind.True)
+                {
+                    // Collect all risk_flags for context
+                    if (doc.RootElement.TryGetProperty("risk_flags", out var flagsEl)
+                        && flagsEl.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        foreach (var f in flagsEl.EnumerateArray())
+                        {
+                            if (f.ValueKind == System.Text.Json.JsonValueKind.String)
+                            {
+                                triggers.Add(f.GetString()!);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (triggers.Count == 0) return;
+
+            await _approvals.EnqueueAsync(
+                tenantId,
+                voucherId,
+                applyRequest.VoucherType,
+                applyRequest.DocumentNumber,
+                applyRequest.TotalAmount,
+                applyRequest.Currency ?? "VND",
+                triggers.Distinct().ToList(),
+                userId,
+                ct);
+
+            _logger.LogInformation(
+                "Voucher {VoucherId} routed to approval queue: {Triggers}",
+                voucherId, string.Join(", ", triggers));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to enqueue voucher {VoucherId} for approval", voucherId);
+        }
     }
 
     // ------------------------------------------------------------------

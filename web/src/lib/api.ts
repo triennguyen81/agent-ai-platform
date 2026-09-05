@@ -913,6 +913,26 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  // ---------- Sprint 5 HITL Approval Queue ----------
+  listApprovalQueue(token: string, limit = 50) {
+    return call(GATEWAY_BASE, `/approval-queue/?limit=${limit}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  getApprovalItem(token: string, id: string) {
+    return call(GATEWAY_BASE, `/approval-queue/${id}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  reviewApprovalItem(token: string, id: string, decision: "approved" | "rejected", note?: string) {
+    return call(GATEWAY_BASE, `/approval-queue/${id}/review`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ decision, note: note ?? null }),
+    });
+  },
 };
 
 export const agent = {

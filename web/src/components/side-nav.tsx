@@ -343,6 +343,7 @@ export function SideNav({
               )}
               <SidebarLink href="/admin/review-queue" icon={ListChecks} label="Reviews" active={pathname.startsWith("/admin/review-queue")} />
               <SidebarLink href="/admin/hitl-queue" icon={ClipboardCheck} label="HITL" active={pathname.startsWith("/admin/hitl-queue")} />
+              <SidebarLink href="/admin/approval-queue" icon={ShieldCheck} label="Duyệt cấp 2" active={pathname.startsWith("/admin/approval-queue")} />
             </SidebarSection>
           )}
 

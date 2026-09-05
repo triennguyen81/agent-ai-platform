@@ -137,6 +137,7 @@ builder.Services.AddScoped<IAgentKnowledgeRepository, AgentKnowledgeRepository>(
 builder.Services.AddScoped<Aiq.Gateway.Customers.ICustomerRepository, Aiq.Gateway.Customers.CustomerRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Suppliers.ISupplierRepository, Aiq.Gateway.Suppliers.SupplierRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Employees.IEmployeeRepository, Aiq.Gateway.Employees.EmployeeRepository>();
+builder.Services.AddScoped<Aiq.Gateway.Approvals.IApprovalRepository, Aiq.Gateway.Approvals.ApprovalRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IFileUploadGuard, FileUploadGuard>();
@@ -363,6 +364,7 @@ app.MapChecklistEndpoints();
 app.MapVoucherEndpoints();
 app.MapCustomerEndpoints();
 app.MapSupplierEndpoints();
+app.MapApprovalEndpoints();
 app.MapNotificationEndpoints();
 app.MapTenantEndpoints();
 app.MapAgentEndpoints();
