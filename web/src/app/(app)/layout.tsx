@@ -89,7 +89,8 @@ export default async function AppLayout({
         signOutAction={logoutAction}
       />
       <div className="flex min-h-dvh flex-1 flex-col">
-        <header className="sticky top-0 z-10 flex items-center justify-end gap-2 border-b border-[var(--color-border)] bg-[var(--color-bg)]/95 px-6 py-2 backdrop-blur">
+        {/* Header: mobile has hamburger space, desktop just NotificationBell */}
+        <header className="sticky top-0 z-10 flex items-center justify-end gap-2 border-b border-[var(--color-border)] bg-[var(--color-bg)]/95 pl-14 pr-6 py-2 backdrop-blur md:pl-6">
           {!isSuperAdmin && <NotificationBell />}
         </header>
         <main className="flex-1 px-6 py-6">
