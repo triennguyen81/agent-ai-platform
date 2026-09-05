@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { agent, gateway } from "@/lib/api";
-import { getSession } from "@/lib/auth";
+import { getSession, getActiveAgent } from "@/lib/auth";
 
 interface AgentRunBody {
   task?: string;
@@ -32,7 +32,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "task is required" }, { status: 400 });
   }
 
-  let agentId = body.agent_id;
+  // Priority: request body agent_id > active_agent cookie > first assigned agent.
+  // Active agent cookie set qua /api/me/active-agent — user chọn "project"
+  // hiện tại trong SideNav. Fallback lookup /me/agents nếu chưa set cookie.
+  let agentId = body.agent_id ?? (await getActiveAgent()) ?? undefined;
   if (!agentId) {
     try {
       const meAgentsRes = await gateway.listMyAgents(token);

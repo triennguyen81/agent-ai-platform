@@ -1,15 +1,22 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { gateway } from "@/lib/api";
-import { clearSession, getSession } from "@/lib/auth";
+import { clearSession, getSession, getActiveAgent } from "@/lib/auth";
 import { isClerkConfigured } from "@/lib/env";
 import { NotificationBell } from "@/components/notification-bell";
-import { AppNav } from "@/components/app-nav";
+import { SideNav, type SideNavAgent } from "@/components/side-nav";
 
 interface MeResponse {
   sub?: string | null;
   email?: string | null;
   roles?: string[];
+}
+
+interface MyAgent {
+  agentId: string;
+  agentCode: string;
+  agentName: string;
+  lifecycleState: string;
+  agentDisabled: boolean;
 }
 
 async function logoutAction() {
@@ -49,26 +56,46 @@ export default async function AppLayout({
   const isTenantOwner = roles.includes("tenant_owner");
   const isTenantAdmin = roles.includes("admin");
 
+  // Fetch user's assigned agents for sidebar "Trợ lý của bạn" section.
+  // Fail-soft: nếu lỗi, sidebar vẫn render nhưng section agents trống.
+  let agents: SideNavAgent[] = [];
+  try {
+    const agentsRes = await gateway.listMyAgents(token);
+    if (agentsRes.ok) {
+      const body = (await agentsRes.json()) as MyAgent[] | { items?: MyAgent[] };
+      const items = Array.isArray(body) ? body : (body.items ?? []);
+      agents = items.map((a) => ({
+        agentId: a.agentId,
+        agentName: a.agentName,
+        agentCode: a.agentCode,
+        lifecycleState: a.lifecycleState,
+        agentDisabled: a.agentDisabled,
+      }));
+    }
+  } catch {
+    // silent fallback
+  }
+  const activeAgentId = await getActiveAgent();
+
   return (
-    <div className="min-h-dvh">
-      <header className="sticky top-0 z-10 border-b border-[var(--color-border)] bg-[var(--color-bg)]/95 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-          <Link href={isSuperAdmin || isTenantOwner || isTenantAdmin ? "/dashboard" : "/my-agents"} className="font-serif text-xl tracking-tight">
-            Cát Tường AI
-          </Link>
-          <div className="flex items-center gap-2">
-            <AppNav
-              email={me.email ?? "you"}
-              isSuperAdmin={isSuperAdmin}
-              isTenantOwner={isTenantOwner}
-              isTenantAdmin={isTenantAdmin}
-              signOutAction={logoutAction}
-            />
-            {!isSuperAdmin && <NotificationBell />}
-          </div>
-        </div>
-      </header>
-      <main className="mx-auto max-w-7xl px-6 py-6">{children}</main>
+    <div className="flex min-h-dvh">
+      <SideNav
+        email={me.email ?? "you"}
+        isSuperAdmin={isSuperAdmin}
+        isTenantOwner={isTenantOwner}
+        isTenantAdmin={isTenantAdmin}
+        agents={agents}
+        activeAgentId={activeAgentId}
+        signOutAction={logoutAction}
+      />
+      <div className="flex min-h-dvh flex-1 flex-col">
+        <header className="sticky top-0 z-10 flex items-center justify-end gap-2 border-b border-[var(--color-border)] bg-[var(--color-bg)]/95 px-6 py-2 backdrop-blur">
+          {!isSuperAdmin && <NotificationBell />}
+        </header>
+        <main className="flex-1 px-6 py-6">
+          <div className="mx-auto max-w-6xl">{children}</div>
+        </main>
+      </div>
     </div>
   );
 }
