@@ -26,9 +26,12 @@ public static class VoucherEndpoints
         // Any authenticated tenant member (role >= user) can upload +
         // work with vouchers — that's the daily job of kế toán viên.
         // Repository queries are tenant-scoped so no cross-tenant leak.
+        // Policy "user" (super_admin/tenant_owner/admin/user) matches the
+        // pilot's direct-upload UX; agent tool_execution scope is not
+        // required because the browser-facing flow is the primary path.
         var group = app
             .MapGroup("/vouchers")
-            .RequireAuthorization("resource_or_tool")
+            .RequireAuthorization("user")
             .RequireRateLimiting("default");
 
         group.MapGet("/", ListAsync);
