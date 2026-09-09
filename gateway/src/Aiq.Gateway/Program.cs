@@ -125,19 +125,27 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
 // local/dev/CI behavior is completely unchanged.
 if (builder.Environment.IsProduction())
 {
-    static bool IsWeakOrMissing(string? value) =>
+    static bool IsMissingOrPlaceholder(string? value) =>
         string.IsNullOrWhiteSpace(value)
-        || value.Equals("aiq", StringComparison.Ordinal)
         || value.Contains("changeme", StringComparison.OrdinalIgnoreCase);
+
+    static bool IsWeakSecret(string? value) =>
+        IsMissingOrPlaceholder(value)
+        || string.Equals(value, "aiq", StringComparison.Ordinal);
 
     var objectAccessKey = builder.Configuration[$"{S3Options.SectionName}:AccessKey"];
     var objectSecretKey = builder.Configuration[$"{S3Options.SectionName}:SecretKey"];
-    if (IsWeakOrMissing(objectAccessKey) || IsWeakOrMissing(objectSecretKey))
+
+    // Existing production MinIO uses AccessKey="aiq".
+    // Allow that access key, but still require a real non-default secret.
+    if (IsMissingOrPlaceholder(objectAccessKey) || IsWeakSecret(objectSecretKey))
     {
         throw new InvalidOperationException(
-            "Object__AccessKey/Object__SecretKey must be set to a real, non-default value in Production.");
+            "Object__AccessKey/Object__SecretKey must be set to valid Production values.");
     }
-    if (IsWeakOrMissing(connectionString) || connectionString.Contains("Password=aiq", StringComparison.OrdinalIgnoreCase))
+
+    if (IsMissingOrPlaceholder(connectionString) ||
+        connectionString.Contains("Password=aiq", StringComparison.OrdinalIgnoreCase))
     {
         throw new InvalidOperationException(
             "ConnectionStrings:Postgres must not use the local-dev default password in Production.");
