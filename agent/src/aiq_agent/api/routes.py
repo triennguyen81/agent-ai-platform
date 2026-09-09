@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -24,7 +25,12 @@ from aiq_agent.api.schemas import (
     ThreadHistoryResponse,
     ThreadSummaryResponse,
 )
-from aiq_agent.api.security import RuntimePrincipal, require_agent_execution, require_principal
+from aiq_agent.api.security import (
+    RuntimePrincipal,
+    require_agent_execution,
+    require_principal,
+    resolve_capability_agent,
+)
 from aiq_agent.embeddings import EmbeddingService
 from aiq_agent.embeddings.service import IngestNote
 from aiq_agent.config import get_settings
@@ -34,7 +40,11 @@ from aiq_agent.memory.base import MemoryStore
 from aiq_agent.orchestration import PlannerExecutorCritic
 from aiq_agent.skills import SkillRegistry, select_skills
 from aiq_agent.tools.registry import ToolExecutionError, ToolRegistry
-from aiq_agent.runtime import build_agent_executor
+from aiq_agent.runtime import (
+    ClaudeSdkConfigurationTooLargeError,
+    ExecutionManifest,
+    build_agent_executor,
+)
 
 
 def _tenant_thread_id(principal: RuntimePrincipal, thread_id: str) -> str:
@@ -118,6 +128,10 @@ def _split_thinking(raw: str) -> tuple[str | None, str]:
     return thinking, answer
 
 
+def _department_id_str(manifest: ExecutionManifest | None) -> str | None:
+    return str(manifest.departmentId) if manifest is not None and manifest.departmentId else None
+
+
 def _llm(request: Request) -> LlmService:
     return request.app.state.llm
 
@@ -170,7 +184,7 @@ async def chat(
         raise HTTPException(status_code=403, detail="An assigned agent is required")
     manifest = None
     if body.agent_id:
-        manifest = await require_agent_execution(principal, body.agent_id)
+        manifest = await require_agent_execution(principal, body.agent_id, test=body.test)
     if body.tool and manifest is None and tools.get(body.tool) is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -194,6 +208,25 @@ async def chat(
                 token=principal.token,
                 prior_history=prior_history,
             )
+        except ClaudeSdkConfigurationTooLargeError as exc:
+            # Distinct from the generic "provider execution failed" branch
+            # below: this is a specific, diagnosable failure mode (OS argv
+            # length limit), not an opaque provider/authorization error, so
+            # it gets its own audit event with safe size/count diagnostics —
+            # never prompt, knowledge, skill, or credential content. The
+            # external HTTP response stays identically sanitized either way.
+            if audit is not None:
+                await audit.write(
+                    event="claude_sdk_configuration_too_large", name="dynamic_chat",
+                    user_prefix=principal.user_id[:12],
+                    ms=int((_t.monotonic() - _started) * 1000), ok=False,
+                    detail=json.dumps(exc.diagnostics)[:200],
+                    user_id=str(manifest.userId), tenant_id=str(manifest.tenantId),
+                    department_id=str(manifest.departmentId) if manifest.departmentId else None,
+                    agent_id=str(manifest.agent.id), version=manifest.version,
+                    provider=manifest.provider, model=manifest.model,
+                )
+            raise HTTPException(status_code=502, detail="Dynamic agent execution failed") from exc
         except Exception as exc:  # fail closed and audit without prompt content
             if audit is not None:
                 await audit.write(
@@ -202,6 +235,7 @@ async def chat(
                     ms=int((_t.monotonic() - _started) * 1000), ok=False,
                     detail=f"{exc.__class__.__name__}: {exc}"[:200],
                     user_id=str(manifest.userId), tenant_id=str(manifest.tenantId),
+                    department_id=str(manifest.departmentId) if manifest.departmentId else None,
                     agent_id=str(manifest.agent.id), version=manifest.version,
                     provider=manifest.provider, model=manifest.model,
                 )
@@ -301,6 +335,7 @@ async def chat(
             detail=None if manifest is not None else body.prompt[:200],
             user_id=str(manifest.userId) if manifest is not None else None,
             tenant_id=str(manifest.tenantId) if manifest is not None else None,
+            department_id=_department_id_str(manifest),
             agent_id=str(manifest.agent.id) if manifest is not None else None,
             version=manifest.version if manifest is not None else None,
             provider=manifest.provider if manifest is not None else None,
@@ -445,12 +480,28 @@ async def admin_audit(
     limit: int = 100,
     event: str | None = None,
     tenant_id: str | None = None,
+    department_id: str | None = None,
+    principal: RuntimePrincipal = Depends(require_principal),
     audit: AuditStore | None = Depends(_audit),
 ) -> list[AuditEntryResponse]:
+    # Request query parameters are compatibility-only locators, never
+    # authority. Exact persisted scope comes from Gateway /me.
+    if "super_admin" in principal.roles:
+        effective_tenant = tenant_id
+        effective_department = department_id
+    elif "tenant_owner" in principal.roles and principal.tenant_id:
+        effective_tenant = principal.tenant_id
+        effective_department = None
+    elif "admin" in principal.roles and principal.tenant_id and principal.department_id:
+        effective_tenant = principal.tenant_id
+        effective_department = principal.department_id
+    else:
+        raise HTTPException(status_code=403, detail="Audit access is not allowed")
     if audit is None:
         return []
     entries = await audit.list(
-        limit=max(1, min(limit, 500)), event=event, tenant_id=tenant_id
+        limit=max(1, min(limit, 500)), event=event,
+        tenant_id=effective_tenant, department_id=effective_department,
     )
     return [
         AuditEntryResponse(
@@ -463,6 +514,7 @@ async def admin_audit(
             detail=e.detail,
             user_id=e.user_id,
             tenant_id=e.tenant_id,
+            department_id=e.department_id,
             agent_id=e.agent_id,
             version=e.version,
             provider=e.provider,
@@ -499,9 +551,22 @@ async def agentic_run(
     import time as _t
 
     _started = _t.monotonic()
-    if principal.is_user_only and not body.agent_id:
+    if body.capability and body.agent_id:
+        detail = "capability and agent_id are mutually exclusive"
+        raise HTTPException(status_code=400, detail=detail)
+    # D4: a capability code never IS an agent id — it is only ever resolved
+    # through the Gateway's own tenant/department/assignment-derived chain,
+    # then re-verified end to end by the exact same require_agent_execution
+    # call an explicit agent_id would go through below.
+    if body.capability:
+        resolved_agent_id = await resolve_capability_agent(principal, body.capability)
+    else:
+        resolved_agent_id = body.agent_id
+    if principal.is_user_only and not resolved_agent_id:
         raise HTTPException(status_code=403, detail="An assigned agent is required")
-    manifest = await require_agent_execution(principal, body.agent_id) if body.agent_id else None
+    manifest = (
+        await require_agent_execution(principal, resolved_agent_id) if resolved_agent_id else None
+    )
     user_prefix = principal.user_id[:12] or "anon"
 
     try:
@@ -528,6 +593,7 @@ async def agentic_run(
                 detail=f"{exc.__class__.__name__}: {exc}"[:200],
                 user_id=str(manifest.userId) if manifest else principal.user_id,
                 tenant_id=str(manifest.tenantId) if manifest else None,
+                department_id=_department_id_str(manifest),
                 agent_id=str(manifest.agent.id) if manifest else None,
                 version=manifest.version if manifest else None,
                 provider=manifest.provider if manifest else None,
@@ -548,6 +614,7 @@ async def agentic_run(
             detail=None if manifest else body.task[:200],
             user_id=str(manifest.userId) if manifest else principal.user_id,
             tenant_id=str(manifest.tenantId) if manifest else None,
+            department_id=_department_id_str(manifest),
             agent_id=str(manifest.agent.id) if manifest else None,
             version=manifest.version if manifest else None,
             provider=manifest.provider if manifest else None,

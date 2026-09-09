@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
-from aiq_agent.api.security import RuntimeAuthorizationError, bearer_token
-from aiq_agent.api.schemas import AgentRunRequest, ChatRequest
 from aiq_agent.agentic import runner
+from aiq_agent.api import security
+from aiq_agent.api.schemas import AgentRunRequest, ChatRequest
+from aiq_agent.api.security import (
+    RuntimeAuthorizationError,
+    RuntimePrincipal,
+    bearer_token,
+    resolve_capability_agent,
+)
 
 
 def test_bearer_token_requires_authorization_header() -> None:
@@ -48,3 +56,101 @@ async def test_tool_permission_registry_failure_fails_closed(monkeypatch) -> Non
             gateway_base="http://gateway:8080",
             agent_id="00000000-0000-0000-0000-000000000001",
         )
+
+
+# ---------------------------------------------------------------------------
+# D4: capability -> agent resolution (aiq_agent.api.security.resolve_capability_agent)
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, body: dict | None = None) -> None:
+        self.status_code = status_code
+        self._body = body or {}
+
+    def json(self) -> dict:
+        return self._body
+
+
+class _FakeAsyncClient:
+    def __init__(self, response: _FakeResponse) -> None:
+        self._response = response
+        self.requested_url: str | None = None
+        self.requested_headers: dict | None = None
+
+    async def __aenter__(self) -> _FakeAsyncClient:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+    async def get(self, url: str, headers: dict | None = None) -> _FakeResponse:
+        self.requested_url = url
+        self.requested_headers = headers
+        return self._response
+
+
+def _patch_gateway_response(
+    monkeypatch: pytest.MonkeyPatch, response: _FakeResponse
+) -> _FakeAsyncClient:
+    fake_client = _FakeAsyncClient(response)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *_a, **_kw: fake_client)
+    return fake_client
+
+
+def _principal() -> RuntimePrincipal:
+    return RuntimePrincipal(
+        token="signed.jwt.value", user_id="u1", roles=frozenset({"admin"}), tenant_id="t1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_capability_agent_returns_the_resolved_id_on_200(monkeypatch) -> None:
+    fake_client = _patch_gateway_response(
+        monkeypatch, _FakeResponse(200, {"agentId": "11111111-1111-1111-1111-111111111111"})
+    )
+    resolved = await resolve_capability_agent(_principal(), "accounting.journal")
+    assert resolved == "11111111-1111-1111-1111-111111111111"
+    base = security.get_settings().gateway_base_url.rstrip("/")
+    assert fake_client.requested_url == f"{base}/me/capabilities/accounting.journal/agent"
+    assert fake_client.requested_headers == {"Authorization": "Bearer signed.jwt.value"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_capability_agent_maps_ambiguous_to_409(monkeypatch) -> None:
+    _patch_gateway_response(monkeypatch, _FakeResponse(409, {"error": "capability_ambiguous"}))
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_capability_agent(_principal(), "accounting.journal")
+    assert exc_info.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_resolve_capability_agent_maps_denial_to_403(monkeypatch) -> None:
+    _patch_gateway_response(monkeypatch, _FakeResponse(403, {"error": "capability_not_available"}))
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_capability_agent(_principal(), "accounting.journal")
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_resolve_capability_agent_fails_closed_on_transport_error(monkeypatch) -> None:
+    class _BrokenClient:
+        async def __aenter__(self) -> _BrokenClient:
+            return self
+
+        async def __aexit__(self, *exc_info: object) -> bool:
+            return False
+
+        async def get(self, *_a, **_kw):
+            raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *_a, **_kw: _BrokenClient())
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_capability_agent(_principal(), "accounting.journal")
+    assert exc_info.value.status_code == 503
+
+
+def test_agent_run_request_accepts_capability_in_place_of_agent_id() -> None:
+    request = AgentRunRequest(task="t", capability="accounting.journal")
+    assert request.agent_id is None
+    assert request.capability == "accounting.journal"

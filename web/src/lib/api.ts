@@ -223,7 +223,7 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
-  createTenantAdmin(token: string, tenantId: string, payload: { email: string; password: string; displayName?: string }) {
+  createTenantAdmin(token: string, tenantId: string, payload: { email: string; password: string; displayName?: string; departmentId: string }) {
     return call(GATEWAY_BASE, `/system/tenants/${tenantId}/admins`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
@@ -249,7 +249,7 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
-  createOwnTenantAdmin(token: string, payload: { email: string; password: string; displayName?: string }) {
+  createOwnTenantAdmin(token: string, payload: { email: string; password: string; displayName?: string; departmentId: string }) {
     return call(GATEWAY_BASE, "/tenant/admins", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
@@ -260,6 +260,31 @@ export const gateway = {
     return call(GATEWAY_BASE, `/tenant/admins/${userId}/${isActive ? "enable" : "disable"}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  updateOwnTenantAdmin(token: string, userId: string, payload: { displayName?: string }) {
+    return call(GATEWAY_BASE, `/tenant/admins/${userId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  // TENANT_OWNER-only USER<->ADMIN role flip for the unified tenant
+  // accounts screen. Tenant is always derived server-side from the JWT.
+  changeTenantUserRole(token: string, userId: string, role: "user" | "admin") {
+    return call(GATEWAY_BASE, `/tenant/users/${userId}/role`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ role }),
+    });
+  },
+  // D5 §9 — TENANT_OWNER-only department move for an ADMIN or USER. Tenant
+  // is always derived server-side from the JWT, exactly like the role flip.
+  changeTenantUserDepartment(token: string, userId: string, departmentId: string) {
+    return call(GATEWAY_BASE, `/tenant/users/${userId}/department`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ departmentId }),
     });
   },
   getTenantQuota(token: string, tenantId: string) {
@@ -647,6 +672,333 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  // ---------- Department Agent Builder (ACL V2-C, ADMIN's own department) ----------
+  // Mirrors the System Agent Builder calls above one-for-one — same request/
+  // response shapes, `/department/agents` instead of `/system/agents`.
+  // Tenant/department are always derived server-side; never passed here.
+  // Named distinctly from the pre-existing listDepartmentAgents(token,
+  // departmentId) below (D5's TENANT_OWNER department-entitlement view,
+  // GET /tenant/departments/{departmentId}/agents) — this one is ADMIN's own
+  // CRUD-owned agents at GET /department/agents, a different resource set.
+  listOwnDepartmentAgents(token: string) {
+    return call(GATEWAY_BASE, "/department/agents", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createDepartmentAgent(token: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, "/department/agents", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  getDepartmentAgent(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  updateDepartmentAgent(token: string, agentId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  enableDepartmentAgent(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/enable`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  disableDepartmentAgent(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/disable`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listDepartmentAgentVersions(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/versions`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createDepartmentAgentVersion(token: string, agentId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateDepartmentAgentVersion(
+    token: string,
+    agentId: string,
+    versionId: string,
+    payload: Record<string, unknown>,
+  ) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/versions/${versionId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  validateDepartmentAgentVersion(token: string, agentId: string, versionId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/versions/${versionId}/validate`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  publishDepartmentAgentVersion(token: string, agentId: string, versionId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/versions/${versionId}/publish`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listDepartmentAgentUsers(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/users`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  assignDepartmentAgentUser(token: string, agentId: string, userId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/users/${userId}`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  revokeDepartmentAgentUser(token: string, agentId: string, userId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/users/${userId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // ---------- Department Business Capabilities / Nghiệp vụ (ACL V2-D) ----------
+  // ADMIN's own Department capability CRUD + operational binding. Tenant/
+  // department always derived server-side; never passed here.
+  listOwnDepartmentCapabilities(token: string) {
+    return call(GATEWAY_BASE, "/department/capabilities", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createDepartmentCapability(token: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, "/department/capabilities", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  getDepartmentCapability(token: string, capabilityId: string) {
+    return call(GATEWAY_BASE, `/department/capabilities/${capabilityId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  updateDepartmentCapability(token: string, capabilityId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/department/capabilities/${capabilityId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  enableDepartmentCapability(token: string, capabilityId: string) {
+    return call(GATEWAY_BASE, `/department/capabilities/${capabilityId}/enable`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  disableDepartmentCapability(token: string, capabilityId: string) {
+    return call(GATEWAY_BASE, `/department/capabilities/${capabilityId}/disable`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // Own-department binding-management view (same shape as the owner's
+  // oversight-only listDepartmentCapabilities below, principal-scoped).
+  listOwnDepartmentCapabilityBindings(token: string) {
+    return call(GATEWAY_BASE, "/department/capabilities/bindings", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  setOwnDepartmentCapabilityBinding(token: string, capabilityId: string, agentId: string) {
+    return call(GATEWAY_BASE, `/department/capabilities/${capabilityId}/binding`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ agentId }),
+    });
+  },
+  revokeOwnDepartmentCapabilityBinding(token: string, capabilityId: string) {
+    return call(GATEWAY_BASE, `/department/capabilities/${capabilityId}/binding`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // ---------- Department Workflow / Skill / Knowledge (ACL V2-E) ----------
+  // ADMIN's own Department Workflow CRUD + immutable draft/publish versioning.
+  listOwnDepartmentWorkflows(token: string) {
+    return call(GATEWAY_BASE, "/department/workflows", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createDepartmentWorkflow(token: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, "/department/workflows", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  getDepartmentWorkflow(token: string, workflowId: string) {
+    return call(GATEWAY_BASE, `/department/workflows/${workflowId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  updateDepartmentWorkflowMetadata(token: string, workflowId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/department/workflows/${workflowId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  enableDepartmentWorkflow(token: string, workflowId: string) {
+    return call(GATEWAY_BASE, `/department/workflows/${workflowId}/enable`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  disableDepartmentWorkflow(token: string, workflowId: string) {
+    return call(GATEWAY_BASE, `/department/workflows/${workflowId}/disable`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listDepartmentWorkflowVersions(token: string, workflowId: string) {
+    return call(GATEWAY_BASE, `/department/workflows/${workflowId}/versions`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createDepartmentWorkflowDraftVersion(token: string, workflowId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/department/workflows/${workflowId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateDepartmentWorkflowDraftVersion(token: string, workflowId: string, versionId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/department/workflows/${workflowId}/versions/${versionId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  publishDepartmentWorkflowVersion(token: string, workflowId: string, versionId: string) {
+    return call(GATEWAY_BASE, `/department/workflows/${workflowId}/versions/${versionId}/publish`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // ADMIN's own Department Skill CRUD (declarative instruction text only).
+  listOwnDepartmentSkills(token: string) {
+    return call(GATEWAY_BASE, "/department/skills", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listPlatformSkills(token: string) { return call(GATEWAY_BASE, "/system/skills", { headers: { Authorization: `Bearer ${token}` } }); },
+  createPlatformSkill(token: string, payload: Record<string, unknown>) { return call(GATEWAY_BASE, "/system/skills", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) }); },
+  updatePlatformSkillContent(token: string, skillId: string, payload: Record<string, unknown>) { return call(GATEWAY_BASE, `/system/skills/${skillId}/content`, { method: "PATCH", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) }); },
+  setPlatformSkillEnabled(token: string, skillId: string, enabled: boolean) { return call(GATEWAY_BASE, `/system/skills/${skillId}/${enabled ? "enable" : "disable"}`, { method: "POST", headers: { Authorization: `Bearer ${token}` } }); },
+  createDepartmentSkill(token: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, "/department/skills", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateDepartmentSkillMetadata(token: string, skillId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/department/skills/${skillId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateDepartmentSkillContent(token: string, skillId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/department/skills/${skillId}/content`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  enableDepartmentSkill(token: string, skillId: string) {
+    return call(GATEWAY_BASE, `/department/skills/${skillId}/enable`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  disableDepartmentSkill(token: string, skillId: string) {
+    return call(GATEWAY_BASE, `/department/skills/${skillId}/disable`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // ADMIN's own Department Knowledge CRUD (plain text, reuses Notes' scope='department' rows).
+  listOwnDepartmentKnowledge(token: string) {
+    return call(GATEWAY_BASE, "/department/knowledge", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listPlatformKnowledge(token: string) { return call(GATEWAY_BASE, "/system/knowledge", { headers: { Authorization: `Bearer ${token}` } }); },
+  createPlatformKnowledge(token: string, payload: Record<string, unknown>) { return call(GATEWAY_BASE, "/system/knowledge", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) }); },
+  archivePlatformKnowledge(token: string, noteId: string) { return call(GATEWAY_BASE, `/system/knowledge/${noteId}/archive`, { method: "POST", headers: { Authorization: `Bearer ${token}` } }); },
+  deletePlatformKnowledge(token: string, noteId: string) { return call(GATEWAY_BASE, `/system/knowledge/${noteId}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }); },
+  createDepartmentKnowledge(token: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, "/department/knowledge", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateDepartmentKnowledge(token: string, noteId: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/department/knowledge/${noteId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  archiveDepartmentKnowledge(token: string, noteId: string) {
+    return call(GATEWAY_BASE, `/department/knowledge/${noteId}/archive`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  restoreDepartmentKnowledge(token: string, noteId: string) {
+    return call(GATEWAY_BASE, `/department/knowledge/${noteId}/restore`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  deleteDepartmentKnowledge(token: string, noteId: string) {
+    return call(GATEWAY_BASE, `/department/knowledge/${noteId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // Attach/detach own Department Knowledge to own Department Agent (mapped under DepartmentAgentEndpoints).
+  listDepartmentAgentKnowledge(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/knowledge`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listAttachableDepartmentAgentKnowledge(token: string, agentId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/knowledge/attachable`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  attachDepartmentAgentKnowledge(token: string, agentId: string, noteId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/knowledge/${noteId}`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  detachDepartmentAgentKnowledge(token: string, agentId: string, noteId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/knowledge/${noteId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
   // ---------- Tenant/User Agent Assignment (Phase 4E) ----------
   // SUPER_ADMIN: assign a published system agent to tenants.
   listSystemAgentTenants(token: string, agentId: string) {
@@ -678,7 +1030,45 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
-  createTenantUser(token: string, payload: { email: string; password: string; displayName?: string }) {
+  listTenantDepartments(token: string) {
+    return call(GATEWAY_BASE, "/tenant/departments", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // D5 — department CRUD. GET is reachable by admin (own department only,
+  // enforced server-side); the rest are tenant_owner-only.
+  getTenantDepartment(token: string, departmentId: string) {
+    return call(GATEWAY_BASE, `/tenant/departments/${departmentId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createTenantDepartment(token: string, payload: { code: string; name: string }) {
+    return call(GATEWAY_BASE, "/tenant/departments", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateTenantDepartment(token: string, departmentId: string, payload: { name: string }) {
+    return call(GATEWAY_BASE, `/tenant/departments/${departmentId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  deactivateTenantDepartment(token: string, departmentId: string) {
+    return call(GATEWAY_BASE, `/tenant/departments/${departmentId}/deactivate`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  activateTenantDepartment(token: string, departmentId: string) {
+    return call(GATEWAY_BASE, `/tenant/departments/${departmentId}/activate`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createTenantUser(token: string, payload: { email: string; password: string; displayName?: string; departmentId?: string }) {
     return call(GATEWAY_BASE, "/tenant/users", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
@@ -739,6 +1129,55 @@ export const gateway = {
   detachTenantAgentKnowledge(token: string, agentId: string, noteId: string) {
     return call(GATEWAY_BASE, `/tenant/agents/${agentId}/knowledge/${noteId}`, {
       method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // D3 — TENANT_OWNER-only department-agent entitlement. departmentId comes
+  // from the caller's own selection in the UI, but authorization is always
+  // re-derived server-side from the tenant_owner's session tenant, never
+  // trusted from this call alone.
+  listDepartmentAgents(token: string, departmentId: string) {
+    return call(GATEWAY_BASE, `/tenant/departments/${departmentId}/agents`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  assignDepartmentAgent(token: string, departmentId: string, agentId: string) {
+    return call(GATEWAY_BASE, `/tenant/departments/${departmentId}/agents/${agentId}`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  revokeDepartmentAgent(token: string, departmentId: string, agentId: string) {
+    return call(GATEWAY_BASE, `/tenant/departments/${departmentId}/agents/${agentId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // D4 — business capability ("nghiệp vụ") catalog, visibility, and
+  // TENANT_OWNER-only department capability-to-agent binding.
+  listCapabilityCatalog(token: string) {
+    return call(GATEWAY_BASE, "/system/capabilities", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createPlatformCapability(token: string, payload: Record<string, unknown>) { return call(GATEWAY_BASE, "/system/capabilities", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) }); },
+  setPlatformCapabilityEnabled(token: string, capabilityId: string, enabled: boolean) { return call(GATEWAY_BASE, `/system/capabilities/${capabilityId}/${enabled ? "enable" : "disable"}`, { method: "POST", headers: { Authorization: `Bearer ${token}` } }); },
+  listMyCapabilities(token: string) {
+    return call(GATEWAY_BASE, "/me/capabilities", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  resolveCapabilityAgent(token: string, code: string) {
+    return call(GATEWAY_BASE, `/me/capabilities/${encodeURIComponent(code)}/agent`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // TENANT_OWNER's read-only oversight of a department's capability
+  // landscape (ACL V2-D: binding mutation moved to ADMIN — see
+  // setOwnDepartmentCapabilityBinding/revokeOwnDepartmentCapabilityBinding
+  // above — this stays GET-only).
+  listDepartmentCapabilities(token: string, departmentId: string) {
+    return call(GATEWAY_BASE, `/tenant/departments/${departmentId}/capabilities`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
   },
   listWorkflows(token: string, activeOnly = false) {
@@ -944,6 +1383,9 @@ export const agent = {
     tool_arguments?: Record<string, unknown>;
     temperature?: number;
     agent_id?: string;
+    // ACL V2-C: Department Agent Builder's Test action — see ChatRequest.test
+    // in agent/src/aiq_agent/api/schemas.py.
+    test?: boolean;
   }) {
     return call(AGENT_BASE, "/chat", {
       method: "POST",
@@ -951,13 +1393,16 @@ export const agent = {
       body: JSON.stringify(payload),
     });
   },
-  listThreads(prefix: string, limit = 50) {
+  listThreads(token: string, prefix: string, limit = 50) {
     const params = new URLSearchParams({ prefix, limit: String(limit) });
-    return call(AGENT_BASE, `/chat/threads?${params.toString()}`);
+    return call(AGENT_BASE, `/chat/threads?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
   },
   runTask(token: string, payload: {
     task: string;
     agent_id?: string;
+    capability?: string;
     skills?: string[];
     max_turns?: number;
   }) {
@@ -970,11 +1415,12 @@ export const agent = {
   listSkills() {
     return call(AGENT_BASE, "/skills/list");
   },
-  listAudit(limit = 100, event?: string, tenantId?: string) {
+  listAudit(token: string, limit = 100, event?: string) {
     const params = new URLSearchParams({ limit: String(limit) });
     if (event) params.set("event", event);
-    if (tenantId) params.set("tenant_id", tenantId);
-    return call(AGENT_BASE, `/admin/audit?${params.toString()}`);
+    return call(AGENT_BASE, `/admin/audit?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
   },
   queryEmbeddings(token: string, payload: {
     query: string;
@@ -988,12 +1434,15 @@ export const agent = {
       body: JSON.stringify(payload),
     });
   },
-  getThread(threadId: string) {
-    return call(AGENT_BASE, `/chat/threads/${encodeURIComponent(threadId)}`);
+  getThread(token: string, threadId: string) {
+    return call(AGENT_BASE, `/chat/threads/${encodeURIComponent(threadId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
   },
-  clearThread(threadId: string) {
+  clearThread(token: string, threadId: string) {
     return call(AGENT_BASE, `/chat/threads/${encodeURIComponent(threadId)}`, {
       method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
     });
   },
 };

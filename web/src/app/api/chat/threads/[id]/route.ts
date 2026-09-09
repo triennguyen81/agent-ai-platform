@@ -25,7 +25,7 @@ export async function GET(
   const { id } = await context.params;
   const fullId = buildKey(userId, id);
 
-  const res = await agent.getThread(fullId);
+  const res = await agent.getThread(token, fullId);
   if (!res.ok) {
     return NextResponse.json({ thread_id: id, messages: [] }, { status: res.status });
   }
@@ -48,6 +48,6 @@ export async function DELETE(
   const { id } = await context.params;
   const fullId = buildKey(userId, id);
 
-  const res = await agent.clearThread(fullId);
+  const res = await agent.clearThread(token, fullId);
   return new NextResponse(null, { status: res.status === 204 ? 204 : res.status });
 }

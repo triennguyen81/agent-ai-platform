@@ -79,7 +79,16 @@ public static class AgentEndpoints
         {
             return Results.BadRequest(new { error = "tenant context missing" });
         }
-        var items = await repo.ListForPrincipalAsync(tenantId, userId, ct);
+        // D3: an ADMIN (department manager) executes via department
+        // entitlement alone and typically carries no direct agent_assignments
+        // row at all — so "my agents" for an admin means the department's
+        // entitled agents, not a (usually empty) direct-assignment lookup.
+        // Every other caller (USER; TENANT_OWNER, who never gets a production
+        // execution grant) keeps the direct-assignment chain unchanged.
+        var items = AuthenticatedPrincipalContext.TryGet(ctx, out var principal)
+                    && principal.IsInRole("admin") && principal.DepartmentId is { } departmentId
+            ? await repo.ListForDepartmentManagerAsync(tenantId, departmentId, ct)
+            : await repo.ListForPrincipalAsync(tenantId, userId, ct);
         return Results.Ok(new { items, total = items.Count });
     }
 

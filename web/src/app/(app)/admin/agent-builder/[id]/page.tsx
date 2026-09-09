@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AgentTestPanel } from "@/components/agent-test-panel";
+import { CapabilityPicker, type CapabilityOption } from "@/components/capability-picker";
 
 interface SystemAgentRecord {
   id: string;
@@ -53,6 +54,7 @@ interface AgentVersionRecord {
   skills: string[];
   workflowId: string | null;
   delegateAgentIds: string[];
+  capabilityIds: string[];
 }
 interface WorkflowRecord { id: string; name: string; isActive: boolean }
 
@@ -115,6 +117,7 @@ function draftPayloadFromForm(formData: FormData): Record<string, unknown> {
     workflowId: String(formData.get("workflowId") ?? "") || null,
     clearWorkflow: !String(formData.get("workflowId") ?? ""),
     delegateAgentIds: parseChecked(formData, "delegateAgentIds"),
+    capabilityIds: parseChecked(formData, "capabilityIds"),
   };
 }
 
@@ -257,6 +260,7 @@ function DraftForm({
   version,
   tools,
   skills,
+  capabilities,
   workflows,
   delegates,
   formAction,
@@ -265,6 +269,7 @@ function DraftForm({
   version: AgentVersionRecord | null;
   tools: ToolRecord[];
   skills: SkillSummary[];
+  capabilities: CapabilityOption[];
   workflows: WorkflowRecord[];
   delegates: SystemAgentRecord[];
   formAction: (formData: FormData) => Promise<void>;
@@ -348,6 +353,16 @@ function DraftForm({
       </TabsContent>
 
       <TabsContent value="capabilities" forceMount className="mt-0 space-y-4 data-[state=inactive]:hidden">
+        <div className="space-y-2">
+          <Label>
+            <Building2 className="mr-1 inline size-3.5" /> Nghiệp vụ hỗ trợ
+          </Label>
+          <p className="text-xs text-[var(--color-muted-fg)]">
+            Publish sẽ đóng băng danh sách nghiệp vụ này — draft mới tạo tiếp theo sẽ giữ nguyên lựa chọn hiện tại làm mặc định.
+          </p>
+          <CapabilityPicker capabilities={capabilities} selected={version?.capabilityIds ?? []} />
+        </div>
+
         <div className="space-y-2">
           <Label>
             <Wrench className="mr-1 inline size-3.5" /> Tools được cấp
@@ -439,7 +454,7 @@ export default async function AgentBuilderDetailPage({
   const { ok, error, tab } = await searchParams;
   const token = await requireSession();
 
-  const [detailRes, versionsRes, toolsRes, skillsRes, allTenantsRes, agentTenantsRes, workflowsRes, agentsRes] = await Promise.all([
+  const [detailRes, versionsRes, toolsRes, skillsRes, allTenantsRes, agentTenantsRes, workflowsRes, agentsRes, capabilitiesRes] = await Promise.all([
     gateway.getSystemAgent(token, id),
     gateway.listSystemAgentVersions(token, id),
     gateway.listTools(token, true),
@@ -448,6 +463,7 @@ export default async function AgentBuilderDetailPage({
     gateway.listSystemAgentTenants(token, id),
     gateway.listWorkflows(token),
     gateway.listSystemAgents(token),
+    gateway.listCapabilityCatalog(token),
   ]);
 
   if (detailRes.status === 403) redirect("/chat");
@@ -470,6 +486,9 @@ export default async function AgentBuilderDetailPage({
   const assignedTenantIds = new Set(assignedTenants.map((t) => t.tenantId));
   const workflows: WorkflowRecord[] = workflowsRes.ok ? ((await workflowsRes.json()) as { items: WorkflowRecord[] }).items : [];
   const delegates: SystemAgentRecord[] = agentsRes.ok ? ((await agentsRes.json()) as { items: SystemAgentRecord[] }).items.filter((candidate) => candidate.id !== id && candidate.enabled && candidate.lifecycleState === "production" && Boolean(candidate.publishedVersionId)) : [];
+  const capabilities: CapabilityOption[] = capabilitiesRes.ok
+    ? ((await capabilitiesRes.json()) as { items: CapabilityOption[] }).items
+    : [];
 
   const draftVersion = sysAgent.currentDraftVersionId
     ? versions.find((v) => v.id === sysAgent.currentDraftVersionId) ?? null
@@ -488,7 +507,7 @@ export default async function AgentBuilderDetailPage({
   const TABS = [
     { value: "identity", label: "Identity" },
     { value: "runtime", label: "Runtime" },
-    { value: "capabilities", label: "Capabilities" },
+    { value: "capabilities", label: "Nghiệp vụ" },
     { value: "workflow", label: "Workflow / Delegates" },
     { value: "tenants", label: `Tenant Assignment (${assignedTenants.length})` },
     { value: "versions", label: `Version History (${versions.length})` },
@@ -617,7 +636,7 @@ export default async function AgentBuilderDetailPage({
               Đang sửa draft v{draftVersion.version}. Version đã publish là bất biến — chỉ draft mới sửa được.
             </p>
           )}
-          <DraftForm agentId={sysAgent.id} version={activeVersion} tools={tools} skills={skills} workflows={workflows} delegates={delegates} formAction={draftAction} />
+          <DraftForm agentId={sysAgent.id} version={activeVersion} tools={tools} skills={skills} capabilities={capabilities} workflows={workflows} delegates={delegates} formAction={draftAction} />
         </div>
 
         {draftVersion && (

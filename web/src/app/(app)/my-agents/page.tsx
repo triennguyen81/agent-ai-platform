@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { AlertCircle, Bot, Inbox, Lock, ShieldCheck } from "lucide-react";
 import { gateway } from "@/lib/api";
-import { requireSession } from "@/lib/auth";
+import { requireViewer } from "@/lib/authorization";
 
 interface MyAgent {
   agentId: string;
@@ -26,7 +26,7 @@ const LIFECYCLE_BADGE: Record<string, string> = {
 };
 
 export default async function MyAgentsPage() {
-  const token = await requireSession();
+  const { token } = await requireViewer(["admin", "user"]);
   const res = await gateway.listMyAgents(token);
   const body = res.ok
     ? ((await res.json()) as { items: MyAgent[]; total: number })

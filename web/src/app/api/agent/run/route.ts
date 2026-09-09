@@ -7,6 +7,7 @@ interface AgentRunBody {
   skills?: string[];
   max_turns?: number;
   agent_id?: string;
+  capability?: string;
 }
 
 interface MyAgent {
@@ -63,7 +64,8 @@ export async function POST(request: NextRequest) {
 
   const res = await agent.runTask(token, {
     task,
-    agent_id: agentId,
+    agent_id: body.agent_id,
+    capability: body.capability,
     skills: body.skills,
     max_turns: body.max_turns ?? 8,
   });

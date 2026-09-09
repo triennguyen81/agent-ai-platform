@@ -1,0 +1,11 @@
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { gateway } from "@/lib/api";
+import { requireViewer } from "@/lib/authorization";
+import { Button } from "@/components/ui/button";
+import { Input, Textarea } from "@/components/ui/input";
+import { ResourceScopeBadge } from "@/components/resource-scope-badge";
+
+async function createAction(data:FormData){"use server";const v=await requireViewer(["super_admin"]);const r=await gateway.createPlatformSkill(v.token,{code:String(data.get("code")??"").trim(),name:String(data.get("name")??"").trim(),declarativeContent:String(data.get("content")??"").trim()});if(!r.ok)redirect("/system/skills?error=create");revalidatePath("/system/skills");}
+async function toggleAction(data:FormData){"use server";const v=await requireViewer(["super_admin"]);await gateway.setPlatformSkillEnabled(v.token,String(data.get("id")),String(data.get("enabled"))==="true");revalidatePath("/system/skills");}
+export default async function PlatformSkillsPage(){const v=await requireViewer(["super_admin"]);const r=await gateway.listPlatformSkills(v.token);const items=r.ok?((await r.json())as{items:{id:string;code:string;name:string;isActive:boolean;declarativeContent:string|null}[]}).items:[];return <div className="space-y-6"><header><h1 className="font-serif text-3xl">Global Skills</h1><p className="text-sm text-[var(--color-muted-fg)]">Skill Hệ thống do Platform quản lý; ADMIN chỉ đọc và attach.</p></header><form action={createAction} className="grid gap-2 rounded border p-4 sm:grid-cols-2"><Input name="code" required placeholder="skill-code"/><Input name="name" required placeholder="Tên Skill"/><Textarea name="content" required placeholder="Nội dung hướng dẫn" className="sm:col-span-2"/><Button className="w-fit">Tạo</Button></form><div className="space-y-2">{items.map(i=><div key={i.id} className="flex items-start justify-between rounded border p-3"><div><b>{i.name}</b><p className="font-mono text-xs">{i.code}</p><ResourceScopeBadge scope="platform"/></div><form action={toggleAction}><input type="hidden" name="id" value={i.id}/><input type="hidden" name="enabled" value={String(!i.isActive)}/><Button variant="outline" size="sm">{i.isActive?"Disable":"Enable"}</Button></form></div>)}</div></div>}

@@ -89,7 +89,7 @@ public sealed record VoucherDetail(
 public sealed record CreateVoucherLineItemDto(
     int Ordinal,
     string? ItemCode,
-    [Required] string Description,
+    [property: Required] string Description,
     string? Unit,
     decimal? Quantity,
     decimal? UnitPrice,
@@ -99,7 +99,7 @@ public sealed record CreateVoucherLineItemDto(
     decimal? TotalAmount);
 
 public sealed record CreateVoucherRequest(
-    [Required] string VoucherType,
+    [property: Required] string VoucherType,
     string? DocumentNumber,
     string? DocumentSeries,
     DateOnly? DocumentDate,
@@ -150,8 +150,8 @@ public sealed record UpdateVoucherRequest(
 
 public sealed record SaveJournalSuggestionDto(
     int EntryNo,
-    [Required] string DebitAccount,
-    [Required] string CreditAccount,
+    [property: Required] string DebitAccount,
+    [property: Required] string CreditAccount,
     decimal Amount,
     string? Description,
     decimal? Confidence);

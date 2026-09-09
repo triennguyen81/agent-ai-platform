@@ -12,12 +12,12 @@ public sealed record NoteRecord(
     DateTime UpdatedAt);
 
 public sealed record CreateNoteRequest(
-    [Required, StringLength(300, MinimumLength = 1)] string Title,
+    [property: Required, StringLength(300, MinimumLength = 1)] string Title,
     string? Content,
     string[]? Tags);
 
 public sealed record UpdateNoteRequest(
-    [StringLength(300, MinimumLength = 1)] string? Title,
+    [property: StringLength(300, MinimumLength = 1)] string? Title,
     string? Content,
     string[]? Tags);
 

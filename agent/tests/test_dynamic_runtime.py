@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import errno
 import json
+import os
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
+from claude_agent_sdk import CLIConnectionError
 from pydantic import ValidationError
 
 import asyncio
@@ -153,6 +157,156 @@ async def test_claude_sdk_execution_enforces_manifest_timeout(monkeypatch):
     executor = build_agent_executor(manifest, settings, skills)
     with pytest.raises(ExecutionTimeoutError, match="exceeded its configured timeout"):
         await executor.execute(prompt="x", token="t")
+
+
+class _StubClient:
+    """Captures the ClaudeAgentOptions a real spawn would receive, without
+    ever touching a subprocess. Mirrors HangingClient's shape above but
+    completes immediately with one assistant message."""
+
+    captured_options: list[Any] = []
+
+    def __init__(self, **kwargs):
+        _StubClient.captured_options.append(kwargs.get("options"))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def query(self, *_args, **_kwargs):
+        return None
+
+    async def receive_response(self):
+        from claude_agent_sdk import AssistantMessage, TextBlock
+
+        yield AssistantMessage(content=[TextBlock(text="ok")], model="m")
+
+
+@pytest.mark.asyncio
+async def test_claude_sdk_writes_system_prompt_to_file_not_argv(monkeypatch, tmp_path):
+    """The CLI transport puts a string system_prompt directly on argv, which
+    is exactly what overflowed for the real accounting agent (see
+    test_claude_sdk_survives_oversized_skill_content_without_e2big below).
+    ClaudeAgentOptions must always receive the file form, never the raw
+    string, regardless of size."""
+    from aiq_agent.runtime import executors as executors_module
+
+    _StubClient.captured_options = []
+    monkeypatch.setattr(executors_module, "ClaudeSDKClient", _StubClient)
+    settings = Settings(embedding_enabled=False)
+    manifest = ExecutionManifest.model_validate(
+        manifest_data(provider="claude_sdk", systemPrompt="Bạn là trợ lý kế toán."))
+    executor = build_agent_executor(manifest, settings, SkillRegistry())
+
+    result = await executor.execute(prompt="hello", token="t")
+
+    assert result.final_answer == "ok"
+    [options] = _StubClient.captured_options
+    assert isinstance(options.system_prompt, dict)
+    assert options.system_prompt["type"] == "file"
+    # File must be gone once the subprocess has exited -- it's a transient
+    # transport artifact, not a place to leave a copy of the prompt lying
+    # around on disk.
+    assert not os.path.exists(options.system_prompt["path"])
+
+
+@pytest.mark.asyncio
+async def test_claude_sdk_survives_oversized_skill_content_without_e2big(monkeypatch):
+    """Regression for the real bug: 44 skills on the Accounting Agent summed
+    to ~235 KB, over Linux's 128 KB MAX_ARG_STRLEN single-argv-element cap.
+    Reproduces that shape with a synthetic 200 KB skill body and asserts the
+    resulting ClaudeAgentOptions.system_prompt is STILL the small file-path
+    form, not a huge raw string -- i.e. this configuration can never trigger
+    E2BIG via argv, no matter how large the manifest's skills/knowledge get."""
+    from aiq_agent.runtime import executors as executors_module
+
+    _StubClient.captured_options = []
+    monkeypatch.setattr(executors_module, "ClaudeSDKClient", _StubClient)
+    settings = Settings(embedding_enabled=False)
+    huge_skill = Skill("accounting-vietnam", "", "X" * 200_000)
+    registry = SkillRegistry((huge_skill,))
+    manifest = ExecutionManifest.model_validate(
+        manifest_data(provider="claude_sdk", skills=["accounting-vietnam"]))
+    executor = build_agent_executor(manifest, settings, registry)
+
+    await executor.execute(prompt="hello", token="t")
+
+    [options] = _StubClient.captured_options
+    assert isinstance(options.system_prompt, dict)
+    # The argv-visible payload is just a temp file path -- nowhere near the
+    # 128 KB single-argument cap the 200 KB skill body would have blown past.
+    assert len(options.system_prompt["path"]) < 1024
+
+
+@pytest.mark.asyncio
+async def test_claude_sdk_e2big_maps_to_safe_configuration_too_large_error(monkeypatch):
+    """If argv still overflows for some other reason (a future large
+    --mcp-config, say), the raw CLIConnectionError/E2BIG must not leak to
+    callers as an opaque failure -- it becomes ClaudeSdkConfigurationTooLargeError
+    carrying only sizes/counts, never prompt/knowledge/skill/token content."""
+    from aiq_agent.runtime import executors as executors_module
+    from aiq_agent.runtime.executors import ClaudeSdkConfigurationTooLargeError
+
+    class E2bigClient:
+        def __init__(self, **kwargs):
+            pass
+        async def __aenter__(self):
+            try:
+                raise OSError(errno.E2BIG, "Argument list too long")
+            except OSError as os_err:
+                raise CLIConnectionError(f"Failed to start Claude Code: {os_err}") from os_err
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(executors_module, "ClaudeSDKClient", E2bigClient)
+    settings = Settings(embedding_enabled=False)
+    manifest = ExecutionManifest.model_validate(manifest_data(provider="claude_sdk"))
+    executor = build_agent_executor(manifest, settings, SkillRegistry())
+
+    with pytest.raises(ClaudeSdkConfigurationTooLargeError) as excinfo:
+        await executor.execute(prompt="hello", token="secret-caller-token")
+
+    diagnostics = excinfo.value.diagnostics
+    assert set(diagnostics) == {
+        "argv_bytes", "env_bytes", "tool_count", "skill_count",
+        "knowledge_count", "delegate_count", "system_prompt_bytes", "mcp_config_bytes",
+    }
+    assert all(isinstance(v, int) for v in diagnostics.values())
+    # No secret/content leakage into the diagnostics payload.
+    serialized = json.dumps(diagnostics)
+    assert "secret-caller-token" not in serialized
+    assert "PROMPT-A" not in serialized  # manifest_data()'s systemPrompt
+
+
+@pytest.mark.asyncio
+async def test_claude_sdk_non_e2big_cli_errors_are_not_recategorized(monkeypatch):
+    """A CLIConnectionError NOT caused by E2BIG (e.g. the CLI binary missing)
+    must propagate as-is -- collapsing every provider failure into
+    claude_sdk_configuration_too_large would hide the real cause."""
+    from aiq_agent.runtime import executors as executors_module
+    from aiq_agent.runtime.executors import ClaudeSdkConfigurationTooLargeError
+
+    class NotFoundClient:
+        def __init__(self, **kwargs):
+            pass
+        async def __aenter__(self):
+            try:
+                raise OSError(errno.ENOENT, "No such file or directory")
+            except OSError as os_err:
+                raise CLIConnectionError(f"Failed to start Claude Code: {os_err}") from os_err
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(executors_module, "ClaudeSDKClient", NotFoundClient)
+    settings = Settings(embedding_enabled=False)
+    manifest = ExecutionManifest.model_validate(manifest_data(provider="claude_sdk"))
+    executor = build_agent_executor(manifest, settings, SkillRegistry())
+
+    with pytest.raises(CLIConnectionError) as excinfo:
+        await executor.execute(prompt="hello", token="t")
+    assert not isinstance(excinfo.value, ClaudeSdkConfigurationTooLargeError)
 
 
 def test_tool_execution_prefers_gateway_minted_token_over_caller_token(monkeypatch):

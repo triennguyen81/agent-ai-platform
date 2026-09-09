@@ -7,12 +7,9 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { SaveToKbButton } from "@/components/save-to-kb-button";
+import { CapabilityError, executeCapability } from "@/lib/capability";
 
 type Tab = "vat" | "pit" | "cit";
-
-interface AgentRunResponse {
-  final_answer: string;
-}
 
 const VAT_RATES = [0, 5, 8, 10];
 const CIT_RATES = [5, 10, 15, 17, 20];
@@ -29,7 +26,7 @@ export default function TaxCalcPage() {
           <code className="mx-1 rounded bg-[var(--color-muted)] px-1.5 py-0.5 text-xs">
             calculate_vat / calculate_pit / calculate_cit
           </code>
-          qua /agent/run.
+qua nghiệp vụ <code className="mx-1 rounded bg-[var(--color-muted)] px-1.5 py-0.5 text-xs">accounting.tax</code>.
         </p>
       </header>
 
@@ -109,18 +106,15 @@ function CalcShell({
   );
 }
 
+// D6: converted from the legacy no-agent-id /agent/run call to the
+// canonical capability resolver — accounting.tax covers VAT/TNCN/TNDN,
+// all three genuinely being the same business responsibility.
 async function runAgent(task: string): Promise<string> {
-  const res = await fetch("/api/agent/run", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ task, max_turns: 3 }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+  try {
+    return await executeCapability("accounting.tax", task, 3);
+  } catch (err) {
+    throw err instanceof CapabilityError ? new Error(err.message) : err;
   }
-  const body = (await res.json()) as AgentRunResponse;
-  return body.final_answer;
 }
 
 function VatForm() {

@@ -9,7 +9,16 @@ interface TestResult {
   model: string;
 }
 
-export function AgentTestPanel({ agentId }: { agentId: string }) {
+export function AgentTestPanel({
+  agentId,
+  testEndpoint = `/api/system-agents/${agentId}/test`,
+}: {
+  agentId: string;
+  // ACL V2-C: ADMIN's Department Agent Builder passes its own BFF route
+  // here (see api/department-agents/[id]/test) — same panel, same UX,
+  // different backend agent ownership model underneath.
+  testEndpoint?: string;
+}) {
   const [prompt, setPrompt] = useState("Xin chào, hãy giới thiệu ngắn gọn về bạn.");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<TestResult | null>(null);
@@ -20,7 +29,7 @@ export function AgentTestPanel({ agentId }: { agentId: string }) {
     setError(null);
     setResult(null);
     try {
-      const res = await fetch(`/api/system-agents/${agentId}/test`, {
+      const res = await fetch(testEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),

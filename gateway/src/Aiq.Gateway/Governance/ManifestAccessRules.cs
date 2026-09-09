@@ -2,8 +2,14 @@ namespace Aiq.Gateway.Governance;
 
 public enum ManifestAccessMode
 {
-    /// <summary>Real end-user execution: published-only, tenant/user assignment enforced.</summary>
+    /// <summary>Real end-user execution: published-only, tenant + department + direct user assignment enforced.</summary>
     EndUser,
+    /// <summary>
+    /// D3: department manager execution — published-only, tenant + department
+    /// assignment enforced, deliberately WITHOUT a direct user-agent
+    /// assignment requirement (see IDynamicAgentRepository.GetAdminManifestAsync).
+    /// </summary>
+    AdminDepartmentExecution,
     /// <summary>SUPER_ADMIN testing their own agent: current draft (or published) version, no assignment gate.</summary>
     SuperAdminTest,
     Forbidden,
@@ -11,13 +17,25 @@ public enum ManifestAccessMode
 
 /// <summary>
 /// Decides how <c>GET /runtime/agents/{agentId}/manifest</c> resolves a caller.
-/// Kept as a pure function so the two mutually-exclusive branches (real chat
-/// traffic vs. Agent Builder "Test") are unit-testable without hitting the DB.
+/// Kept as a pure function so every branch (real chat traffic, department
+/// ADMIN execution, Agent Builder "Test") is unit-testable without hitting
+/// the DB. Centralizes the one D3 authorization decision this rule exists
+/// for — callers branch on the returned mode, they never re-derive it from
+/// role strings themselves.
+///
+/// TENANT_OWNER is deliberately NOT a parameter: per approved D3 policy,
+/// "TENANT_OWNER does NOT automatically gain production execution... if
+/// owner needs production execution, existing explicit assignment policy
+/// remains" — today that explicit policy is "none" (an owner can never be an
+/// agent_assignments target), so an owner falls through to Forbidden exactly
+/// like any other caller that is none of super_admin/admin/user. This is
+/// unchanged from pre-D3 behavior, not a new restriction.
 /// </summary>
 public static class ManifestAccessRules
 {
-    public static ManifestAccessMode Resolve(bool isSuperAdmin, bool isUser) =>
+    public static ManifestAccessMode Resolve(bool isSuperAdmin, bool isAdmin, bool isUser) =>
         isSuperAdmin ? ManifestAccessMode.SuperAdminTest
+        : isAdmin ? ManifestAccessMode.AdminDepartmentExecution
         : isUser ? ManifestAccessMode.EndUser
         : ManifestAccessMode.Forbidden;
 }

@@ -3,7 +3,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { CheckCircle2, Inbox, ShieldAlert, ThumbsDown, ThumbsUp } from "lucide-react";
 import { gateway } from "@/lib/api";
-import { requireSession } from "@/lib/auth";
+import { requireViewer } from "@/lib/authorization";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 
@@ -35,7 +35,7 @@ async function voteAction(formData: FormData): Promise<void> {
   if (!requestId || (vote !== "approve" && vote !== "reject")) {
     redirect("/admin/review-queue?error=invalid");
   }
-  const token = await requireSession();
+  const { token } = await requireViewer(["admin"]);
   const res = await gateway.castReviewVote(token, requestId, {
     vote,
     comment: comment || undefined,
@@ -62,7 +62,7 @@ export default async function ReviewQueuePage({
 }: {
   searchParams: Promise<{ ok?: string; error?: string }>;
 }) {
-  const token = await requireSession();
+  const { token } = await requireViewer(["admin"]);
   const res = await gateway.myReviewQueue(token);
   if (res.status === 403) redirect("/chat");
 
@@ -109,7 +109,7 @@ export default async function ReviewQueuePage({
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
                   <Link
-                    href={`/admin/agents/${r.agentId}`}
+                    href={`/department/agents/${r.agentId}`}
                     className="font-medium hover:underline"
                   >
                     {r.agentName}

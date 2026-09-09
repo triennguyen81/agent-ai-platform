@@ -115,9 +115,39 @@ if (string.IsNullOrWhiteSpace(jwtOptions.SigningKey) || jwtOptions.SigningKey.Le
 var connectionString = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("ConnectionStrings:Postgres is missing.");
 
+// ACL V2 final phase (V2-H): docker-compose.yml's local-dev fallback
+// credentials (POSTGRES_PASSWORD/Object__AccessKey/Object__SecretKey all
+// defaulting to the literal "aiq", MinIO's documented
+// "changeme_min_32_chars_before_prod") are fine for a throwaway dev stack
+// but would silently work in a real deployment that never created a proper
+// .env — see D8_PRODUCTION_READINESS_AUDIT.md §4. This mirrors the JWT
+// signing key check above: fail closed, Production-environment only, so
+// local/dev/CI behavior is completely unchanged.
+if (builder.Environment.IsProduction())
+{
+    static bool IsWeakOrMissing(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+        || value.Equals("aiq", StringComparison.Ordinal)
+        || value.Contains("changeme", StringComparison.OrdinalIgnoreCase);
+
+    var objectAccessKey = builder.Configuration[$"{S3Options.SectionName}:AccessKey"];
+    var objectSecretKey = builder.Configuration[$"{S3Options.SectionName}:SecretKey"];
+    if (IsWeakOrMissing(objectAccessKey) || IsWeakOrMissing(objectSecretKey))
+    {
+        throw new InvalidOperationException(
+            "Object__AccessKey/Object__SecretKey must be set to a real, non-default value in Production.");
+    }
+    if (IsWeakOrMissing(connectionString) || connectionString.Contains("Password=aiq", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException(
+            "ConnectionStrings:Postgres must not use the local-dev default password in Production.");
+    }
+}
+
 // ---- Services --------------------------------------------------------------
 builder.Services.AddSingleton(new NpgsqlConnectionFactory(connectionString));
 builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddScoped<IDepartmentRepository, DepartmentRepository>();
 builder.Services.AddSingleton<DatabaseMigrator>();
 builder.Services.AddScoped<IBookRepository, BookRepository>();
 builder.Services.AddScoped<INoteRepository, NoteRepository>();
@@ -129,11 +159,14 @@ builder.Services.AddScoped<ITenantRepository, TenantRepository>();
 builder.Services.AddScoped<IAgentRepository, AgentRepository>();
 builder.Services.AddScoped<IAgentAssignmentRepository, AgentAssignmentRepository>();
 builder.Services.AddScoped<IDynamicAgentRepository, DynamicAgentRepository>();
+builder.Services.AddScoped<ICapabilityRepository, CapabilityRepository>();
 builder.Services.AddScoped<IToolRepository, ToolRepository>();
 builder.Services.AddScoped<IWorkflowRepository, WorkflowRepository>();
 builder.Services.AddScoped<IReviewBoardRepository, ReviewBoardRepository>();
 builder.Services.AddScoped<IHitlRepository, HitlRepository>();
 builder.Services.AddScoped<IAgentKnowledgeRepository, AgentKnowledgeRepository>();
+builder.Services.AddScoped<ISkillRepository, SkillRepository>();
+builder.Services.AddScoped<IDepartmentKnowledgeRepository, DepartmentKnowledgeRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Customers.ICustomerRepository, Aiq.Gateway.Customers.CustomerRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Suppliers.ISupplierRepository, Aiq.Gateway.Suppliers.SupplierRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Employees.IEmployeeRepository, Aiq.Gateway.Employees.EmployeeRepository>();
@@ -229,13 +262,24 @@ builder.Services
 
 builder.Services.AddAuthorization(options =>
 {
-    // Role model: super_admin (manages platform + tenants) ⊃ tenant_owner
-    // (sole accountable owner of one tenant) ⊃ admin (tenant contributors)
-    // ⊃ user (consumers). tenant_owner is folded into the "admin" and "user"
-    // policies so an owner never has LESS access than a plain admin — it
-    // does not change what any existing super_admin/admin/user can already
-    // do. Owner-exclusive actions (create/replace/transfer TENANT_OWNER)
-    // stay gated behind the literal "super_admin" policy, never "admin".
+    options.AddPolicy("platform_admin", p => p.RequireAssertion(c => PrincipalAuthorizationPolicy.IsPlatformAdmin(PrincipalAuthorizationPolicy.FromAuthorizationResource(c.Resource))));
+    options.AddPolicy("tenant_governance", p => p.RequireAssertion(c => PrincipalAuthorizationPolicy.IsTenantGovernor(PrincipalAuthorizationPolicy.FromAuthorizationResource(c.Resource))));
+    options.AddPolicy("department_admin", p => p.RequireAssertion(c => PrincipalAuthorizationPolicy.IsDepartmentAdmin(PrincipalAuthorizationPolicy.FromAuthorizationResource(c.Resource))));
+    options.AddPolicy("department_member", p => p.RequireAssertion(c => PrincipalAuthorizationPolicy.IsDepartmentMember(PrincipalAuthorizationPolicy.FromAuthorizationResource(c.Resource))));
+    options.AddPolicy("authenticated", p => p.RequireAssertion(c => PrincipalAuthorizationPolicy.IsAuthenticated(PrincipalAuthorizationPolicy.FromAuthorizationResource(c.Resource))));
+    // ACL V2-C: read-only platform catalogs (tools, workflows, business
+    // capabilities) that a department_admin now needs to browse in order to
+    // attach an EXISTING platform-owned resource to their own Department
+    // Agent draft (Decisions §5/§10/§12 — select-only, never CRUD). Mutation
+    // routes on these same resources stay exclusively platform_admin.
+    options.AddPolicy("catalog_reader", p => p.RequireAssertion(c =>
+    {
+        var principal = PrincipalAuthorizationPolicy.FromAuthorizationResource(c.Resource);
+        return PrincipalAuthorizationPolicy.IsPlatformAdmin(principal) || PrincipalAuthorizationPolicy.IsDepartmentAdmin(principal);
+    }));
+
+    // Compatibility policies for pre-V2 operational routes. New or hardened
+    // governance routes must use one of the exact policies above.
     options.AddPolicy("super_admin", p => p.RequireRole("super_admin"));
     options.AddPolicy("tenant_owner", p => p.RequireRole("tenant_owner"));
     options.AddPolicy("admin",       p => p.RequireRole("super_admin", "tenant_owner", "admin"));
@@ -342,9 +386,12 @@ app.UseStatusCodePages();
 app.UseResponseCompression();
 app.UseRouting();
 app.UseHttpMetrics();           // /metrics request histograms + counters per endpoint
+app.UseAuthentication();
+// Default/upload partitions use the authenticated sub claim. Authentication
+// must run first; otherwise every role behind one proxy/IP shares a single
+// anonymous bucket and server-rendered navigation can exhaust it globally.
 app.UseRateLimiter();
 app.UseOutputCache();
-app.UseAuthentication();
 app.UseMiddleware<TenantContextMiddleware>();
 app.UseAuthorization();
 app.UseMiddleware<AuditMiddleware>();
@@ -369,8 +416,13 @@ app.MapNotificationEndpoints();
 app.MapTenantEndpoints();
 app.MapAgentEndpoints();
 app.MapDynamicAgentEndpoints();
+app.MapDepartmentAgentEndpoints();
+app.MapCapabilityEndpoints();
+app.MapDepartmentEndpoints();
 app.MapToolEndpoints();
 app.MapWorkflowEndpoints();
+app.MapSkillEndpoints();
+app.MapDepartmentKnowledgeEndpoints();
 app.MapReviewEndpoints();
 app.MapHitlEndpoints();
 app.MapAgentKnowledgeEndpoints();
@@ -414,15 +466,23 @@ static TimeZoneInfo TryGetVnTimeZone()
 app.MapGet("/me", (HttpContext ctx) =>
 {
     var user = ctx.User;
+    AuthenticatedPrincipalContext.TryGet(ctx, out var principal);
     return Results.Ok(new
     {
         sub   = user.FindFirst("sub")?.Value,
         email = user.FindFirst("email")?.Value,
         roles = user.FindAll("role").Select(c => c.Value).ToArray(),
-        tenantId = TenantContext.TryGet(ctx, out var tenantId) ? tenantId : (Guid?)null
+        role = principal?.Role,
+        tenantId = principal?.TenantId,
+        departmentId = principal?.DepartmentId,
+        userActive = principal?.UserActive,
+        tenantActive = principal?.TenantActive,
+        departmentActive = principal?.DepartmentActive,
+        departmentCode = principal?.DepartmentCode,
+        departmentName = principal?.DepartmentName
     });
 })
-.RequireAuthorization()
+.RequireAuthorization("authenticated")
 .RequireRateLimiting("default");
 
 app.Run();

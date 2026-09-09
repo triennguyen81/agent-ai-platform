@@ -13,9 +13,23 @@ public sealed record AssignRoleRequest(string Role);
 public sealed record CreateTenantUserRequest(
     [Required, EmailAddress] string Email,
     [Required, MinLength(8)] string Password,
-    string? DisplayName);
+    string? DisplayName,
+    Guid? DepartmentId = null);
 
 public sealed record UpdateTenantUserRequest(string? DisplayName);
+
+// [property: ...] is required, not stylistic: a validation attribute placed
+// directly on a positional-record parameter binds to the PARAMETER, not the
+// generated property, so Validator.TryValidateObject (which reflects over
+// properties) silently never runs it — TryValidate(request, ...) below would
+// report "valid" even for Role="super_admin". This endpoint stays safe today
+// only because TenantUserRoleChangePolicy.Validate independently re-rejects
+// any requestedRole other than "user"/"admin" (a second, redundant layer) —
+// but the attribute itself must still actually validate.
+public sealed record ChangeTenantUserRoleRequest(
+    [property: Required, RegularExpression("^(user|admin)$")] string Role);
+
+public sealed record MoveTenantUserDepartmentRequest([property: Required] Guid DepartmentId);
 
 public sealed record AssignTenantOwnerRequest([Required] Guid UserId);
 
@@ -51,7 +65,7 @@ public static class UserEndpoints
         // Only super_admin can list users or change roles.
         var group = app
             .MapGroup("/users")
-            .RequireAuthorization("super_admin")
+            .RequireAuthorization("platform_admin")
             .RequireRateLimiting("default");
 
         group.MapGet("/", ListAsync);
@@ -65,7 +79,7 @@ public static class UserEndpoints
         // an ADMIN can never exist without a tenant.
         var tenantAdmins = app
             .MapGroup("/system/tenants/{tenantId:guid}/admins")
-            .RequireAuthorization("super_admin")
+            .RequireAuthorization("platform_admin")
             .RequireRateLimiting("default");
 
         tenantAdmins.MapGet("/", ListTenantAdminsAsync);
@@ -78,25 +92,30 @@ public static class UserEndpoints
         // request, and ADMIN is not included in this authorization policy.
         var ownTenantAdmins = app
             .MapGroup("/tenant/admins")
-            .RequireAuthorization("tenant_owner")
+            .RequireAuthorization("tenant_governance")
             .RequireRateLimiting("default");
         ownTenantAdmins.MapGet("/", ListOwnTenantAdminsAsync);
         ownTenantAdmins.MapPost("/", CreateOwnTenantAdminAsync);
+        ownTenantAdmins.MapPatch("/{id:guid}", UpdateOwnTenantAdminAsync);
         ownTenantAdmins.MapPost("/{id:guid}/disable", DisableOwnTenantAdminAsync);
         ownTenantAdmins.MapPost("/{id:guid}/enable", EnableOwnTenantAdminAsync);
+
+        app.MapGet("/tenant/departments", ListDepartmentsAsync)
+            .RequireAuthorization("tenant_governance")
+            .RequireRateLimiting("default");
 
         // Tenant Owner RBAC Stage 2 — SUPER_ADMIN explicitly assigns the sole
         // accountable owner of a tenant. No heuristic selection; audited;
         // the actual tenant->owner mapping is decided here at runtime, never
         // hard-coded into a migration.
         app.MapGet("/system/tenants/owners/preflight", OwnershipPreflightAsync)
-            .RequireAuthorization("super_admin")
+            .RequireAuthorization("platform_admin")
             .RequireRateLimiting("default");
         app.MapPost("/system/tenants/{tenantId:guid}/owner", AssignTenantOwnerAsync)
-            .RequireAuthorization("super_admin")
+            .RequireAuthorization("platform_admin")
             .RequireRateLimiting("default");
         app.MapPost("/system/tenants/{tenantId:guid}/owner/transfer", TransferTenantOwnerAsync)
-            .RequireAuthorization("super_admin")
+            .RequireAuthorization("platform_admin")
             .RequireRateLimiting("default");
 
         // Tenant ADMIN: the candidate pool for agent-execution assignment,
@@ -108,10 +127,31 @@ public static class UserEndpoints
             .RequireRateLimiting("default");
 
         tenantUsers.MapGet("/", ListTenantUsersAsync);
+        tenantUsers.MapGet("/{id:guid}", GetTenantUserAsync);
         tenantUsers.MapPost("/", CreateTenantUserAsync);
         tenantUsers.MapPatch("/{id:guid}", UpdateTenantUserAsync);
         tenantUsers.MapPost("/{id:guid}/disable", DisableTenantUserAsync);
         tenantUsers.MapPost("/{id:guid}/enable", EnableTenantUserAsync);
+
+        // TENANT_OWNER-only USER<->ADMIN role flip for the unified tenant
+        // accounts screen. Mapped standalone (not inside the "admin"-policy
+        // tenantUsers group above) so only the literal tenant_owner role
+        // reaches it — a plain ADMIN caller never can. Never touches
+        // tenant_owner/super_admin: see TenantUserRoleChangePolicy.
+        app.MapPatch("/tenant/users/{id:guid}/role", ChangeTenantUserRoleAsync)
+            .RequireAuthorization("tenant_governance")
+            .RequireRateLimiting("default");
+
+        // D5 §9: TENANT_OWNER-only department move for an ADMIN or USER.
+        // Mapped standalone with the literal tenant_owner policy, exactly
+        // like the role-change route above — moving people between
+        // departments is a security-sensitive owner action, never an ADMIN
+        // one (an ADMIN could otherwise move a USER into their own
+        // department to gain new agent access, or out of it to dodge
+        // oversight).
+        app.MapPatch("/tenant/users/{id:guid}/department", MoveTenantUserDepartmentAsync)
+            .RequireAuthorization("tenant_governance")
+            .RequireRateLimiting("default");
 
         return app;
     }
@@ -127,9 +167,38 @@ public static class UserEndpoints
     private static async Task<IResult> ListTenantUsersAsync(
         IUserRepository repo, HttpContext ctx, CancellationToken ct)
     {
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId)
+            return Results.BadRequest(new { error = "tenant_context_missing" });
+        var rows = principal.IsInRole("tenant_owner")
+            ? await repo.ListByTenantAsync(tenantId, ct)
+            : await repo.ListByDepartmentAsync(tenantId, principal.DepartmentId!.Value, ct);
+        return Results.Ok(new { items = rows, total = rows.Count });
+    }
+
+    private static async Task<IResult> GetTenantUserAsync(
+        Guid id, IUserRepository repo, HttpContext ctx, CancellationToken ct)
+    {
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId)
+            return Results.BadRequest(new { error = "tenant_context_missing" });
+        if (principal.IsInRole("tenant_owner"))
+        {
+            var target = await repo.FindByIdAsync(id, ct);
+            if (target is null || target.TenantId != tenantId) return Results.NotFound();
+            var roles = await repo.GetRolesAsync(id, ct);
+            return roles.Any(r => r is "user" or "admin")
+                ? Results.Ok(new { target.Id, target.Email, target.DisplayName, target.IsActive, target.DepartmentId, roles })
+                : Results.NotFound();
+        }
+        var row = await repo.FindDepartmentUserAsync(tenantId, principal.DepartmentId!.Value, id, ct);
+        return row is null ? Results.NotFound() : Results.Ok(row);
+    }
+
+    private static async Task<IResult> ListDepartmentsAsync(
+        IDepartmentRepository departments, HttpContext ctx, CancellationToken ct)
+    {
         if (!TenantContext.TryGet(ctx, out var tenantId))
             return Results.BadRequest(new { error = "tenant_context_missing" });
-        var rows = await repo.ListByTenantAsync(tenantId, ct);
+        var rows = await departments.ListActiveAsync(tenantId, ct);
         return Results.Ok(new { items = rows, total = rows.Count });
     }
 
@@ -155,12 +224,16 @@ public static class UserEndpoints
         CreateTenantUserRequest request,
         IUserRepository users,
         ITenantRepository tenants,
+        IDepartmentRepository departments,
         IPasswordHasher hasher,
         CancellationToken ct)
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
         var tenant = await tenants.FindByIdAsync(tenantId, ct);
         if (tenant is null || tenant.Status != "active") return Results.NotFound();
+        if (request.DepartmentId is not { } departmentId
+            || await departments.FindAsync(tenantId, departmentId, ct) is not { Status: "active" })
+            return Results.BadRequest(new { error = "active_department_required" });
 
         var existing = await users.FindByEmailAsync(request.Email, ct);
         if (existing is not null) return Results.Conflict(new { error = "email_already_registered" });
@@ -175,6 +248,7 @@ public static class UserEndpoints
         // trigger requires admin/user accounts to already have a tenant_id,
         // which is exactly what keeps an ADMIN from ever existing tenant-less.
         await users.SetTenantAsync(user.Id, tenantId, ct);
+        await users.SetDepartmentAsync(user.Id, departmentId, ct);
         await users.AssignRoleAsync(user.Id, "admin", ct);
         await tenants.UpsertMembershipAsync(tenantId, user.Id, "tenant_admin", ct);
 
@@ -185,6 +259,7 @@ public static class UserEndpoints
             email = user.Email,
             displayName = request.DisplayName,
             isActive = true,
+            departmentId,
             roles,
         });
     }
@@ -193,13 +268,14 @@ public static class UserEndpoints
         CreateTenantUserRequest request,
         IUserRepository users,
         ITenantRepository tenants,
+        IDepartmentRepository departments,
         IPasswordHasher hasher,
         HttpContext ctx,
         CancellationToken ct)
     {
         if (!TenantContext.TryGet(ctx, out var tenantId))
             return Results.BadRequest(new { error = "tenant_context_missing" });
-        return await CreateTenantAdminAsync(tenantId, request, users, tenants, hasher, ct);
+        return await CreateTenantAdminAsync(tenantId, request, users, tenants, departments, hasher, ct);
     }
 
     private static async Task<IResult> DisableTenantAdminAsync(
@@ -209,6 +285,25 @@ public static class UserEndpoints
     private static async Task<IResult> EnableTenantAdminAsync(
         Guid tenantId, Guid id, IUserRepository users, CancellationToken ct) =>
         await SetTenantAdminActiveAsync(tenantId, id, isActive: true, users, ct);
+
+    private static async Task<IResult> UpdateOwnTenantAdminAsync(
+        Guid id,
+        UpdateTenantUserRequest request,
+        IUserRepository users,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId)
+            return Results.BadRequest(new { error = "tenant_context_missing" });
+
+        var displayName = string.IsNullOrWhiteSpace(request.DisplayName)
+            ? null
+            : request.DisplayName.Trim();
+        if (displayName?.Length > 200)
+            return Results.BadRequest(new { error = "display_name_too_long" });
+        var updated = await users.UpdateTenantAdminAsync(tenantId, id, displayName, ct);
+        return updated ? Results.Ok(new { userId = id, displayName }) : Results.NotFound();
+    }
 
     private static async Task<IResult> DisableOwnTenantAdminAsync(
         Guid id, IUserRepository users, HttpContext ctx, CancellationToken ct) =>
@@ -299,6 +394,7 @@ public static class UserEndpoints
         try
         {
             await users.AssignRoleAsync(request.UserId, "tenant_owner", ct);
+            await users.SetDepartmentAsync(request.UserId, null, ct);
         }
         catch (PostgresException ex) when (ex.SqlState is "23505" or "23514")
         {
@@ -388,13 +484,29 @@ public static class UserEndpoints
         CreateTenantUserRequest request,
         IUserRepository users,
         ITenantRepository tenants,
+        IDepartmentRepository departments,
         IPasswordHasher hasher,
         HttpContext ctx,
         CancellationToken ct)
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
-        if (!TenantContext.TryGet(ctx, out var tenantId))
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId)
             return Results.BadRequest(new { error = "tenant_context_missing" });
+
+        Guid departmentId;
+        if (principal.IsInRole("tenant_owner"))
+        {
+            if (request.DepartmentId is not { } selectedDepartment
+                || await departments.FindAsync(tenantId, selectedDepartment, ct) is not { Status: "active" })
+                return Results.BadRequest(new { error = "active_department_required" });
+            departmentId = selectedDepartment;
+        }
+        else
+        {
+            if (request.DepartmentId is not null)
+                return Results.BadRequest(new { error = "department_id_not_allowed" });
+            departmentId = principal.DepartmentId!.Value;
+        }
 
         var existing = await users.FindByEmailAsync(request.Email, ct);
         if (existing is not null) return Results.Conflict(new { error = "email_already_registered" });
@@ -406,6 +518,7 @@ public static class UserEndpoints
         var hash = hasher.Hash(request.Password);
         var user = await users.CreateAsync(request.Email, hash, request.DisplayName, ct);
         await users.SetTenantAsync(user.Id, tenantId, ct);
+        await users.SetDepartmentAsync(user.Id, departmentId, ct);
         // Tenant ADMIN can only ever provision the "user" login role — never
         // admin/super_admin — regardless of anything in the request body.
         await users.AssignRoleAsync(user.Id, "user", ct);
@@ -418,6 +531,7 @@ public static class UserEndpoints
             email = user.Email,
             displayName = request.DisplayName,
             isActive = true,
+            departmentId,
             roles,
         });
     }
@@ -437,21 +551,127 @@ public static class UserEndpoints
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TenantContext.TryGet(ctx, out var tenantId))
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId)
             return Results.BadRequest(new { error = "tenant_context_missing" });
         var displayName = string.IsNullOrWhiteSpace(request.DisplayName)
             ? null
             : request.DisplayName.Trim();
         if (displayName?.Length > 200)
             return Results.BadRequest(new { error = "display_name_too_long" });
-        var updated = await users.UpdateTenantUserAsync(tenantId, id, displayName, ct);
+        var updated = principal.IsInRole("tenant_owner")
+            ? await users.UpdateTenantUserAsync(tenantId, id, displayName, ct)
+            : await users.UpdateDepartmentUserAsync(tenantId, principal.DepartmentId!.Value, id, displayName, ct);
         return updated ? Results.Ok(new { userId = id, displayName }) : Results.NotFound();
+    }
+
+    /// <summary>
+    /// TENANT_OWNER-only exact USER-&gt;ADMIN / ADMIN-&gt;USER flip. All ten
+    /// validation rules from the task spec: (1) caller role is enforced by
+    /// the route's tenant_owner-only policy; (2) tenantId comes only from
+    /// TenantContext (server-side, JWT-cross-checked against DB — never the
+    /// request); (3)-(9) are TenantUserRoleChangePolicy.Validate; (10) is
+    /// structural — the target lookup is scoped to tenantId, so a
+    /// cross-tenant id simply fails the tenant-match check inside Validate.
+    /// </summary>
+    private static async Task<IResult> ChangeTenantUserRoleAsync(
+        Guid id,
+        ChangeTenantUserRoleRequest request,
+        IUserRepository users,
+        IDepartmentRepository departments,
+        IAuditLogger audit,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId)
+            return Results.BadRequest(new { error = "tenant_context_missing" });
+
+        var actorRaw = ctx.User.FindFirst("sub")?.Value;
+        if (!Guid.TryParse(actorRaw, out var actorId)) return Results.Unauthorized();
+
+        var target = await users.FindByIdAsync(id, ct);
+        var targetRoles = target is null
+            ? Array.Empty<string>()
+            : (await users.GetRolesAsync(id, ct)).ToArray();
+        var requestedRole = request.Role.Trim().ToLowerInvariant();
+
+        var (error, fromRole) = TenantUserRoleChangePolicy.Validate(
+            actorId, id, target?.TenantId, tenantId, targetRoles, requestedRole);
+        if (error is not null)
+        {
+            // 404 (not 403/400) for "doesn't exist here" cases, so this
+            // endpoint never confirms whether an id exists in another
+            // tenant — same convention as SetTenantUserActiveAsync below.
+            return error is "cross_tenant"
+                ? Results.NotFound()
+                : Results.BadRequest(new { error });
+        }
+
+        if (target?.DepartmentId is not { } targetDepartment
+            || await departments.FindAsync(tenantId, targetDepartment, ct) is not { Status: "active" })
+            return Results.BadRequest(new { error = "target_active_department_required" });
+
+        var ok = await users.SetTenantUserRoleAsync(tenantId, id, fromRole!, requestedRole, ct);
+        if (!ok) return Results.Conflict(new { error = "role_change_failed" });
+
+        await audit.WriteAsync(new AuditEntry(
+            actorId, "tenant_user.role_change", "user", id.ToString(),
+            new { fromRole, toRole = requestedRole },
+            ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
+
+        return Results.Ok(new { userId = id, role = requestedRole });
+    }
+
+    /// <summary>
+    /// TENANT_OWNER-only. Moves an ADMIN or USER to a different department
+    /// within the SAME tenant. tenant_owner/super_admin targets are rejected
+    /// (they have no department to move between) with the same 404 —
+    /// "doesn't exist here" — convention used elsewhere in this file, so
+    /// this endpoint never confirms cross-tenant existence either.
+    /// </summary>
+    private static async Task<IResult> MoveTenantUserDepartmentAsync(
+        Guid id,
+        MoveTenantUserDepartmentRequest request,
+        IUserRepository users,
+        IDepartmentRepository departments,
+        IAuditLogger audit,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId)
+            return Results.BadRequest(new { error = "tenant_context_missing" });
+
+        var actorRaw = ctx.User.FindFirst("sub")?.Value;
+        if (!Guid.TryParse(actorRaw, out var actorId)) return Results.Unauthorized();
+
+        var target = await users.FindByIdAsync(id, ct);
+        if (target is null || target.TenantId != tenantId) return Results.NotFound();
+
+        var targetRoles = await users.GetRolesAsync(id, ct);
+        if (!targetRoles.Contains("admin") && !targetRoles.Contains("user"))
+            return Results.NotFound();
+
+        var destination = await departments.FindAsync(tenantId, request.DepartmentId, ct);
+        if (destination is not { Status: "active" })
+            return Results.BadRequest(new { error = "active_department_required" });
+
+        var fromDepartmentId = target.DepartmentId;
+        var ok = await users.MoveDepartmentAsync(tenantId, id, request.DepartmentId, ct);
+        if (!ok) return Results.Conflict(new { error = "move_failed" });
+
+        await audit.WriteAsync(new AuditEntry(
+            actorId, "tenant_user.department_move", "user", id.ToString(),
+            new { fromDepartmentId, toDepartmentId = request.DepartmentId },
+            ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
+
+        return Results.Ok(new { userId = id, departmentId = request.DepartmentId });
     }
 
     private static async Task<IResult> SetTenantUserActiveAsync(
         Guid id, bool isActive, IUserRepository users, HttpContext ctx, CancellationToken ct)
     {
-        if (!TenantContext.TryGet(ctx, out var tenantId))
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId)
             return Results.BadRequest(new { error = "tenant_context_missing" });
 
         var target = await users.FindByIdAsync(id, ct);
@@ -463,6 +683,12 @@ public static class UserEndpoints
         if (!targetRoles.Contains("user") || targetRoles.Contains("admin")
             || targetRoles.Contains("tenant_owner") || targetRoles.Contains("super_admin"))
             return Results.NotFound();
+
+        if (!principal.IsInRole("tenant_owner"))
+            return await users.SetDepartmentUserActiveAsync(
+                tenantId, principal.DepartmentId!.Value, id, isActive, ct)
+                ? Results.Ok(new { userId = id, isActive })
+                : Results.NotFound();
 
         var ok = await users.SetActiveAsync(id, isActive, ct);
         return ok ? Results.Ok(new { userId = id, isActive }) : Results.NotFound();

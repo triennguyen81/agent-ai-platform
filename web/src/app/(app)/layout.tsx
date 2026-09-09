@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import { gateway } from "@/lib/api";
 import { clearSession, getSession, getActiveAgent } from "@/lib/auth";
 import { isClerkConfigured } from "@/lib/env";
+import type { LoginRole } from "@/lib/authorization";
+import { fetchMyCapabilityCodes } from "@/lib/my-capabilities";
 import { NotificationBell } from "@/components/notification-bell";
 import { SideNav, type SideNavAgent } from "@/components/side-nav";
 
@@ -21,11 +23,6 @@ interface MyAgent {
 
 async function logoutAction() {
   "use server";
-  // Temporary verification marker, pairs with the client-side onSelect log
-  // in app-nav.tsx — confirms the server action actually executed (not just
-  // that the click fired). Safe to keep; remove once logout is trusted in
-  // production.
-  console.debug("[logout] logoutAction executing, clearing session cookie");
   await clearSession();
   // When Clerk is on, we'd also want to call signOut() but the user can
   // click Clerk's own UserButton for that. Cookie clear is sufficient to
@@ -56,6 +53,15 @@ export default async function AppLayout({
   const isTenantOwner = roles.includes("tenant_owner");
   const isTenantAdmin = roles.includes("admin");
 
+  // Nghiệp vụ sidebar section is capability-driven (nav-model.ts
+  // buildNghiepVuItems) — only pages backed by an actually-assigned
+  // capability are shown, never a role-only guess.
+  const loginRoles = roles.filter((role): role is LoginRole =>
+    role === "super_admin" || role === "tenant_owner" || role === "admin" || role === "user",
+  );
+  const myCapabilityCodes = await fetchMyCapabilityCodes(token, loginRoles);
+  const capabilityCodes = myCapabilityCodes ? [...myCapabilityCodes] : [];
+
   // Fetch user's assigned agents for sidebar "Trợ lý của bạn" section.
   // Fail-soft: nếu lỗi, sidebar vẫn render nhưng section agents trống.
   let agents: SideNavAgent[] = [];
@@ -84,6 +90,7 @@ export default async function AppLayout({
         isSuperAdmin={isSuperAdmin}
         isTenantOwner={isTenantOwner}
         isTenantAdmin={isTenantAdmin}
+        capabilityCodes={capabilityCodes}
         agents={agents}
         activeAgentId={activeAgentId}
         signOutAction={logoutAction}

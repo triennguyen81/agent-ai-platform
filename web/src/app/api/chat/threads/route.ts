@@ -27,7 +27,7 @@ export async function GET() {
   }
 
   const prefix = `${userId}:`;
-  const res = await agent.listThreads(prefix, 50);
+  const res = await agent.listThreads(token, prefix, 50);
   if (!res.ok) {
     return NextResponse.json({ items: [] }, { status: res.status });
   }

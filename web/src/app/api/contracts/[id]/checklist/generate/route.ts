@@ -39,9 +39,11 @@ export async function POST(
     "- Item nào có due date gần nhất (trong 30 ngày)",
   ].join("\n");
 
+  // D6: routes through the capability resolver (contract.processing)
+  // instead of the legacy no-agent-id path.
   const res = await agent.runTask(token, {
     task,
-    skills: ["contract-checklist-builder", "vietnamese-style"],
+    capability: "contract.processing",
     max_turns: 6,
   });
 

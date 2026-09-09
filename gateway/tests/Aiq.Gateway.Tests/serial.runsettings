@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ACL V2 final phase (V2-H): checked into the repo so CI (and any developer)
+  can reference a single, versioned workaround for the documented shared-
+  Postgres connection-ceiling race (Npgsql PostgresException 53300 above
+  ~144 parallel tests against Postgres's default max_connections=100) — see
+  docs/PHASE_D5_DEPARTMENT_MANAGEMENT_REPORT.md §12 and
+  docs/D8_PRODUCTION_READINESS_AUDIT.md §2. Serializing execution avoids the
+  race entirely without needing a custom Postgres image/config in CI.
+-->
+<RunSettings>
+  <RunConfiguration>
+    <DisableParallelization>true</DisableParallelization>
+    <MaxCpuCount>1</MaxCpuCount>
+  </RunConfiguration>
+</RunSettings>

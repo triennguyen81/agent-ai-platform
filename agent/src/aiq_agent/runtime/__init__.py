@@ -1,6 +1,7 @@
 from aiq_agent.runtime.executors import (
     AgentExecutor,
     ClaudeSdkAgentExecutor,
+    ClaudeSdkConfigurationTooLargeError,
     ExecutionResult,
     ExecutionTimeoutError,
     OllamaAgentExecutor,
@@ -17,7 +18,8 @@ from aiq_agent.runtime.manifest import (
 )
 
 __all__ = [
-    "AgentExecutor", "ClaudeSdkAgentExecutor", "ExecutionManifest", "ExecutionResult",
+    "AgentExecutor", "ClaudeSdkAgentExecutor", "ClaudeSdkConfigurationTooLargeError",
+    "ExecutionManifest", "ExecutionResult",
     "ExecutionTimeoutError", "ManifestDelegate", "ManifestLookupError", "ManifestWorkflow",
     "OllamaAgentExecutor", "ProviderResolutionError", "build_agent_executor",
     "fetch_delegate_manifest", "fetch_execution_manifest",

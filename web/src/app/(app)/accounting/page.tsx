@@ -6,12 +6,19 @@ import {
   FileText,
   LineChart,
 } from "lucide-react";
+import { requireViewer } from "@/lib/authorization";
+import { fetchMyCapabilityCodes } from "@/lib/my-capabilities";
 
 interface ToolCard {
   href: string;
   title: string;
   description: string;
   icon: React.ReactNode;
+  // D7: all four AI-backed tools now carry their real D4/D6 capability
+  // code (D6 wired tax/invoice/reports onto the resolver too — this
+  // metadata had gone stale, still saying only "Định khoản" was capability-
+  // driven). Deadline has none — it's a plain countdown utility, no AI call.
+  capabilityCode?: string;
 }
 
 const TOOLS: ToolCard[] = [
@@ -21,6 +28,7 @@ const TOOLS: ToolCard[] = [
     description:
       "Tính nhanh VAT (0/5/8/10%), TNCN biểu lũy tiến, TNDN với ưu đãi. Show breakdown từng bậc.",
     icon: <Calculator className="size-6" />,
+    capabilityCode: "accounting.tax",
   },
   {
     href: "/accounting/deadline",
@@ -35,6 +43,7 @@ const TOOLS: ToolCard[] = [
     description:
       "Bảng nhập bút toán: cộng tự động Nợ/Có, validate cân đối, AI gợi ý dòng tiếp theo.",
     icon: <FileText className="size-6" />,
+    capabilityCode: "accounting.journal",
   },
   {
     href: "/accounting/invoice",
@@ -42,6 +51,7 @@ const TOOLS: ToolCard[] = [
     description:
       "Dán nội dung hoá đơn → AI tách giá / VAT / nhà cung cấp → đề xuất định khoản chuẩn.",
     icon: <FileSpreadsheet className="size-6" />,
+    capabilityCode: "accounting.invoice",
   },
   {
     href: "/accounting/reports",
@@ -49,22 +59,31 @@ const TOOLS: ToolCard[] = [
     description:
       "Sinh khung BCKQHĐKD, BCĐKT, LCTT từ dữ liệu Note + KB. Output Markdown export được.",
     icon: <LineChart className="size-6" />,
+    capabilityCode: "accounting.report",
   },
 ];
 
-export default function AccountingHome() {
+export default async function AccountingHome() {
+  const viewer = await requireViewer(["super_admin", "tenant_owner", "admin", "user"]);
+  // D7 §7/§17: same authorized-capability set as the layout's sub-nav —
+  // `null` (owner/super_admin) shows every card; ADMIN/USER only see tools
+  // they're actually authorized for, so this overview never advertises a
+  // dead-end card the Gateway resolver would 403 on click.
+  const codes = await fetchMyCapabilityCodes(viewer.token, viewer.roles);
+  const visibleTools = codes ? TOOLS.filter((tool) => !tool.capabilityCode || codes.has(tool.capabilityCode)) : TOOLS;
+
   return (
     <div className="space-y-8">
       <header className="space-y-2">
         <h1 className="font-serif text-3xl tracking-tight">Trợ lý kế toán</h1>
         <p className="text-sm text-[var(--color-muted-fg)]">
-          5 công cụ chuyên dụng cho kế toán Việt Nam (TT200/2014/TT-BTC). Backed
+          {visibleTools.length} công cụ chuyên dụng cho kế toán Việt Nam (TT200/2014/TT-BTC). Backed
           by skills + tools đã wire vào agent — kết quả dựa trên VAS hiện hành.
         </p>
       </header>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {TOOLS.map((tool) => (
+        {visibleTools.map((tool) => (
           <Link
             key={tool.href}
             href={tool.href}
@@ -73,9 +92,7 @@ export default function AccountingHome() {
             <div className="flex size-11 items-center justify-center rounded-full bg-[var(--color-primary)]/10 text-[var(--color-primary)]">
               {tool.icon}
             </div>
-            <h2 className="font-serif text-lg group-hover:text-[var(--color-primary)]">
-              {tool.title}
-            </h2>
+            <h2 className="font-serif text-lg group-hover:text-[var(--color-primary)]">{tool.title}</h2>
             <p className="text-sm text-[var(--color-muted-fg)]">
               {tool.description}
             </p>

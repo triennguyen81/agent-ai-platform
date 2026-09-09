@@ -8,5 +8,6 @@ public sealed record UserRecord(
     bool IsActive,
     DateTime CreatedAt,
     Guid? TenantId = null,
+    Guid? DepartmentId = null,
     string? ExternalProvider = null,
     string? ExternalId = null);

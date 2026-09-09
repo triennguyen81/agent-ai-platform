@@ -3,7 +3,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { AlertOctagon, CheckCircle2, Inbox, ShieldAlert } from "lucide-react";
 import { gateway } from "@/lib/api";
-import { requireSession } from "@/lib/auth";
+import { requireViewer } from "@/lib/authorization";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 
@@ -34,7 +34,7 @@ async function decideAction(formData: FormData): Promise<void> {
   if (!actionId || (decision !== "approve" && decision !== "reject")) {
     redirect("/admin/hitl-queue?error=invalid");
   }
-  const token = await requireSession();
+  const { token } = await requireViewer(["admin"]);
   const res = await gateway.decideHitlAction(token, actionId, {
     decision,
     comment: comment || undefined,
@@ -61,7 +61,7 @@ export default async function HitlQueuePage({
 }: {
   searchParams: Promise<{ ok?: string; error?: string }>;
 }) {
-  const token = await requireSession();
+  const { token } = await requireViewer(["admin"]);
   const res = await gateway.hitlQueue(token);
   if (res.status === 403) redirect("/chat");
 
@@ -125,7 +125,7 @@ export default async function HitlQueuePage({
                   </div>
                   <div className="mt-1 text-xs text-[var(--color-muted-fg)]">
                     Agent:{" "}
-                    <Link href={`/admin/agents/${a.agentId}`} className="underline">
+                    <Link href={`/department/agents/${a.agentId}`} className="underline">
                       {a.agentName}
                     </Link>{" "}
                     · Triggered by {a.triggeredByEmail ?? a.triggeredBy ?? "—"} ·{" "}

@@ -88,6 +88,12 @@ class ExecutionManifest(BaseModel):
     # directly. None on the super_admin test path (which already has native
     # admin rights) and for providers/paths that never call Gateway tools.
     toolExecutionToken: str | None = None
+    # D3: the caller's own department at execution time (Gateway already made
+    # the department-entitlement decision before issuing this manifest).
+    # Audit/thread-key context only — never re-checked or trusted as an
+    # authorization input here; None for the departmentless super_admin
+    # test path.
+    departmentId: UUID | None = None
 
 
 class ManifestLookupError(PermissionError):
@@ -95,13 +101,22 @@ class ManifestLookupError(PermissionError):
 
 
 async def fetch_execution_manifest(
-    *, gateway_base: str, token: str, agent_id: str, timeout: float = 10.0
+    *, gateway_base: str, token: str, agent_id: str, timeout: float = 10.0, test: bool = False
 ) -> ExecutionManifest:
+    # ACL V2-C: `test=True` asks the Gateway for the CURRENT DRAFT (falling
+    # back to published) of a Department Agent the caller's own department
+    # owns — the same additive `?mode=test` signal SUPER_ADMIN's Agent
+    # Builder Test panel never needed (their own manifest resolution is
+    # already draft-aware unconditionally). Ignored by the Gateway for every
+    # other caller/agent shape, so omitting it (the default) is byte-for-byte
+    # the pre-V2-C request.
+    params = {"mode": "test"} if test else None
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(
                 f"{gateway_base.rstrip('/')}/runtime/agents/{agent_id}/manifest",
                 headers={"Authorization": f"Bearer {token}"},
+                params=params,
             )
     except httpx.RequestError as exc:
         raise ManifestLookupError("Manifest service unavailable") from exc

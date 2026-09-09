@@ -29,6 +29,7 @@ public static class AuthEndpoints
         ExternalLinkRequest request,
         IUserRepository users,
         ITenantRepository tenants,
+        IDepartmentRepository departments,
         IJwtTokenService jwt,
         Microsoft.Extensions.Configuration.IConfiguration config,
         HttpContext ctx,
@@ -76,6 +77,13 @@ public static class AuthEndpoints
             await users.SetTenantAsync(user.Id, tenantId, ct);
             if (tenantId is { } tid)
             {
+                if (requestedRole is "admin" or "user")
+                {
+                    var defaultDepartment = (await departments.ListActiveAsync(tid, ct)).SingleOrDefault(d => d.IsDefault);
+                    if (defaultDepartment is null)
+                        return Results.Problem("Default department is not configured.", statusCode: 503);
+                    await users.SetDepartmentAsync(user.Id, defaultDepartment.Id, ct);
+                }
                 await tenants.UpsertMembershipAsync(
                     tid, user.Id, requestedRole == "admin" ? "tenant_admin" : "member", ct);
             }
@@ -102,6 +110,7 @@ public static class AuthEndpoints
         RegisterRequest request,
         IUserRepository users,
         ITenantRepository tenants,
+        IDepartmentRepository departments,
         IPasswordHasher hasher,
         IJwtTokenService jwt,
         CancellationToken ct)
@@ -125,6 +134,10 @@ public static class AuthEndpoints
         if (defaultTenant is not null)
         {
             await users.SetTenantAsync(user.Id, defaultTenant.Id, ct);
+            var defaultDepartment = (await departments.ListActiveAsync(defaultTenant.Id, ct)).SingleOrDefault(d => d.IsDefault);
+            if (defaultDepartment is null)
+                return Results.Problem("Default department is not configured.", statusCode: 503);
+            await users.SetDepartmentAsync(user.Id, defaultDepartment.Id, ct);
             await tenants.UpsertMembershipAsync(defaultTenant.Id, user.Id, "member", ct);
         }
         else

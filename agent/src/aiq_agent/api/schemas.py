@@ -26,6 +26,13 @@ class ChatRequest(BaseModel):
     )
     memory_limit: int = Field(default=20, ge=0, le=200)
     agent_id: str | None = Field(default=None, max_length=64)
+    # ACL V2-C: Department Agent Builder's "Test" action — resolves the
+    # CURRENT DRAFT of the caller's own Department Agent instead of
+    # requiring a published version. Ignored unless the caller is an ADMIN
+    # testing their own department's agent (see Gateway's
+    # GET /runtime/agents/{id}/manifest?mode=test); false is the default,
+    # unchanged production-chat request shape.
+    test: bool = Field(default=False)
 
 
 class StepResponse(BaseModel):
@@ -78,6 +85,15 @@ class AgentRunRequest(BaseModel):
             "tools and max turns come only from the Gateway manifest."
         ),
     )
+    capability: str | None = Field(
+        default=None,
+        description=(
+            "D4: a business capability code (e.g. 'accounting.journal') to "
+            "resolve to an authorized agent id server-side, in place of a "
+            "client-supplied agent_id. Mutually exclusive with agent_id — "
+            "the browser should never need to know or choose an agent id."
+        ),
+    )
 
 
 class AgentRunStep(BaseModel):
@@ -108,6 +124,7 @@ class AuditEntryResponse(BaseModel):
     detail: str | None = None
     user_id: str | None = None
     tenant_id: str | None = None
+    department_id: str | None = None
     agent_id: str | None = None
     version: int | None = None
     provider: str | None = None

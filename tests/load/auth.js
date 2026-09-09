@@ -9,6 +9,16 @@ import { check, sleep } from "k6";
 
 const BASE_URL = __ENV.BASE_URL || "http://localhost:8080";
 
+// ACL V2 final phase (V2-H): k6's built-in http_req_failed metric only
+// counts 200-399 as non-failed by default, so every EXPECTED 429 (the auth
+// rate limiter correctly firing — the entire point of this test) counted
+// as a "failed" request, making the http_req_failed threshold below fail
+// every time the rate limiter worked exactly as designed — see
+// D8_PRODUCTION_READINESS_AUDIT.md §7. Declaring the accepted statuses here
+// (matching the check()s below) fixes the metric at its source instead of
+// only papering over it with a generous threshold.
+http.setResponseCallback(http.expectedStatuses(200, 201, 400, 409, 429));
+
 export const options = {
   scenarios: {
     ramp_up: {
@@ -24,10 +34,10 @@ export const options = {
   },
   thresholds: {
     "http_req_duration": ["p(95)<800"],
-    // Rate-limit responses are expected when we exceed the bucket — they are
-    // not failures of the system, but they also are not successes for k6.
-    // Keep the failed rate generous to allow them through.
-    "http_req_failed":   ["rate<0.25"],
+    // Now that setResponseCallback (above) tells k6 which statuses are
+    // genuinely expected, http_req_failed only counts real failures
+    // (5xx/network errors) — a tight threshold is meaningful again.
+    "http_req_failed":   ["rate<0.05"],
   },
 };
 

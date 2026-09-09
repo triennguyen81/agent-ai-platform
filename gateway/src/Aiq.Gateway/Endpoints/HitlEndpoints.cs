@@ -10,7 +10,7 @@ public static class HitlEndpoints
     {
         var perAgent = app
             .MapGroup("/agents/{agentId:guid}/gates")
-            .RequireAuthorization("admin")
+            .RequireAuthorization("department_admin")
             .RequireRateLimiting("default");
 
         perAgent.MapGet("/", ListGatesAsync);
@@ -18,7 +18,7 @@ public static class HitlEndpoints
 
         var perGate = app
             .MapGroup("/gates/{gateId:guid}")
-            .RequireAuthorization("admin")
+            .RequireAuthorization("department_admin")
             .RequireRateLimiting("default");
 
         perGate.MapPatch("/", UpdateGateAsync);
@@ -26,7 +26,7 @@ public static class HitlEndpoints
 
         var hitl = app
             .MapGroup("/hitl")
-            .RequireAuthorization("admin")
+            .RequireAuthorization("department_admin")
             .RequireRateLimiting("default");
 
         hitl.MapPost("/actions", CreateActionAsync);     // runtime callers (agent runtime)
@@ -44,8 +44,8 @@ public static class HitlEndpoints
     }
 
     public sealed record EvaluateRequest(
-        [Required, StringLength(200, MinimumLength = 1)] string ToolCode,
-        [Required] System.Text.Json.JsonElement Payload);
+        [property: Required, StringLength(200, MinimumLength = 1)] string ToolCode,
+        [property: Required] System.Text.Json.JsonElement Payload);
 
     private static async Task<IResult> EvaluateAsync(
         Guid agentId, EvaluateRequest request, IHitlRepository repo, HttpContext ctx, CancellationToken ct)
@@ -67,9 +67,9 @@ public static class HitlEndpoints
     private static async Task<IResult> ListGatesAsync(
         Guid agentId, IHitlRepository repo, HttpContext ctx, CancellationToken ct)
     {
-        if (!TenantContext.TryGet(ctx, out var tenantId)
-            || !await repo.IsAgentVisibleToTenantAsync(tenantId, agentId, ct)) return Results.NotFound();
-        var items = await repo.ListGatesAsync(tenantId, agentId, ct);
+        if (!TryDepartmentScope(ctx, out var tenantId, out var departmentId)
+            || !await repo.IsAgentVisibleToDepartmentAsync(tenantId, departmentId, agentId, ct)) return Results.NotFound();
+        var items = await repo.ListGatesAsync(tenantId, departmentId, agentId, ct);
         return Results.Ok(new { items, total = items.Count });
     }
 
@@ -78,12 +78,12 @@ public static class HitlEndpoints
         HttpContext ctx, CancellationToken ct)
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
-        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
-        if (!await repo.IsAgentVisibleToTenantAsync(tenantId, agentId, ct)) return Results.NotFound();
+        if (!TryDepartmentScope(ctx, out var tenantId, out var departmentId)) return Results.BadRequest();
+        if (!await repo.IsAgentVisibleToDepartmentAsync(tenantId, departmentId, agentId, ct)) return Results.NotFound();
         if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
         try
         {
-            var g = await repo.CreateGateAsync(tenantId, agentId, userId, request, ct);
+            var g = await repo.CreateGateAsync(tenantId, departmentId, agentId, userId, request, ct);
             return Results.Created($"/gates/{g.Id}", g);
         }
         catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
@@ -95,16 +95,16 @@ public static class HitlEndpoints
     private static async Task<IResult> UpdateGateAsync(
         Guid gateId, UpdateGateRequest request, IHitlRepository repo, HttpContext ctx, CancellationToken ct)
     {
-        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
-        var g = await repo.UpdateGateAsync(tenantId, gateId, request, ct);
+        if (!TryDepartmentScope(ctx, out var tenantId, out var departmentId)) return Results.BadRequest();
+        var g = await repo.UpdateGateAsync(tenantId, departmentId, gateId, request, ct);
         return g is null ? Results.NotFound() : Results.Ok(g);
     }
 
     private static async Task<IResult> DeleteGateAsync(
         Guid gateId, IHitlRepository repo, HttpContext ctx, CancellationToken ct)
     {
-        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
-        var ok = await repo.DeleteGateAsync(tenantId, gateId, ct);
+        if (!TryDepartmentScope(ctx, out var tenantId, out var departmentId)) return Results.BadRequest();
+        var ok = await repo.DeleteGateAsync(tenantId, departmentId, gateId, ct);
         return ok ? Results.NoContent() : Results.NotFound();
     }
 
@@ -118,18 +118,18 @@ public static class HitlEndpoints
         HttpContext ctx, CancellationToken ct)
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
-        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
+        if (!TryDepartmentScope(ctx, out var tenantId, out var departmentId)) return Results.BadRequest();
         if (!TryGetUserId(ctx, out var triggeredBy)) return Results.Unauthorized();
 
-        var action = await repo.CreatePendingActionAsync(tenantId, triggeredBy, request, ct);
+        var action = await repo.CreatePendingActionAsync(tenantId, departmentId, triggeredBy, request, ct);
         return Results.Created($"/hitl/{action.Id}", action);
     }
 
     private static async Task<IResult> QueueAsync(
         IHitlRepository repo, HttpContext ctx, CancellationToken ct)
     {
-        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
-        var items = await repo.ListPendingForTenantAsync(tenantId, ct);
+        if (!TryDepartmentScope(ctx, out var tenantId, out var departmentId)) return Results.BadRequest();
+        var items = await repo.ListPendingForTenantAsync(tenantId, departmentId, ct);
         return Results.Ok(new { items, total = items.Count });
     }
 
@@ -139,9 +139,9 @@ public static class HitlEndpoints
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
         if (!TryGetUserId(ctx, out var deciderId)) return Results.Unauthorized();
-        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest();
+        if (!TryDepartmentScope(ctx, out var tenantId, out var departmentId)) return Results.BadRequest();
 
-        var action = await repo.DecideAsync(tenantId, actionId, deciderId, request, ct);
+        var action = await repo.DecideAsync(tenantId, departmentId, actionId, deciderId, request, ct);
         return action is null
             ? Results.BadRequest(new { error = "Action không tồn tại hoặc đã được quyết định" })
             : Results.Ok(action);
@@ -151,6 +151,21 @@ public static class HitlEndpoints
     {
         var raw = ctx.User.FindFirst("sub")?.Value;
         return Guid.TryParse(raw, out userId);
+    }
+
+    private static bool TryDepartmentScope(HttpContext ctx, out Guid tenantId, out Guid departmentId)
+    {
+        if (AuthenticatedPrincipalContext.TryGet(ctx, out var principal)
+            && principal.TenantId is { } tenant
+            && principal.DepartmentId is { } department)
+        {
+            tenantId = tenant;
+            departmentId = department;
+            return true;
+        }
+        tenantId = Guid.Empty;
+        departmentId = Guid.Empty;
+        return false;
     }
 
     private static bool TryValidate(object instance, out Dictionary<string, string[]> errors)

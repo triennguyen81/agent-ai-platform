@@ -46,33 +46,33 @@ public sealed record ReviewVoteRecord(
     DateTime VotedAt);
 
 public sealed record CreateReviewBoardRequest(
-    [Required, StringLength(120)] string Name,
-    [Range(1, 20)] int? Quorum);
+    [property: Required, StringLength(120)] string Name,
+    [property: Range(1, 20)] int? Quorum);
 
 public sealed record AddBoardMemberRequest(
-    [Required] Guid UserId,
-    [RegularExpression("^(reviewer|chair)$")] string? Role);
+    [property: Required] Guid UserId,
+    [property: RegularExpression("^(reviewer|chair)$")] string? Role);
 
 public sealed record SubmitReviewRequest(
-    [Required] Guid BoardId,
+    [property: Required] Guid BoardId,
     string? Rationale);
 
 public sealed record CastVoteRequest(
-    [Required, RegularExpression("^(approve|reject)$")] string Vote,
+    [property: Required, RegularExpression("^(approve|reject)$")] string Vote,
     string? Comment);
 
 public interface IReviewBoardRepository
 {
-    Task<IReadOnlyList<ReviewBoardRecord>> ListBoardsAsync(Guid tenantId, CancellationToken ct);
-    Task<ReviewBoardRecord> CreateBoardAsync(Guid tenantId, CreateReviewBoardRequest request, CancellationToken ct);
+    Task<IReadOnlyList<ReviewBoardRecord>> ListBoardsAsync(Guid tenantId, Guid departmentId, CancellationToken ct);
+    Task<ReviewBoardRecord> CreateBoardAsync(Guid tenantId, Guid departmentId, CreateReviewBoardRequest request, CancellationToken ct);
     Task<IReadOnlyList<ReviewBoardMemberRecord>> ListMembersAsync(Guid boardId, CancellationToken ct);
     Task<bool> AddMemberAsync(Guid boardId, AddBoardMemberRequest request, CancellationToken ct);
     Task<bool> RemoveMemberAsync(Guid boardId, Guid userId, CancellationToken ct);
 
     Task<ReviewRequestRecord> SubmitRequestAsync(
-        Guid tenantId, Guid agentId, Guid requestedBy, SubmitReviewRequest request, CancellationToken ct);
+        Guid tenantId, Guid departmentId, Guid agentId, Guid requestedBy, SubmitReviewRequest request, CancellationToken ct);
 
-    Task<IReadOnlyList<ReviewRequestRecord>> ListPendingForUserAsync(Guid userId, CancellationToken ct);
+    Task<IReadOnlyList<ReviewRequestRecord>> ListPendingForUserAsync(Guid userId, Guid tenantId, Guid departmentId, CancellationToken ct);
     Task<IReadOnlyList<ReviewRequestRecord>> ListForAgentAsync(Guid agentId, CancellationToken ct);
     Task<ReviewRequestRecord?> FindRequestAsync(Guid requestId, CancellationToken ct);
 
@@ -91,6 +91,8 @@ public interface IReviewBoardRepository
     /// true if there is at least one approved request for (agentId, 'production').
     /// </summary>
     Task<bool> HasApprovedRequestAsync(Guid agentId, string targetState, CancellationToken ct);
+    Task<bool> IsBoardInDepartmentAsync(Guid boardId, Guid tenantId, Guid departmentId, CancellationToken ct);
+    Task<bool> IsRequestInDepartmentAsync(Guid requestId, Guid tenantId, Guid departmentId, CancellationToken ct);
 }
 
 public sealed class ReviewBoardRepository : IReviewBoardRepository
@@ -130,26 +132,26 @@ public sealed class ReviewBoardRepository : IReviewBoardRepository
         _factory = factory;
     }
 
-    public async Task<IReadOnlyList<ReviewBoardRecord>> ListBoardsAsync(Guid tenantId, CancellationToken ct)
+    public async Task<IReadOnlyList<ReviewBoardRecord>> ListBoardsAsync(Guid tenantId, Guid departmentId, CancellationToken ct)
     {
-        var sql = $"SELECT {BoardColumns} FROM review_boards WHERE tenant_id = @tenantId ORDER BY name";
+        var sql = $"SELECT {BoardColumns} FROM review_boards WHERE tenant_id = @tenantId AND department_id = @departmentId ORDER BY name";
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<ReviewBoardRecord>(
-            new CommandDefinition(sql, new { tenantId }, cancellationToken: ct));
+            new CommandDefinition(sql, new { tenantId, departmentId }, cancellationToken: ct));
         return rows.AsList();
     }
 
     public async Task<ReviewBoardRecord> CreateBoardAsync(
-        Guid tenantId, CreateReviewBoardRequest request, CancellationToken ct)
+        Guid tenantId, Guid departmentId, CreateReviewBoardRequest request, CancellationToken ct)
     {
         var sql = $"""
-            INSERT INTO review_boards (tenant_id, name, quorum)
-            VALUES (@tenantId, @Name, COALESCE(@Quorum, 1))
+            INSERT INTO review_boards (tenant_id, department_id, name, quorum)
+            VALUES (@tenantId, @departmentId, @Name, COALESCE(@Quorum, 1))
             RETURNING {BoardColumns}
             """;
         await using var conn = await _factory.OpenAsync(ct);
         return await conn.QuerySingleAsync<ReviewBoardRecord>(
-            new CommandDefinition(sql, new { tenantId, request.Name, request.Quorum }, cancellationToken: ct));
+            new CommandDefinition(sql, new { tenantId, departmentId, request.Name, request.Quorum }, cancellationToken: ct));
     }
 
     public async Task<IReadOnlyList<ReviewBoardMemberRecord>> ListMembersAsync(Guid boardId, CancellationToken ct)
@@ -195,24 +197,26 @@ public sealed class ReviewBoardRepository : IReviewBoardRepository
     }
 
     public async Task<ReviewRequestRecord> SubmitRequestAsync(
-        Guid tenantId, Guid agentId, Guid requestedBy, SubmitReviewRequest request, CancellationToken ct)
+        Guid tenantId, Guid departmentId, Guid agentId, Guid requestedBy, SubmitReviewRequest request, CancellationToken ct)
     {
         const string insertSql = """
             INSERT INTO agent_review_requests
-                (tenant_id, agent_id, board_id, requested_by, target_state, status, rationale)
-            VALUES (@tenantId, @agentId, @BoardId, @requestedBy, 'production', 'pending', @Rationale)
+                (tenant_id, department_id, agent_id, board_id, requested_by, target_state, status, rationale)
+            SELECT @tenantId, @departmentId, @agentId, rb.id, @requestedBy, 'production', 'pending', @Rationale
+            FROM review_boards rb
+            WHERE rb.id=@BoardId AND rb.tenant_id=@tenantId AND rb.department_id=@departmentId
             RETURNING id
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var id = await conn.QuerySingleAsync<Guid>(
             new CommandDefinition(insertSql, new
             {
-                tenantId, agentId, requestedBy, request.BoardId, request.Rationale,
+                tenantId, departmentId, agentId, requestedBy, request.BoardId, request.Rationale,
             }, cancellationToken: ct));
         return (await FindRequestAsync(id, ct))!;
     }
 
-    public async Task<IReadOnlyList<ReviewRequestRecord>> ListPendingForUserAsync(Guid userId, CancellationToken ct)
+    public async Task<IReadOnlyList<ReviewRequestRecord>> ListPendingForUserAsync(Guid userId, Guid tenantId, Guid departmentId, CancellationToken ct)
     {
         var sql = $"""
             SELECT {RequestColumns}
@@ -221,12 +225,12 @@ public sealed class ReviewBoardRepository : IReviewBoardRepository
             JOIN review_boards rb ON rb.id = r.board_id
             JOIN review_board_members m ON m.board_id = r.board_id AND m.user_id = @userId
             LEFT JOIN users u ON u.id = r.requested_by
-            WHERE r.status = 'pending'
+            WHERE r.status = 'pending' AND r.tenant_id=@tenantId AND r.department_id=@departmentId
             ORDER BY r.created_at DESC
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<ReviewRequestRecord>(
-            new CommandDefinition(sql, new { userId }, cancellationToken: ct));
+            new CommandDefinition(sql, new { userId, tenantId, departmentId }, cancellationToken: ct));
         return rows.AsList();
     }
 
@@ -368,5 +372,25 @@ public sealed class ReviewBoardRepository : IReviewBoardRepository
         await using var conn = await _factory.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<bool>(
             new CommandDefinition(sql, new { agentId, targetState }, cancellationToken: ct));
+    }
+
+    public async Task<bool> IsBoardInDepartmentAsync(
+        Guid boardId, Guid tenantId, Guid departmentId, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.ExecuteScalarAsync<bool>(new CommandDefinition("""
+            SELECT EXISTS(SELECT 1 FROM review_boards
+            WHERE id=@boardId AND tenant_id=@tenantId AND department_id=@departmentId)
+            """, new { boardId, tenantId, departmentId }, cancellationToken: ct));
+    }
+
+    public async Task<bool> IsRequestInDepartmentAsync(
+        Guid requestId, Guid tenantId, Guid departmentId, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.ExecuteScalarAsync<bool>(new CommandDefinition("""
+            SELECT EXISTS(SELECT 1 FROM agent_review_requests
+            WHERE id=@requestId AND tenant_id=@tenantId AND department_id=@departmentId)
+            """, new { requestId, tenantId, departmentId }, cancellationToken: ct));
     }
 }

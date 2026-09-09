@@ -8,13 +8,17 @@ public static class ToolEndpoints
 {
     public static IEndpointRouteBuilder MapToolEndpoints(this IEndpointRouteBuilder app)
     {
-        // Global tool registry — super_admin only (cross-tenant catalog)
+        // Global tool registry — mutations stay super_admin-only (cross-tenant
+        // catalog implementation/risk-tier/credentials). Listing is
+        // catalog_reader (ACL V2-C: department_admin needs to browse active
+        // tools to attach approved grants to its own Department Agent draft —
+        // Decisions §10 — read-only, never registry write).
         var super = app
             .MapGroup("/tools")
-            .RequireAuthorization("super_admin")
+            .RequireAuthorization("platform_admin")
             .RequireRateLimiting("default");
 
-        super.MapGet("/", ListAsync);
+        app.MapGet("/tools", ListAsync).RequireAuthorization("catalog_reader").RequireRateLimiting("default");
         super.MapPost("/", CreateAsync);
         super.MapGet("/{id:guid}", GetAsync);
         super.MapPatch("/{id:guid}", UpdateAsync);
@@ -26,7 +30,7 @@ public static class ToolEndpoints
         // is sufficient for the pilot phase.
         var perAgent = app
             .MapGroup("/agents/{agentId:guid}/tools")
-            .RequireAuthorization("admin")
+            .RequireAuthorization("department_admin")
             .RequireRateLimiting("default");
 
         perAgent.MapGet("/", ListAgentToolsAsync);

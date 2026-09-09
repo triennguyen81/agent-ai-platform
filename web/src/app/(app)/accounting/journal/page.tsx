@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SaveToKbButton } from "@/components/save-to-kb-button";
+import { CapabilityError, executeCapability } from "@/lib/capability";
 
 interface EntryLine {
   id: string;
@@ -14,10 +15,6 @@ interface EntryLine {
   account: string;
   amount: string;
   description: string;
-}
-
-interface AgentRunResponse {
-  final_answer: string;
 }
 
 function makeId(): string {
@@ -100,15 +97,14 @@ export default function JournalPage() {
     return sections.join("\n");
   })();
 
+  // D6: routes through the canonical Web helper (D4's capability resolver
+  // under the hood) — the browser never picks or knows an agent id.
   async function callAgent(task: string): Promise<string> {
-    const res = await fetch("/api/agent/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task, max_turns: 4 }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const body = (await res.json()) as AgentRunResponse;
-    return body.final_answer;
+    try {
+      return await executeCapability("accounting.journal", task, 4);
+    } catch (err) {
+      throw err instanceof CapabilityError ? new Error(err.message) : err;
+    }
   }
 
   async function validate() {

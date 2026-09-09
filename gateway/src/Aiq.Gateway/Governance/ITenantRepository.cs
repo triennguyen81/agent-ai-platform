@@ -39,8 +39,8 @@ public sealed record TenantSummary(
     int AgentCount);
 
 public sealed record UpdateTenantQuotaRequest(
-    [Range(0, int.MaxValue)] int? MaxUsers,
-    [Range(0, int.MaxValue)] int? MaxAgents);
+    [property: Range(0, int.MaxValue)] int? MaxUsers,
+    [property: Range(0, int.MaxValue)] int? MaxAgents);
 
 /// <summary>
 /// Pure comparison so the "is this tenant at capacity" rule is unit-testable
@@ -60,12 +60,12 @@ public sealed record TenantMembershipRecord(
     DateTime JoinedAt);
 
 public sealed record CreateTenantRequest(
-    [Required, RegularExpression("^[a-z0-9-]+$"), StringLength(60, MinimumLength = 2)] string Code,
-    [Required, StringLength(120)] string Name);
+    [property: Required, RegularExpression("^[a-z0-9-]+$"), StringLength(60, MinimumLength = 2)] string Code,
+    [property: Required, StringLength(120)] string Name);
 
 public sealed record InviteMemberRequest(
-    [Required] Guid UserId,
-    [Required, RegularExpression("^(tenant_admin|member|viewer)$")] string Role);
+    [property: Required] Guid UserId,
+    [property: Required, RegularExpression("^(tenant_admin|member|viewer)$")] string Role);
 
 public interface ITenantRepository
 {
@@ -169,8 +169,15 @@ public sealed class TenantRepository : ITenantRepository
             RETURNING {SelectColumns}
             """;
         await using var conn = await _factory.OpenAsync(ct);
-        return await conn.QuerySingleAsync<TenantRecord>(
-            new CommandDefinition(sql, request, cancellationToken: ct));
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var tenant = await conn.QuerySingleAsync<TenantRecord>(
+            new CommandDefinition(sql, request, tx, cancellationToken: ct));
+        await conn.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO departments(tenant_id,code,name,status,is_default)
+            VALUES (@tenantId,'default','Default Department','active',true)
+            """, new { tenantId = tenant.Id }, tx, cancellationToken: ct));
+        await tx.CommitAsync(ct);
+        return tenant;
     }
 
     public async Task<(TenantRecord Tenant, Guid OwnerUserId)> OnboardAsync(
@@ -191,6 +198,11 @@ public sealed class TenantRepository : ITenantRepository
                 VALUES (@Code, @Name, 'active')
                 RETURNING {SelectColumns}
                 """, request, tx, cancellationToken: ct));
+
+            await conn.ExecuteAsync(new CommandDefinition("""
+                INSERT INTO departments(tenant_id,code,name,status,is_default)
+                VALUES (@tenantId,'default','Default Department','active',true)
+                """, new { tenantId = tenant.Id }, tx, cancellationToken: ct));
 
             ownerUserId = await conn.QuerySingleAsync<Guid>(new CommandDefinition("""
                 INSERT INTO users (email, password_hash, display_name, tenant_id, is_active)
@@ -379,7 +391,7 @@ public sealed class TenantRepository : ITenantRepository
     }
 
     private sealed record TenantLockRow(Guid Id, string Status, Guid? OwnerUserId);
-    private sealed record SuccessorRow(Guid Id, Guid? TenantId, bool IsActive);
+    private sealed record SuccessorRow(Guid Id, Guid? TenantId, Guid? DepartmentId, bool IsActive);
 
     public async Task<TenantRecord> TransferOwnershipAsync(
         Guid tenantId, Guid actorUserId, Guid successorUserId, string predecessorAction, CancellationToken ct)
@@ -414,12 +426,17 @@ public sealed class TenantRepository : ITenantRepository
 
             // 3. validate successor
             var successor = await conn.QuerySingleOrDefaultAsync<SuccessorRow>(new CommandDefinition(
-                "SELECT id AS Id, tenant_id AS TenantId, is_active AS IsActive FROM users WHERE id = @successorUserId",
+                "SELECT id AS Id, tenant_id AS TenantId, department_id AS DepartmentId, is_active AS IsActive FROM users WHERE id = @successorUserId",
                 new { successorUserId }, tx, cancellationToken: ct));
             if (successor is null || successor.TenantId != tenantId)
                 throw new TenantOwnershipTransferException("successor_must_belong_to_tenant");
             if (!successor.IsActive)
                 throw new TenantOwnershipTransferException("successor_must_be_active");
+            if (successor.DepartmentId is not { } successorDepartmentId
+                || !await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
+                    "SELECT EXISTS(SELECT 1 FROM departments WHERE id=@successorDepartmentId AND tenant_id=@tenantId AND status='active')",
+                    new { successorDepartmentId, tenantId }, tx, cancellationToken: ct)))
+                throw new TenantOwnershipTransferException("successor_active_department_required");
 
             var predecessorId = tenant.OwnerUserId;
             if (predecessorId is null) throw new TenantOwnershipTransferException("tenant_has_no_current_owner");
@@ -432,6 +449,9 @@ public sealed class TenantRepository : ITenantRepository
                 "INSERT INTO user_roles (user_id, role_id) SELECT @successorUserId, id FROM roles WHERE name = 'tenant_owner'",
                 new { successorUserId }, tx, cancellationToken: ct));
             if (promoted != 1) throw new TenantOwnershipTransferException("promote_successor_failed");
+            await conn.ExecuteAsync(new CommandDefinition(
+                "UPDATE users SET department_id=NULL, updated_at=NOW() WHERE id=@successorUserId",
+                new { successorUserId }, tx, cancellationToken: ct));
 
             // 5. demote/deactivate predecessor according to explicit request
             if (predecessorAction == "demote")
@@ -442,6 +462,9 @@ public sealed class TenantRepository : ITenantRepository
                     "INSERT INTO user_roles (user_id, role_id) SELECT @predecessorId, id FROM roles WHERE name = 'admin'",
                     new { predecessorId }, tx, cancellationToken: ct));
                 if (demoted != 1) throw new TenantOwnershipTransferException("demote_predecessor_failed");
+                await conn.ExecuteAsync(new CommandDefinition(
+                    "UPDATE users SET department_id=@successorDepartmentId, updated_at=NOW() WHERE id=@predecessorId",
+                    new { predecessorId, successorDepartmentId }, tx, cancellationToken: ct));
             }
             else
             {

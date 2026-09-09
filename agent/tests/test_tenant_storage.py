@@ -77,9 +77,14 @@ async def test_audit_listing_is_tenant_scoped_before_returning_entries() -> None
                 "name": "agent", "ms": 10, "ok": True, "detail": None,
             }
             return [
-                json.dumps({**base, "tenant_id": "tenant-a"}),
-                json.dumps({**base, "tenant_id": "tenant-b"}),
+                json.dumps({**base, "tenant_id": "tenant-a", "department_id": "accounting"}),
+                json.dumps({**base, "tenant_id": "tenant-a", "department_id": "sales"}),
+                json.dumps({**base, "tenant_id": "tenant-b", "department_id": "accounting"}),
             ]
 
-    entries = await AuditStore(redis=Redis()).list(tenant_id="tenant-a")
-    assert [entry.tenant_id for entry in entries] == ["tenant-a"]
+    entries = await AuditStore(redis=Redis()).list(
+        tenant_id="tenant-a", department_id="accounting"
+    )
+    assert [(entry.tenant_id, entry.department_id) for entry in entries] == [
+        ("tenant-a", "accounting")
+    ]

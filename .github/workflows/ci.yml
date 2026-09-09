@@ -18,6 +18,27 @@ jobs:
   gateway-build:
     name: Gateway · build
     runs-on: ubuntu-latest
+    # ACL V2 final phase (V2-H): a real Postgres service so the ~189
+    # DB-backed integration tests (department/tenant isolation, capability
+    # resolution, ACL V2 ownership, legacy-agent migration, etc.) actually
+    # run in CI instead of silently no-oping — see D8_PRODUCTION_READINESS_AUDIT.md
+    # §2. serial.runsettings (checked into the test project) works around
+    # the documented shared-Postgres connection-ceiling race by disabling
+    # parallel test execution rather than requiring a custom Postgres image.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: aiq_gw_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     defaults:
       run:
         working-directory: gateway
@@ -31,9 +52,11 @@ jobs:
       - name: Build
         run: dotnet build --configuration Release --no-restore -warnaserror
       - name: Test
+        env:
+          AIQ_TEST_POSTGRES: "Host=localhost;Port=5432;Database=aiq_gw_test;Username=postgres;Password=testpass"
         run: |
           if ls tests/*.csproj 2>/dev/null | grep -q .; then
-            dotnet test --configuration Release --no-build --logger "trx"
+            dotnet test --configuration Release --no-build --logger "trx" --settings tests/Aiq.Gateway.Tests/serial.runsettings
           else
             echo "No gateway test project yet — skipping."
           fi
@@ -71,6 +94,32 @@ jobs:
         run: pip install '.[dev]'
       - name: Pytest
         run: pytest -q
+
+  web-build:
+    name: Web · typecheck, test, build
+    runs-on: ubuntu-latest
+    # ACL V2 final phase (V2-H): Web previously had no CI job at all — a
+    # broken build or a failing Vitest suite (the nav-model role/route
+    # matrix, now 15 tests) would not be caught before merge — see
+    # D8_PRODUCTION_READINESS_AUDIT.md §2.
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: TypeScript
+        run: npx tsc --noEmit
+      - name: Vitest
+        run: npm test
+      - name: Production build
+        run: npx next build
 
   compose-validate:
     name: Compose · validate

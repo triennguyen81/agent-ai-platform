@@ -1,0 +1,1 @@
+export default function Page() { return <section><h1 className="font-serif text-3xl">Platform Settings</h1><p className="mt-2 text-sm text-[var(--color-muted-fg)]">Platform-wide settings and policy entry point.</p></section>; }

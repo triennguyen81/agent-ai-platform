@@ -7,12 +7,9 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import { SaveToKbButton } from "@/components/save-to-kb-button";
+import { CapabilityError, executeCapability } from "@/lib/capability";
 
 type ReportType = "bckqhdkd" | "bcdkt" | "lctt";
-
-interface AgentRunResponse {
-  final_answer: string;
-}
 
 const REPORT_NAMES: Record<ReportType, string> = {
   bckqhdkd: "Báo cáo kết quả HĐKD (BCKQHĐKD)",
@@ -59,17 +56,14 @@ ${contextData.trim() ? `**Dữ liệu / số liệu user cung cấp:**\n\n${cont
 4. Cuối bảng có dòng ký xác nhận (Người lập / Kế toán trưởng / Giám đốc).
 5. Nếu có dùng Note từ KB, ghi rõ tên Note ở cuối (theo skill rag-citation).
 6. Format Markdown đẹp, export được sang Word.`;
-      const res = await fetch("/api/agent/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task, max_turns: 4 }),
-      });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-      }
-      const body = (await res.json()) as AgentRunResponse;
-      setReport(body.final_answer);
+      // D6: converted from the legacy no-agent-id /agent/run call to the
+      // canonical accounting.report capability.
+      setReport(await executeCapability("accounting.report", task, 4));
     } catch (err) {
+      if (err instanceof CapabilityError) {
+        setError(err.message);
+        return;
+      }
       setError(err instanceof Error ? err.message : "Lỗi");
     } finally {
       setLoading(false);

@@ -2,8 +2,8 @@
 -- G1 — Backfill default tenant + add tenant_id to existing tables
 --
 -- Strategy:
---   1. Create the 'default' tenant
---   2. Add every existing user as tenant_admin of default
+--   1. Reuse the 'default' tenant only when an operator explicitly seeded it
+--   2. Add existing users to that tenant only when it exists
 --   3. Add tenant_id NULLABLE to data tables (contracts, notes, books,
 --      audit_log, notifications, contract_clauses, contract_checklist_items)
 --   4. Backfill all existing rows to default tenant
@@ -14,11 +14,10 @@
 -- Idempotent: re-running is safe (INSERT ... ON CONFLICT, ALTER ... IF NOT EXISTS).
 -- ----------------------------------------------------------------------------
 
--- 1. Default tenant
-INSERT INTO tenants (code, name, status, metadata)
-VALUES ('default', 'AIQ Default Tenant', 'active',
-        '{"backfill": true, "description": "Auto-created during G1 governance migration"}'::jsonb)
-ON CONFLICT (code) DO NOTHING;
+-- 1. Do not create an application tenant during infrastructure bootstrap.
+-- A completely fresh database has no business tenant and migration 018 can
+-- therefore install the exact-owner invariant without inventing an owner.
+-- Real tenants are created transactionally with their owner by Gateway.
 
 -- 2. All existing users → tenant_admin of default tenant
 INSERT INTO tenant_members (tenant_id, user_id, role)

@@ -18,13 +18,20 @@ public interface IAgentClient
         CancellationToken ct);
 
     /// <summary>
-    /// Generic /agent/run passthrough — task text + skill list, returns
-    /// the final_answer string. Used by background extraction jobs.
+    /// D6: /agent/run passthrough routed through the capability resolver —
+    /// returns the final_answer string. `capability` must be a stable
+    /// catalog code (e.g. "voucher.processing"); the caller never picks or
+    /// knows an agent id, and the resolved agent's own tool/skill grants
+    /// govern execution, not any skills list this method used to accept.
+    /// Used by background extraction jobs, so the uploading user's own
+    /// entitlement chain (tenant + department [+ direct assignment for a
+    /// plain USER]) is what authorizes the job, exactly as if they had
+    /// called it interactively.
     /// </summary>
     Task<string> RunAgentTaskAsync(
         string task,
         string userToken,
-        string[] skills,
+        string capability,
         int maxTurns,
         CancellationToken ct);
 }
@@ -103,18 +110,30 @@ public sealed class AgentClient : IAgentClient
     public async Task<string> RunAgentTaskAsync(
         string task,
         string userToken,
-        string[] skills,
+        string capability,
         int maxTurns,
         CancellationToken ct)
     {
         var payload = new
         {
             task,
-            user_token = userToken,
-            skills,
+            capability,
             max_turns = maxTurns,
         };
-        using var response = await _http.PostAsJsonAsync("/agent/run", payload, ct);
+        // D6 bug fix: this call previously sent the caller's token as a
+        // `user_token` JSON field, which AgentRunRequest has never declared
+        // (and its `extra="forbid"` Pydantic config rejects) — and never
+        // set an Authorization header at all, so `require_principal`
+        // (agent/src/aiq_agent/api/security.py) had nothing to read and
+        // this call has always failed authentication. The Agent service
+        // authenticates via the Authorization header only, never a body
+        // field — same as every other Gateway->Agent call in this class.
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/agent/run")
+        {
+            Content = JsonContent.Create(payload),
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", userToken);
+        using var response = await _http.SendAsync(request, ct);
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(ct);

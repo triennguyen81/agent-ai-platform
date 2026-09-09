@@ -7,10 +7,7 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { SaveToKbButton } from "@/components/save-to-kb-button";
-
-interface AgentRunResponse {
-  final_answer: string;
-}
+import { CapabilityError, executeCapability } from "@/lib/capability";
 
 const SAMPLE = `Hoá đơn GTGT
 Số: 0000123 - Ký hiệu: 1C24TYY
@@ -41,15 +38,14 @@ export default function InvoicePage() {
   const [loading, setLoading] = useState<"extract" | "journal" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // D6: converted from the legacy no-agent-id /agent/run call to the
+  // canonical accounting.invoice capability.
   async function callAgent(task: string): Promise<string> {
-    const res = await fetch("/api/agent/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task, max_turns: 4 }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const body = (await res.json()) as AgentRunResponse;
-    return body.final_answer;
+    try {
+      return await executeCapability("accounting.invoice", task, 4);
+    } catch (err) {
+      throw err instanceof CapabilityError ? new Error(err.message) : err;
+    }
   }
 
   async function extract() {

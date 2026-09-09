@@ -1,0 +1,1 @@
+export default function Page() { return <section><h1 className="font-serif text-3xl">Models / Providers</h1><p className="mt-2 text-sm text-[var(--color-muted-fg)]">Platform provider configuration remains environment-managed.</p></section>; }

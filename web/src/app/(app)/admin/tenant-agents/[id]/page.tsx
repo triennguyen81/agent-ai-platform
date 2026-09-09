@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { ArrowLeft, ShieldCheck, UserCheck } from "lucide-react";
+import { ArrowLeft, Bot, Building2, ShieldCheck, UserCheck } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
+import { requireViewer } from "@/lib/authorization";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/input";
 
@@ -31,6 +32,8 @@ interface TenantUserRecord {
   isActive: boolean;
 }
 interface KnowledgeRecord { id: string; noteId: string; title: string; updatedAt?: string }
+interface DepartmentRecord { id: string; code: string; name: string }
+interface AgentDepartmentEntitlementRecord { agentId: string; assigned: boolean }
 
 function formatDateTime(s: string): string {
   try {
@@ -80,6 +83,29 @@ async function knowledgeAction(formData: FormData): Promise<void> {
   revalidatePath(`/admin/tenant-agents/${agentId}`); redirect(`/admin/tenant-agents/${agentId}?ok=knowledge-${action}`);
 }
 
+async function departmentAgentAction(formData: FormData): Promise<void> {
+  "use server";
+  // D3: TENANT_OWNER-only. requireViewer re-derives the real role
+  // server-side — a tampered role in the browser can never reach here even
+  // if the form itself were somehow submitted by a non-owner.
+  await requireViewer(["tenant_owner"]);
+  const agentId = String(formData.get("agentId") ?? "");
+  const departmentId = String(formData.get("departmentId") ?? "");
+  const action = String(formData.get("action") ?? ""); // "assign" | "revoke"
+  if (!agentId || !departmentId) redirect(`/admin/tenant-agents/${agentId}?error=invalid`);
+
+  const token = await requireSession();
+  const res = action === "revoke"
+    ? await gateway.revokeDepartmentAgent(token, departmentId, agentId)
+    : await gateway.assignDepartmentAgent(token, departmentId, agentId);
+  if (!res.ok) {
+    const body = await res.text();
+    redirect(`/admin/tenant-agents/${agentId}?error=${encodeURIComponent(body.slice(0, 200))}`);
+  }
+  revalidatePath(`/admin/tenant-agents/${agentId}`);
+  redirect(`/admin/tenant-agents/${agentId}?ok=department-${action}ed`);
+}
+
 export default async function TenantAgentDetailPage({
   params,
   searchParams,
@@ -89,14 +115,17 @@ export default async function TenantAgentDetailPage({
 }) {
   const { id } = await params;
   const { ok, error } = await searchParams;
-  const token = await requireSession();
+  const viewer = await requireViewer(["tenant_owner", "admin"]);
+  const isOwner = viewer.roles.includes("tenant_owner");
+  const token = viewer.token;
 
-  const [agentsRes, usersRes, assignedRes, knowledgeRes, attachableRes] = await Promise.all([
+  const [agentsRes, usersRes, assignedRes, knowledgeRes, attachableRes, departmentsRes] = await Promise.all([
     gateway.listTenantAgents(token),
     gateway.listTenantUsers(token),
     gateway.listTenantAgentUsers(token, id),
     gateway.listTenantAgentKnowledge(token, id),
     gateway.listAttachableTenantAgentKnowledge(token, id),
+    isOwner ? gateway.listTenantDepartments(token) : Promise.resolve(null),
   ]);
 
   if (agentsRes.status === 400 || agentsRes.status === 403) redirect("/chat");
@@ -136,6 +165,25 @@ export default async function TenantAgentDetailPage({
   const assignableUsers = users.filter((u) => u.isActive && !assignedUserIds.has(u.id));
   const knowledge: KnowledgeRecord[] = knowledgeRes.ok ? ((await knowledgeRes.json()) as { items: Omit<KnowledgeRecord, "noteId">[] }).items.map((note) => ({ ...note, noteId: note.id })) : [];
   const attachable: KnowledgeRecord[] = attachableRes.ok ? ((await attachableRes.json()) as { items: Omit<KnowledgeRecord, "noteId">[] }).items.map((note) => ({ ...note, noteId: note.id })) : [];
+
+  // D3: TENANT_OWNER-only. Skipped entirely for ADMIN — the Gateway route is
+  // tenant_owner-only anyway, so there is nothing useful to show or fetch.
+  const departments: DepartmentRecord[] = isOwner && departmentsRes?.ok
+    ? ((await departmentsRes.json()) as { items: DepartmentRecord[] }).items
+    : [];
+  const departmentAssigned = new Map<string, boolean>();
+  if (isOwner && departments.length > 0) {
+    const entitlementResponses = await Promise.all(
+      departments.map((d) => gateway.listDepartmentAgents(token, d.id)),
+    );
+    for (let i = 0; i < departments.length; i++) {
+      const res = entitlementResponses[i];
+      if (!res.ok) continue;
+      const body = (await res.json()) as { items: AgentDepartmentEntitlementRecord[] };
+      const match = body.items.find((it) => it.agentId === thisAgent.agentId);
+      departmentAssigned.set(departments[i].id, match?.assigned ?? false);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -259,6 +307,71 @@ export default async function TenantAgentDetailPage({
         )}
       </section>
       <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5"><h2 className="font-serif text-lg">Tenant knowledge ({knowledge.length})</h2><p className="text-xs text-[var(--color-muted-fg)]">Gateway derives the tenant from your session. Notes from other tenants cannot appear or be attached.</p><div className="space-y-2">{knowledge.map((note) => <div key={note.noteId} className="flex items-center justify-between rounded border px-3 py-2 text-sm"><span>{note.title}</span><form action={knowledgeAction}><input type="hidden" name="agentId" value={id}/><input type="hidden" name="noteId" value={note.noteId}/><input type="hidden" name="action" value="detach"/><Button type="submit" size="sm" variant="ghost">Detach</Button></form></div>)}{knowledge.length === 0 && <p className="text-sm text-[var(--color-muted-fg)]">No attached knowledge.</p>}</div>{attachable.length > 0 && <form action={knowledgeAction} className="flex gap-2 border-t pt-3"><input type="hidden" name="agentId" value={id}/><input type="hidden" name="action" value="attach"/><select name="noteId" required className="flex-1 rounded border bg-[var(--color-bg)] px-2 text-sm"><option value="">Select tenant note</option>{attachable.map((note) => <option key={note.noteId} value={note.noteId}>{note.title}</option>)}</select><Button type="submit" size="sm">Attach</Button></form>}</section>
+
+      {isOwner && (
+        <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
+          <h2 className="font-serif text-lg">
+            <Building2 className="mr-2 inline size-4" />
+            Department entitlement ({[...departmentAssigned.values()].filter(Boolean).length}/{departments.length})
+          </h2>
+          <p className="text-xs text-[var(--color-muted-fg)]">
+            Chỉ TENANT_OWNER thấy mục này. Gán agent cho một department để ADMIN của department đó
+            có thể tự gán agent này cho user trong department mình, không cần bạn can thiệp từng user.
+          </p>
+
+          <div className="overflow-hidden rounded border">
+            <table className="w-full text-sm">
+              <thead className="bg-[var(--color-muted)] text-xs uppercase tracking-wider text-[var(--color-muted-fg)]">
+                <tr>
+                  <th className="px-3 py-2 text-left">Department</th>
+                  <th className="px-3 py-2 text-left">Trạng thái</th>
+                  <th className="px-3 py-2 text-right">—</th>
+                </tr>
+              </thead>
+              <tbody>
+                {departments.length === 0 ? (
+                  <tr>
+                    <td colSpan={3} className="px-3 py-4 text-center text-[var(--color-muted-fg)]">
+                      Tenant chưa có department nào.
+                    </td>
+                  </tr>
+                ) : (
+                  departments.map((d) => {
+                    const assigned = departmentAssigned.get(d.id) ?? false;
+                    return (
+                      <tr key={d.id} className="border-t">
+                        <td className="px-3 py-2">
+                          <div className="font-medium">{d.name}</div>
+                          <div className="font-mono text-[10px] text-[var(--color-muted-fg)]">{d.code}</div>
+                        </td>
+                        <td className="px-3 py-2">
+                          {assigned ? (
+                            <span className="inline-flex items-center gap-1 text-emerald-700">
+                              <Bot className="size-3.5" /> Assigned
+                            </span>
+                          ) : (
+                            <span className="text-[var(--color-muted-fg)]">Chưa gán</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <form action={departmentAgentAction}>
+                            <input type="hidden" name="agentId" value={thisAgent.agentId} />
+                            <input type="hidden" name="departmentId" value={d.id} />
+                            <input type="hidden" name="action" value={assigned ? "revoke" : "assign"} />
+                            <Button type="submit" size="sm" variant={assigned ? "ghost" : "primary"}>
+                              {assigned ? "Revoke" : "Gán"}
+                            </Button>
+                          </form>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

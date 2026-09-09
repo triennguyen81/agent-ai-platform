@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import errno
+import json
+import os
+import tempfile
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +18,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    CLIConnectionError,
     ResultMessage,
     TextBlock,
     create_sdk_mcp_server,
@@ -33,6 +39,22 @@ class ProviderResolutionError(PermissionError):
 
 class ExecutionTimeoutError(TimeoutError):
     """Execution exceeded the manifest's own configured timeoutSeconds."""
+
+
+class ClaudeSdkConfigurationTooLargeError(RuntimeError):
+    """The assembled Claude Code CLI invocation was too large for the OS to
+    exec — the Claude Agent SDK's subprocess transport puts --system-prompt,
+    --mcp-config and --allowedTools directly on argv, and Linux caps any
+    SINGLE argv/env string at MAX_ARG_STRLEN (128 KiB) regardless of how much
+    headroom is left in the ~2 MiB total ARG_MAX (this is what surfaces as
+    CLIConnectionError: "[Errno 7] Argument list too long" / E2BIG). Carries
+    only sizes/counts for diagnostics — never prompt, knowledge, skill, or
+    credential content.
+    """
+
+    def __init__(self, message: str, *, diagnostics: dict[str, int]) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,41 +362,98 @@ class ClaudeSdkAgentExecutor(AgentExecutor):
             allowed = [*allowed, "mcp__aiq__delegate_to_agent"]
         query_parts = [f"[{message.role}]: {message.content}" for message in (prior_history or [])]
         query_parts.append(prompt)
-        options = ClaudeAgentOptions(
-            mcp_servers={"aiq": create_sdk_mcp_server(name="aiq", version="0.1.0", tools=tools)},
-            allowed_tools=allowed,
-            skills=skill_names,
-            max_turns=self.manifest.maxTurns,
-            model=self.manifest.model,
-            system_prompt="\n\n".join(system_parts),
+
+        # The Claude Code CLI transport puts --system-prompt on argv as a
+        # single string. Linux hard-caps any single argv/env element at
+        # MAX_ARG_STRLEN (128 KiB) regardless of total ARG_MAX headroom, and a
+        # manifest's system prompt + skill bodies + knowledge routinely
+        # exceeds that (a 44-skill agent measured ~230 KiB here). Writing it
+        # to a file and passing --system-prompt-file keeps the actual content
+        # off argv entirely, independent of size — see SystemPromptFile in
+        # the claude_agent_sdk types. The file never leaves this host and is
+        # removed as soon as the subprocess has exited.
+        combined_system_prompt = "\n\n".join(system_parts)
+        system_prompt_bytes = len(combined_system_prompt.encode("utf-8"))
+        allowed_tools_bytes = len(",".join(allowed).encode("utf-8"))
+        # Mirrors what create_sdk_mcp_server actually puts on --mcp-config for
+        # an in-process SDK server (the CLI transport strips the callable
+        # `instance` field before serializing) — an approximation, not a
+        # byte-for-byte replay of the transport's own json.dumps call.
+        mcp_config_bytes = len(json.dumps(
+            {"aiq": {"type": "sdk", "name": "aiq", "version": "0.1.0"}}
+        ).encode("utf-8"))
+        env_bytes = sum(
+            len(k.encode("utf-8")) + len(v.encode("utf-8")) + 1 for k, v in os.environ.items()
         )
-        steps: list[ExecutionStep] = []
-        chunks: list[str] = []
-        result_message: ResultMessage | None = None
+        diagnostics = {
+            "argv_bytes": system_prompt_bytes + allowed_tools_bytes + mcp_config_bytes
+                + len(self.manifest.model.encode("utf-8")),
+            "env_bytes": env_bytes,
+            "tool_count": len(allowed),
+            "skill_count": len(skill_names),
+            "knowledge_count": len(self.manifest.knowledge),
+            "delegate_count": len(self.manifest.delegates),
+            "system_prompt_bytes": system_prompt_bytes,
+            "mcp_config_bytes": mcp_config_bytes,
+        }
 
-        async def _run() -> None:
-            nonlocal result_message
-            async with ClaudeSDKClient(options=options) as client:
-                await client.query("\n\n".join(query_parts))
-                async for message in client.receive_response():
-                    if isinstance(message, AssistantMessage):
-                        for block in message.content:
-                            if isinstance(block, TextBlock) and (block.text or "").strip():
-                                text = block.text.strip()
-                                chunks.append(text)
-                                steps.append(ExecutionStep("assistant", text))
-                    elif isinstance(message, ResultMessage):
-                        result_message = message
-
-        # ClaudeAgentOptions has no wall-clock timeout of its own (max_turns
-        # bounds turn count, not time) — a stuck CLI subprocess would hang the
-        # request forever otherwise. Enforce the manifest's own configured cap.
+        prompt_file = tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix="aiq-agent-system-prompt-",
+            suffix=".txt", delete=False,
+        )
         try:
-            await asyncio.wait_for(_run(), timeout=self.manifest.timeoutSeconds)
-        except asyncio.TimeoutError as exc:
-            raise ExecutionTimeoutError(
-                f"Agent execution exceeded its configured timeout of {self.manifest.timeoutSeconds}s"
-            ) from exc
+            prompt_file.write(combined_system_prompt)
+            prompt_file.close()
+            os.chmod(prompt_file.name, 0o600)
+
+            aiq_mcp_server = create_sdk_mcp_server(name="aiq", version="0.1.0", tools=tools)
+            options = ClaudeAgentOptions(
+                mcp_servers={"aiq": aiq_mcp_server},
+                allowed_tools=allowed,
+                skills=skill_names,
+                max_turns=self.manifest.maxTurns,
+                model=self.manifest.model,
+                system_prompt={"type": "file", "path": prompt_file.name},
+            )
+            steps: list[ExecutionStep] = []
+            chunks: list[str] = []
+            result_message: ResultMessage | None = None
+
+            async def _run() -> None:
+                nonlocal result_message
+                async with ClaudeSDKClient(options=options) as client:
+                    await client.query("\n\n".join(query_parts))
+                    async for message in client.receive_response():
+                        if isinstance(message, AssistantMessage):
+                            for block in message.content:
+                                if isinstance(block, TextBlock) and (block.text or "").strip():
+                                    text = block.text.strip()
+                                    chunks.append(text)
+                                    steps.append(ExecutionStep("assistant", text))
+                        elif isinstance(message, ResultMessage):
+                            result_message = message
+
+            # ClaudeAgentOptions has no wall-clock timeout of its own (max_turns
+            # bounds turn count, not time) — a stuck CLI subprocess would hang the
+            # request forever otherwise. Enforce the manifest's own configured cap.
+            try:
+                await asyncio.wait_for(_run(), timeout=self.manifest.timeoutSeconds)
+            except asyncio.TimeoutError as exc:
+                raise ExecutionTimeoutError(
+                    f"Agent execution exceeded its configured timeout of "
+                    f"{self.manifest.timeoutSeconds}s"
+                ) from exc
+            except CLIConnectionError as exc:
+                cause = exc.__cause__
+                if isinstance(cause, OSError) and cause.errno == errno.E2BIG:
+                    raise ClaudeSdkConfigurationTooLargeError(
+                        "Claude Code subprocess configuration exceeded the OS argument limit",
+                        diagnostics=diagnostics,
+                    ) from exc
+                raise
+        finally:
+            with suppress(OSError):
+                os.unlink(prompt_file.name)
         answer = "\n\n".join(chunks).strip() or "(Agent không trả lời gì.)"
         usage = result_message.usage if result_message else None
         return ExecutionResult(

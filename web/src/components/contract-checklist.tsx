@@ -138,8 +138,15 @@ export function ContractChecklist({ contractId, initialItems }: Props) {
         method: "POST",
       });
       if (!res.ok) {
-        const text = await res.text();
-        setError(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+        // D6: never surface the raw upstream body — translate the
+        // capability resolver's known denial statuses instead.
+        if (res.status === 409) {
+          setError("Nghiệp vụ này đang được gán cho nhiều Agent. Vui lòng liên hệ quản trị để cấu hình rõ ràng.");
+        } else if (res.status === 403) {
+          setError("Bạn chưa được cấp Agent hỗ trợ nghiệp vụ này. Liên hệ admin/tenant owner để được cấu hình.");
+        } else {
+          setError(`Đã có lỗi xảy ra (HTTP ${res.status}). Vui lòng thử lại.`);
+        }
         return;
       }
       const body = (await res.json()) as { final_answer: string };

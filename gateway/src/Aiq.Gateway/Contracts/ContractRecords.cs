@@ -35,7 +35,7 @@ public sealed record ContractWithClauses(
     IReadOnlyList<ContractClauseRecord> Clauses);
 
 public sealed record CreateContractRequest(
-    [Required, StringLength(500, MinimumLength = 1)] string Title,
+    [property: Required, StringLength(500, MinimumLength = 1)] string Title,
     string? PartyA,
     string? PartyB,
     DateOnly? SignedDate,
@@ -51,7 +51,7 @@ public sealed record CreateContractRequest(
 public sealed record CreateClauseDto(
     int Ordinal,
     string? Heading,
-    [Required] string Body,
+    [property: Required] string Body,
     bool HasDeadline,
     bool HasPenalty);
 

@@ -51,9 +51,12 @@ export async function POST(request: NextRequest) {
     "===== END =====",
   ].join("\n");
 
+  // D6: routes through the capability resolver (contract.processing)
+  // instead of the legacy no-agent-id path — skills/tools now come from
+  // whatever agent the resolver authorizes, not this request.
   const res = await agent.runTask(token, {
     task,
-    skills: ["contract-extractor", "vietnamese-style"],
+    capability: "contract.processing",
     max_turns: 6,
   });
 

@@ -8,18 +8,18 @@ namespace Aiq.Gateway.Endpoints;
 public static class TenantEndpoints
 {
     public sealed record OnboardTenantRequest(
-        [Required, RegularExpression("^[a-z0-9-]+$"), StringLength(60, MinimumLength = 2)] string Code,
-        [Required, StringLength(120)] string Name,
-        [Required, EmailAddress] string OwnerEmail,
-        [Required, MinLength(8)] string OwnerPassword,
-        [Required, StringLength(200)] string OwnerDisplayName);
+        [property: Required, RegularExpression("^[a-z0-9-]+$"), StringLength(60, MinimumLength = 2)] string Code,
+        [property: Required, StringLength(120)] string Name,
+        [property: Required, EmailAddress] string OwnerEmail,
+        [property: Required, MinLength(8)] string OwnerPassword,
+        [property: Required, StringLength(200)] string OwnerDisplayName);
 
     public static IEndpointRouteBuilder MapTenantEndpoints(this IEndpointRouteBuilder app)
     {
         // super_admin only — tenant CRUD
         var superAdmin = app
             .MapGroup("/tenants")
-            .RequireAuthorization("super_admin")
+            .RequireAuthorization("platform_admin")
             .RequireRateLimiting("default");
 
         superAdmin.MapGet("/", ListAsync);
@@ -32,11 +32,11 @@ public static class TenantEndpoints
         superAdmin.MapPatch("/{id:guid}/quota", UpdateQuotaAsync);
 
         app.MapGet("/system/tenants/summary", ListSummariesAsync)
-            .RequireAuthorization("super_admin").RequireRateLimiting("default");
+            .RequireAuthorization("platform_admin").RequireRateLimiting("default");
         app.MapGet("/system/tenants/{id:guid}/summary", GetSummaryAsync)
-            .RequireAuthorization("super_admin").RequireRateLimiting("default");
+            .RequireAuthorization("platform_admin").RequireRateLimiting("default");
         app.MapPost("/system/tenants/onboard", OnboardAsync)
-            .RequireAuthorization("super_admin").RequireRateLimiting("default");
+            .RequireAuthorization("platform_admin").RequireRateLimiting("default");
 
         // Any authenticated user may inspect their single canonical membership.
         var me = app

@@ -12,6 +12,7 @@ interface AuditEntry {
   detail: string | null;
   user_id: string | null;
   tenant_id: string | null;
+  department_id: string | null;
   agent_id: string | null;
   version: number | null;
   provider: string | null;
@@ -58,15 +59,14 @@ interface Props {
 export default async function AuditPage({ searchParams }: Props) {
   const viewer = await requireViewer(["super_admin", "tenant_owner", "admin"]);
   const isSuperAdmin = viewer.roles.includes("super_admin");
+  const isTenantOwner = viewer.roles.includes("tenant_owner");
 
   const { event, limit: limitParam } = await searchParams;
   const limit = Math.min(Math.max(Number(limitParam ?? 100), 1), 500);
 
-  const res = await agent.listAudit(limit, event, isSuperAdmin ? undefined : viewer.tenantId ?? undefined);
-  const allEntries: AuditEntry[] = res.ok ? await res.json() : [];
-  const entries = isSuperAdmin
-    ? allEntries
-    : allEntries.filter((entry) => entry.tenant_id === viewer.tenantId);
+  const res = await agent.listAudit(viewer.token, limit, event);
+  const entries: AuditEntry[] = res.ok ? await res.json() : [];
+  const auditBase = isSuperAdmin ? "/system/audit" : isTenantOwner ? "/tenant/audit" : "/department/audit";
 
   // Aggregate stats
   const stats = entries.reduce(
@@ -101,7 +101,7 @@ export default async function AuditPage({ searchParams }: Props) {
       <header className="space-y-2">
         <h1 className="font-serif text-3xl">Audit log</h1>
         <p className="text-sm text-[var(--color-muted-fg)]">
-          {isSuperAdmin ? "System-wide" : "Tenant-scoped"} execution, usage, and cost metadata.
+          {isSuperAdmin ? "Platform-wide" : isTenantOwner ? "Tenant-scoped" : "Own-department"} execution, usage, and cost metadata.
           Prompt and tool argument content is not displayed.
         </p>
       </header>
@@ -124,7 +124,7 @@ export default async function AuditPage({ searchParams }: Props) {
           return (
             <a
               key={ev || "all"}
-              href={`/admin/audit?${params.toString()}`}
+              href={`${auditBase}?${params.toString()}`}
               className={`rounded-full border px-3 py-1 text-xs transition ${
                 isActive
                   ? "border-[var(--color-primary)] bg-[var(--color-primary)] text-[var(--color-primary-fg)]"

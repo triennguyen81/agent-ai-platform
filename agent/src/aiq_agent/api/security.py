@@ -30,6 +30,7 @@ class RuntimePrincipal:
     user_id: str
     roles: frozenset[str]
     tenant_id: str | None = None
+    department_id: str | None = None
 
     @property
     def is_user_only(self) -> bool:
@@ -55,26 +56,57 @@ async def require_principal(request: Request) -> RuntimePrincipal:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
     body = response.json()
     tenant_id = body.get("tenantId")
+    department_id = body.get("departmentId")
     principal = RuntimePrincipal(
         token=token,
         user_id=str(body.get("sub") or ""),
         roles=frozenset(str(role) for role in body.get("roles") or []),
         tenant_id=str(tenant_id) if tenant_id else None,
+        department_id=str(department_id) if department_id else None,
     )
     if not principal.user_id or (principal.is_user_only and not principal.tenant_id):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid tenant-bound session")
     return principal
 
 
-async def require_agent_execution(principal: RuntimePrincipal, agent_id: str) -> ExecutionManifest:
+async def require_agent_execution(principal: RuntimePrincipal, agent_id: str, *, test: bool = False) -> ExecutionManifest:
     settings = get_settings()
     try:
         return await fetch_execution_manifest(
             gateway_base=settings.gateway_base_url,
             token=principal.token,
             agent_id=agent_id,
+            test=test,
         )
     except ManifestLookupError as exc:
         raise HTTPException(status_code=403, detail="Agent execution is not allowed")
     except Exception as exc:  # validation and protocol errors fail closed
         raise HTTPException(status_code=503, detail="Authorization service unavailable") from exc
+
+
+async def resolve_capability_agent(principal: RuntimePrincipal, capability: str) -> str:
+    """D4: resolve a business capability code to an authorized agent id.
+
+    The Gateway is the sole authority here — it derives tenant/department/
+    user scope from the principal's own token and applies the canonical
+    binding-first / exactly-one-eligible / ambiguity-error resolution rule.
+    This function only translates that decision into an HTTP outcome; the
+    resolved agent id still has to pass require_agent_execution's full
+    manifest check afterward, unchanged.
+    """
+    settings = get_settings()
+    url = f"{settings.gateway_base_url.rstrip('/')}/me/capabilities/{capability}/agent"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(url, headers={"Authorization": f"Bearer {principal.token}"})
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail="Authorization service unavailable") from exc
+    if response.status_code == 200:
+        agent_id = response.json().get("agentId")
+        if not agent_id:
+            raise HTTPException(status_code=403, detail="Capability is not available")
+        return str(agent_id)
+    if response.status_code == 409:
+        detail = "Capability is ambiguous; a tenant owner must configure a binding"
+        raise HTTPException(status_code=409, detail=detail)
+    raise HTTPException(status_code=403, detail="Capability is not available")

@@ -26,22 +26,22 @@ public sealed record AgentToolGrantRecord(
     DateTime GrantedAt);
 
 public sealed record CreateToolRequest(
-    [Required, RegularExpression("^[a-z0-9_]+$"), StringLength(120, MinimumLength = 3)] string Code,
-    [Required, StringLength(160)] string Name,
+    [property: Required, RegularExpression("^[a-z0-9_]+$"), StringLength(120, MinimumLength = 3)] string Code,
+    [property: Required, StringLength(160)] string Name,
     string? Description,
-    [RegularExpression("^(read|write|external)$")] string? Category,
-    [RegularExpression("^(low|medium|high|critical)$")] string? RiskTier,
-    [RegularExpression("^(read_only|suggest|execute_with_approval|autonomous)$")] string? MinActionTier);
+    [property: RegularExpression("^(read|write|external)$")] string? Category,
+    [property: RegularExpression("^(low|medium|high|critical)$")] string? RiskTier,
+    [property: RegularExpression("^(read_only|suggest|execute_with_approval|autonomous)$")] string? MinActionTier);
 
 public sealed record UpdateToolRequest(
     string? Name,
     string? Description,
     string? Category,
-    [RegularExpression("^(low|medium|high|critical)$")] string? RiskTier,
-    [RegularExpression("^(read_only|suggest|execute_with_approval|autonomous)$")] string? MinActionTier,
+    [property: RegularExpression("^(low|medium|high|critical)$")] string? RiskTier,
+    [property: RegularExpression("^(read_only|suggest|execute_with_approval|autonomous)$")] string? MinActionTier,
     bool? IsActive);
 
-public sealed record GrantToolRequest([Required] Guid ToolId);
+public sealed record GrantToolRequest([property: Required] Guid ToolId);
 
 public interface IToolRepository
 {

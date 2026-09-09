@@ -3,41 +3,22 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import {
-  Banknote,
-  Bot,
-  BookOpen,
-  Building2,
-  Calculator,
-  Check,
-  ClipboardCheck,
-  FileText,
-  Gauge,
-  GraduationCap,
-  HeartPulse,
-  Home,
-  ListChecks,
-  LogOut,
-  Menu,
-  MessageSquare,
-  Plus,
-  Puzzle,
-  Receipt,
-  ScrollText,
-  ShieldCheck,
-  Sparkles,
-  Truck,
-  UserCog,
-  Users,
-  Wrench,
-  Workflow,
-  X,
-} from "lucide-react";
+import { Bot, Check, ChevronRight, Home, LogOut, Menu, MessageSquare, Plus, Receipt, X } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { buildNghiepVuItems, buildQuanTriGroups, buildWorkspaceItems, canUseChat, type RoleFlags } from "@/lib/nav-model";
 
 // SideNav — Claude.ai-style sidebar. Layout: brand + New chat + primary
 // nav + module sections + agent list ("Trợ lý của bạn" = "Projects") +
 // recent chats. Phase 2: mobile drawer, agent avatar, recent chats.
+//
+// Business/Workspace/Quản trị sections are driven entirely by
+// nav-model.ts's buildNghiepVuItems/buildWorkspaceItems/buildQuanTriGroups
+// (the ACL V2-F exact navigation matrix — see nav-model.test.ts and
+// docs/ACL_V2_RESOURCE_VISIBILITY_RULES.md) so this component never
+// hard-codes which pages a role can see; it only renders whatever that
+// model returns. Access is still enforced server-side by each route's own
+// layout guard (requireViewer/role checks) regardless of what's rendered
+// here — this is presentation only, not a security boundary.
 
 export interface SideNavAgent {
   agentId: string;
@@ -59,6 +40,7 @@ interface SideNavProps {
   isSuperAdmin: boolean;
   isTenantOwner: boolean;
   isTenantAdmin: boolean;
+  capabilityCodes: readonly string[];
   agents: SideNavAgent[];
   activeAgentId: string | null;
   signOutAction: () => void | Promise<void>;
@@ -107,6 +89,7 @@ export function SideNav({
   isSuperAdmin,
   isTenantOwner,
   isTenantAdmin,
+  capabilityCodes,
   agents,
   activeAgentId,
   signOutAction,
@@ -114,6 +97,14 @@ export function SideNav({
   const pathname = usePathname();
   const router = useRouter();
   const isAdminOrAbove = isSuperAdmin || isTenantOwner || isTenantAdmin;
+
+  const flags: RoleFlags = { isSuperAdmin, isTenantOwner, isTenantAdmin, capabilityCodes };
+  const nghiepVuItems = buildNghiepVuItems(flags);
+  const workspaceItems = buildWorkspaceItems(flags);
+  const quanTriGroups = buildQuanTriGroups(flags);
+  // SUPER_ADMIN/TENANT_OWNER administer tenants/departments, not day-to-day
+  // AI Workspace usage — no Chat, New chat, agent switcher, or recent chats.
+  const chatEnabled = canUseChat(flags);
 
   const [switching, setSwitching] = useState<string | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -125,7 +116,9 @@ export function SideNav({
   }, [pathname]);
 
   // Fetch recent chat threads (client-side, không blocking layout).
+  // Skipped entirely for roles without Chat (SUPER_ADMIN/TENANT_OWNER).
   useEffect(() => {
+    if (!chatEnabled) return;
     let cancelled = false;
     fetch("/api/chat/threads")
       .then((r) => (r.ok ? r.json() : { items: [] }))
@@ -143,7 +136,7 @@ export function SideNav({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [chatEnabled]);
 
   const usableAgents = agents.filter(
     (a) => a.lifecycleState === "production" && !a.agentDisabled,
@@ -210,7 +203,7 @@ export function SideNav({
             >
               Cát Tường AI
             </Link>
-            {activeAgent && (
+            {chatEnabled && activeAgent && (
               <div className="mt-2 flex items-center gap-2 text-[11px] text-[var(--color-muted-fg)]">
                 <span>Đang dùng:</span>
                 <AgentAvatar code={activeAgent.agentCode} size="sm" />
@@ -232,22 +225,28 @@ export function SideNav({
 
         {/* Scrollable content */}
         <div className="flex-1 overflow-y-auto p-3">
-          {/* Quick action */}
-          <SidebarLink href="/chat" icon={Plus} label="New chat" active={pathname === "/chat"} />
+          {/* Quick action — no Chat at all for SUPER_ADMIN/TENANT_OWNER */}
+          {chatEnabled && (
+            <SidebarLink href="/chat" icon={Plus} label="New chat" active={pathname === "/chat"} />
+          )}
 
           {/* Primary nav */}
-          <div className="mt-3 space-y-0.5">
+          <div className={cn(chatEnabled && "mt-3", "space-y-0.5")}>
             {isAdminOrAbove && (
               <SidebarLink href="/dashboard" icon={Home} label="Dashboard" active={pathname === "/dashboard"} />
             )}
-            <SidebarLink href="/my-agents" icon={Bot} label="Trợ lý AI" active={pathname.startsWith("/my-agents")} />
-            <SidebarLink href="/chat" icon={MessageSquare} label="Chat" active={pathname.startsWith("/chat")} />
+            {chatEnabled && (
+              <>
+                <SidebarLink href="/my-agents" icon={Bot} label="Trợ lý AI" active={pathname.startsWith("/my-agents")} />
+                <SidebarLink href="/chat" icon={MessageSquare} label="Chat" active={pathname.startsWith("/chat")} />
+              </>
+            )}
           </div>
 
           {/* AGENT LIST — Claude.ai-style "Projects" section.
               Position on top so switching is prominent. */}
-          {agents.length > 0 && (
-            <SidebarSection title="Trợ lý của bạn">
+          {chatEnabled && agents.length > 0 && (
+            <SidebarSection title="Trợ lý của bạn" collapsible={false}>
               {usableAgents.map((a) => {
                 const isActive = a.agentId === activeAgentId
                   || (!activeAgentId && a === usableAgents[0]);
@@ -301,8 +300,8 @@ export function SideNav({
           )}
 
           {/* Recent chats — top 5 threads gần nhất */}
-          {recentThreads.length > 0 && (
-            <SidebarSection title="Chat gần đây">
+          {chatEnabled && recentThreads.length > 0 && (
+            <SidebarSection title="Chat gần đây" collapsible={false}>
               {recentThreads.map((t) => (
                 <Link
                   key={t.thread_id}
@@ -320,67 +319,69 @@ export function SideNav({
             </SidebarSection>
           )}
 
-          {/* Nghiệp vụ section */}
-          <SidebarSection title="Nghiệp vụ">
-            <SidebarLink href="/vouchers" icon={FileText} label="Chứng từ" active={pathname.startsWith("/vouchers")} />
-            <SidebarLink href="/accounting" icon={Calculator} label="Kế toán" active={pathname.startsWith("/accounting")} />
-            <SidebarLink href="/customers" icon={Building2} label="Khách hàng" active={pathname.startsWith("/customers")} />
-            <SidebarLink href="/suppliers" icon={Truck} label="Nhà cung cấp" active={pathname.startsWith("/suppliers")} />
-            <SidebarLink href="/expenses" icon={Banknote} label="Chi phí" active={pathname.startsWith("/expenses")} />
-            <SidebarLink href="/mau-chung-tu" icon={GraduationCap} label="Chứng từ mẫu" active={pathname.startsWith("/mau-chung-tu")} />
-            {isAdminOrAbove && (
-              <SidebarLink href="/contracts" icon={ScrollText} label="Hợp đồng" active={pathname.startsWith("/contracts")} />
-            )}
-          </SidebarSection>
-
-          {/* Workspace (admin+) */}
-          {isAdminOrAbove && (
-            <SidebarSection title="Workspace">
-              <SidebarLink href="/knowledge" icon={BookOpen} label="Kiến thức" active={pathname.startsWith("/knowledge")} />
-              <SidebarLink href="/admin/agents" icon={Bot} label="Agents" active={pathname === "/admin/agents"} />
-              {isSuperAdmin && (
-                <SidebarLink href="/admin/workflows" icon={Workflow} label="Workflows" active={pathname.startsWith("/admin/workflows")} />
-              )}
-              <SidebarLink href="/admin/review-queue" icon={ListChecks} label="Reviews" active={pathname.startsWith("/admin/review-queue")} />
-              <SidebarLink href="/admin/hitl-queue" icon={ClipboardCheck} label="HITL" active={pathname.startsWith("/admin/hitl-queue")} />
-              <SidebarLink href="/admin/approval-queue" icon={ShieldCheck} label="Duyệt cấp 2" active={pathname.startsWith("/admin/approval-queue")} />
+          {/* Nghiệp vụ — capability-driven business pages (nav-model.ts
+              buildNghiepVuItems). Empty for SUPER_ADMIN/TENANT_OWNER; for
+              ADMIN/USER, only pages backed by an actually-assigned
+              capability ever appear. */}
+          {nghiepVuItems.length > 0 && (
+            <SidebarSection
+              title="Nghiệp vụ"
+              active={nghiepVuItems.some((item) => pathname.startsWith(item.href))}
+            >
+              {nghiepVuItems.map((item) => (
+                <SidebarLink
+                  key={item.href}
+                  href={item.href}
+                  icon={item.icon}
+                  label={item.label}
+                  active={pathname.startsWith(item.href)}
+                />
+              ))}
             </SidebarSection>
           )}
 
-          {/* Quản trị (super_admin / tenant_owner / tenant_admin) */}
-          {isSuperAdmin && (
-            <SidebarSection title="Quản trị">
-              <SidebarLink href="/admin/agent-builder" icon={Puzzle} label="Agent Builder" active={pathname.startsWith("/admin/agent-builder")} />
-              <SidebarLink href="/admin/tenants" icon={Building2} label="Tenants" active={pathname.startsWith("/admin/tenants")} />
-              <SidebarLink href="/admin/users" icon={UserCog} label="Users" active={pathname === "/admin/users"} />
-              <SidebarLink href="/admin/tools" icon={Wrench} label="Tools" active={pathname.startsWith("/admin/tools")} />
-              <SidebarLink href="/admin/skills" icon={Sparkles} label="Skills" active={pathname.startsWith("/admin/skills")} />
-              <SidebarLink href="/admin/audit" icon={ShieldCheck} label="Audit" active={pathname.startsWith("/admin/audit")} />
-              <SidebarLink href="/admin/health" icon={HeartPulse} label="Health" active={pathname.startsWith("/admin/health")} />
+          {/* AI Workspace — ADMIN's unified own-department resource list
+              (nav-model.ts buildWorkspaceItems): Agents, Nghiệp vụ,
+              Workflows, Skills, Knowledge, Tools. Empty for every other
+              role — SUPER_ADMIN/TENANT_OWNER never get department
+              operational resource links here. */}
+          {workspaceItems.length > 0 && (
+            <SidebarSection
+              title="Workspace"
+              active={workspaceItems.some((item) => pathname.startsWith(item.href))}
+            >
+              {workspaceItems.map((item) => (
+                <SidebarLink
+                  key={item.href}
+                  href={item.href}
+                  icon={item.icon}
+                  label={item.label}
+                  active={pathname.startsWith(item.href)}
+                />
+              ))}
             </SidebarSection>
           )}
 
-          {isTenantOwner && !isSuperAdmin && (
-            <SidebarSection title="Quản trị tenant">
-              <SidebarLink href="/admin/tenant-admins" icon={UserCog} label="Administrators" active={pathname.startsWith("/admin/tenant-admins")} />
-              <SidebarLink href="/admin/tenant-users" icon={Users} label="Users" active={pathname.startsWith("/admin/tenant-users")} />
-              <SidebarLink href="/admin/tenant-agents" icon={Bot} label="Tenant Agents" active={pathname.startsWith("/admin/tenant-agents")} />
-              <SidebarLink href="/knowledge" icon={BookOpen} label="Knowledge" active={pathname === "/knowledge"} />
-              <SidebarLink href="/admin/hitl-queue" icon={ClipboardCheck} label="HITL" active={pathname.startsWith("/admin/hitl-queue")} />
-              <SidebarLink href="/admin/audit" icon={ShieldCheck} label="Audit" active={pathname.startsWith("/admin/audit")} />
-              <SidebarLink href="/admin/tenant-status" icon={Gauge} label="Tenant Status" active={pathname.startsWith("/admin/tenant-status")} />
+          {/* Quản trị — role-scoped governance groups (nav-model.ts
+              buildQuanTriGroups): "Platform / System" for SUPER_ADMIN,
+              "Company" for TENANT_OWNER, "Department" for ADMIN. */}
+          {quanTriGroups.map((group) => (
+            <SidebarSection
+              key={group.label}
+              title={group.label}
+              active={group.items.some((item) => pathname.startsWith(item.href))}
+            >
+              {group.items.map((item) => (
+                <SidebarLink
+                  key={item.href}
+                  href={item.href}
+                  icon={item.icon}
+                  label={item.label}
+                  active={pathname.startsWith(item.href)}
+                />
+              ))}
             </SidebarSection>
-          )}
-
-          {isTenantAdmin && !isTenantOwner && !isSuperAdmin && (
-            <SidebarSection title="Quản trị">
-              <SidebarLink href="/admin/tenant-users" icon={Users} label="Users" active={pathname.startsWith("/admin/tenant-users")} />
-              <SidebarLink href="/admin/tenant-agents" icon={Bot} label="Tenant Agents" active={pathname.startsWith("/admin/tenant-agents")} />
-              <SidebarLink href="/knowledge" icon={BookOpen} label="Knowledge" active={pathname === "/knowledge"} />
-              <SidebarLink href="/admin/hitl-queue" icon={ClipboardCheck} label="HITL" active={pathname.startsWith("/admin/hitl-queue")} />
-              <SidebarLink href="/admin/audit" icon={ShieldCheck} label="Audit" active={pathname.startsWith("/admin/audit")} />
-            </SidebarSection>
-          )}
+          ))}
         </div>
 
         {/* Footer: user info + logout */}
@@ -411,13 +412,52 @@ export function SideNav({
   );
 }
 
-function SidebarSection({ title, children }: { title: string; children: React.ReactNode }) {
+// Collapsible menu group: click the header to expand/collapse (chevron
+// rotates to indicate state); a group containing the current route
+// auto-expands (including re-expanding a group the user had collapsed, if
+// navigation later lands inside it), matching the old nav's dropdown
+// groups' behavior without reintroducing AppNav itself. Non-menu sections
+// (agent switcher, recent chats) opt out via collapsible={false} and stay
+// always-expanded exactly as before.
+function SidebarSection({
+  title,
+  children,
+  collapsible = true,
+  active = false,
+}: {
+  title: string;
+  children: React.ReactNode;
+  collapsible?: boolean;
+  active?: boolean;
+}) {
+  const [open, setOpen] = useState(active);
+  useEffect(() => {
+    if (active) setOpen(true);
+  }, [active]);
+
+  if (!collapsible) {
+    return (
+      <div className="mt-4">
+        <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-fg)]">
+          {title}
+        </div>
+        <div className="space-y-0.5">{children}</div>
+      </div>
+    );
+  }
+
   return (
     <div className="mt-4">
-      <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-fg)]">
-        {title}
-      </div>
-      <div className="space-y-0.5">{children}</div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-fg)] transition hover:text-[var(--color-fg)]"
+      >
+        <span>{title}</span>
+        <ChevronRight className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
+      </button>
+      {open && <div className="mt-1 space-y-0.5">{children}</div>}
     </div>
   );
 }

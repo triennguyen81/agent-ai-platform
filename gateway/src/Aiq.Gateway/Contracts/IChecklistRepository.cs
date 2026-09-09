@@ -21,14 +21,14 @@ public sealed record ChecklistItemRecord(
 
 public sealed record CreateChecklistItemDto(
     Guid? ClauseId,
-    [Required, StringLength(500, MinimumLength = 1)] string Title,
+    [property: Required, StringLength(500, MinimumLength = 1)] string Title,
     string? Description,
     DateOnly? DueDate,
     int? RemindDaysBefore,
     string? AssigneeEmail);
 
 public sealed record BulkCreateChecklistRequest(
-    [Required] IReadOnlyList<CreateChecklistItemDto> Items,
+    [property: Required] IReadOnlyList<CreateChecklistItemDto> Items,
     bool ReplaceExisting);
 
 public sealed record UpdateChecklistItemRequest(

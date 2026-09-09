@@ -33,6 +33,10 @@ class AuditEntry:
     detail: str | None = None
     user_id: str | None = None
     tenant_id: str | None = None
+    # D3: the caller's own department at execution time, where relevant
+    # (None for the departmentless super_admin test path). Identifier only —
+    # never department name/content.
+    department_id: str | None = None
     agent_id: str | None = None
     version: int | None = None
     provider: str | None = None
@@ -66,6 +70,7 @@ class AuditStore:
         detail: str | None = None,
         user_id: str | None = None,
         tenant_id: str | None = None,
+        department_id: str | None = None,
         agent_id: str | None = None,
         version: int | None = None,
         provider: str | None = None,
@@ -87,6 +92,7 @@ class AuditStore:
             detail=(detail[:300] if detail else None),
             user_id=user_id,
             tenant_id=tenant_id,
+            department_id=department_id,
             agent_id=agent_id,
             version=version,
             provider=provider,
@@ -113,6 +119,7 @@ class AuditStore:
         limit: int = 100,
         event: str | None = None,
         tenant_id: str | None = None,
+        department_id: str | None = None,
     ) -> list[AuditEntry]:
         try:
             raw = await self._redis.lrange(self._key, 0, max(0, limit * 4 - 1))
@@ -127,6 +134,8 @@ class AuditStore:
                 if event and data.get("event") != event:
                     continue
                 if tenant_id and data.get("tenant_id") != tenant_id:
+                    continue
+                if department_id and data.get("department_id") != department_id:
                     continue
                 out.append(AuditEntry(**data))
                 if len(out) >= limit:

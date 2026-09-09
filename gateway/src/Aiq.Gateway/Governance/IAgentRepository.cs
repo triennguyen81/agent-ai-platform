@@ -45,11 +45,11 @@ public sealed record AgentAclRecord(
     DateTime GrantedAt);
 
 public sealed record CreateAgentRequest(
-    [Required, RegularExpression("^[a-z0-9-]+$"), StringLength(80, MinimumLength = 2)] string Code,
-    [Required, StringLength(160)] string Name,
-    [Required, RegularExpression("^(orchestrator|domain|sub|tool_only)$")] string Type,
+    [property: Required, RegularExpression("^[a-z0-9-]+$"), StringLength(80, MinimumLength = 2)] string Code,
+    [property: Required, StringLength(160)] string Name,
+    [property: Required, RegularExpression("^(orchestrator|domain|sub|tool_only)$")] string Type,
     string? Description,
-    [RegularExpression("^(read_only|suggest|execute_with_approval|autonomous)$")] string? ActionTier,
+    [property: RegularExpression("^(read_only|suggest|execute_with_approval|autonomous)$")] string? ActionTier,
     string? SponsorTeam,
     string? BaselineRole,
     JsonElement? Config);
@@ -57,22 +57,22 @@ public sealed record CreateAgentRequest(
 public sealed record UpdateAgentRequest(
     string? Name,
     string? Description,
-    [RegularExpression("^(read_only|suggest|execute_with_approval|autonomous)$")] string? ActionTier,
+    [property: RegularExpression("^(read_only|suggest|execute_with_approval|autonomous)$")] string? ActionTier,
     string? SponsorTeam,
     string? BaselineRole,
     JsonElement? Config,
     Guid? OwnerUserId);
 
 public sealed record TransitionStateRequest(
-    [Required, RegularExpression("^(draft|testing|pending_review|production|deprecated|retired)$")] string ToState,
+    [property: Required, RegularExpression("^(draft|testing|pending_review|production|deprecated|retired)$")] string ToState,
     string? Reason);
 
 public sealed record DisableAgentRequest(string? Reason);
 
 public sealed record GrantAclRequest(
-    [Required] Guid PrincipalId,
-    [RegularExpression("^(user|group)$")] string? PrincipalType,
-    [Required, RegularExpression("^(owner|editor|user)$")] string AccessLevel);
+    [property: Required] Guid PrincipalId,
+    [property: RegularExpression("^(user|group)$")] string? PrincipalType,
+    [property: Required, RegularExpression("^(owner|editor|user)$")] string AccessLevel);
 
 public interface IAgentRepository
 {
@@ -147,6 +147,21 @@ public interface IAgentRepository
     Task<IReadOnlyList<PrincipalAgentRecord>> ListForPrincipalAsync(
         Guid tenantId,
         Guid principalId,
+        CancellationToken ct);
+
+    /// <summary>
+    /// D3: the ADMIN (department manager) equivalent of ListForPrincipalAsync
+    /// — every agent actively entitled to BOTH the tenant and this specific
+    /// department, deliberately WITHOUT a direct agent_assignments row
+    /// requirement (an admin executes via department entitlement alone, see
+    /// IDynamicAgentRepository.GetAdminManifestAsync). Same
+    /// PrincipalAgentRecord shape as the USER path so /me/agents and its Web
+    /// consumers (Chat's authorization gate, the "My Agents" list) need no
+    /// per-role branching beyond which repository method gets called.
+    /// </summary>
+    Task<IReadOnlyList<PrincipalAgentRecord>> ListForDepartmentManagerAsync(
+        Guid tenantId,
+        Guid departmentId,
         CancellationToken ct);
 }
 
@@ -539,6 +554,31 @@ public sealed class AgentRepository : IAgentRepository
     public async Task<IReadOnlyList<PrincipalAgentRecord>> ListForPrincipalAsync(
         Guid tenantId, Guid principalId, CancellationToken ct)
     {
+        // Two independent entitlement chains, either of which makes a direct
+        // agent_assignments row visible:
+        //
+        // 1. Legacy scope='system' platform agent — D3 canonical USER chain:
+        //    tenant entitlement -> department assignment (matching the
+        //    assigned user's OWN department) -> direct user assignment, all
+        //    active. Same chain IDynamicAgentRepository.GetManifestAsync
+        //    enforces at execution time, so a stale direct assignment left
+        //    over after a department entitlement is revoked still doesn't
+        //    make the agent visible.
+        //
+        // 2. V2-C Department Agent (agents.v2_scope='department') — ownership
+        //    is structural on the agent row itself (owning_tenant_id,
+        //    department_id set at creation; see
+        //    IDynamicAgentRepository.CreateDepartmentAgentAsync). Such an
+        //    agent can never acquire an agent_tenant_assignments or
+        //    agent_department_assignments row (migration 007/024's ownership
+        //    constraints make the two mutually exclusive with scope='system'
+        //    rows), so requiring them would make every Department Agent
+        //    permanently invisible to its own directly-assigned USERs. This
+        //    mirrors the escape hatch migration 025 already added to
+        //    enforce_department_capability_binding_eligibility() for the
+        //    exact same structural reason. Still requires: same tenant, same
+        //    department as the assigned user, and the active direct
+        //    agent_assignments row from chain 1.
         const string sql = """
             SELECT
                 a.id              AS AgentId,
@@ -553,19 +593,66 @@ public sealed class AgentRepository : IAgentRepository
                 'user'            AS AccessLevel
             FROM agent_assignments assignment
             JOIN agents a ON a.id = assignment.agent_id
-            JOIN agent_tenant_assignments tenant_assignment
+            JOIN users principal_user
+              ON principal_user.id = assignment.user_id
+             AND principal_user.tenant_id = assignment.tenant_id
+            LEFT JOIN agent_tenant_assignments tenant_assignment
               ON tenant_assignment.agent_id = a.id
              AND tenant_assignment.tenant_id = assignment.tenant_id
              AND tenant_assignment.status = 'active'
+            LEFT JOIN agent_department_assignments department_assignment
+              ON department_assignment.agent_id = a.id
+             AND department_assignment.tenant_id = assignment.tenant_id
+             AND department_assignment.department_id = principal_user.department_id
+             AND department_assignment.status = 'active'
             LEFT JOIN agent_versions version ON version.id = a.published_version_id
             WHERE assignment.tenant_id = @tenantId
               AND assignment.user_id = @principalId
               AND assignment.status = 'active'
+              AND (
+                (tenant_assignment.agent_id IS NOT NULL AND department_assignment.agent_id IS NOT NULL)
+                OR (a.v2_scope = 'department'
+                    AND a.owning_tenant_id = assignment.tenant_id
+                    AND a.department_id = principal_user.department_id)
+              )
             ORDER BY a.name
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<PrincipalAgentRecord>(
             new CommandDefinition(sql, new { tenantId, principalId }, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    public async Task<IReadOnlyList<PrincipalAgentRecord>> ListForDepartmentManagerAsync(
+        Guid tenantId, Guid departmentId, CancellationToken ct)
+    {
+        const string sql = """
+            SELECT
+                a.id              AS AgentId,
+                a.code            AS AgentCode,
+                a.name            AS AgentName,
+                a.description     AS Description,
+                a.type            AS AgentType,
+                a.lifecycle_state AS LifecycleState,
+                version.version        AS PublishedVersion,
+                a.action_tier     AS ActionTier,
+                (a.disabled_at IS NOT NULL) AS AgentDisabled,
+                'department'      AS AccessLevel
+            FROM agent_department_assignments department_assignment
+            JOIN agents a ON a.id = department_assignment.agent_id
+            JOIN agent_tenant_assignments tenant_assignment
+              ON tenant_assignment.agent_id = a.id
+             AND tenant_assignment.tenant_id = department_assignment.tenant_id
+             AND tenant_assignment.status = 'active'
+            LEFT JOIN agent_versions version ON version.id = a.published_version_id
+            WHERE department_assignment.tenant_id = @tenantId
+              AND department_assignment.department_id = @departmentId
+              AND department_assignment.status = 'active'
+            ORDER BY a.name
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.QueryAsync<PrincipalAgentRecord>(
+            new CommandDefinition(sql, new { tenantId, departmentId }, cancellationToken: ct));
         return rows.AsList();
     }
 }

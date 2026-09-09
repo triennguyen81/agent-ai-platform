@@ -13,7 +13,7 @@ public static class DynamicAgentEndpoints
     public static IEndpointRouteBuilder MapDynamicAgentEndpoints(this IEndpointRouteBuilder app)
     {
         var system = app.MapGroup("/system/agents")
-            .RequireAuthorization("super_admin").RequireRateLimiting("default");
+            .RequireAuthorization("platform_admin").RequireRateLimiting("default");
         system.MapGet("/", ListAgentsAsync);
         system.MapPost("/", CreateAgentAsync);
         system.MapGet("/{agentId:guid}", GetAgentAsync);
@@ -30,6 +30,13 @@ public static class DynamicAgentEndpoints
         system.MapPut("/{agentId:guid}/tenants/{tenantId:guid}", AssignTenantAsync);
         system.MapDelete("/{agentId:guid}/tenants/{tenantId:guid}", RevokeTenantAsync);
 
+        // ACL V2-G: legacy-agent migration inventory + explicit,
+        // one-department-at-a-time clone action. Never automatic — every
+        // clone is a deliberate SUPER_ADMIN decision naming one specific
+        // already-entitled department.
+        system.MapGet("/quarantine", ListQuarantinedAsync);
+        system.MapPost("/{agentId:guid}/clone-to-department", CloneToDepartmentAsync);
+
         var tenant = app.MapGroup("/tenant/agents")
             .RequireAuthorization("admin").RequireRateLimiting("default");
         tenant.MapGet("/", ListTenantAgentsAsync);
@@ -41,10 +48,21 @@ public static class DynamicAgentEndpoints
         tenant.MapPut("/{agentId:guid}/knowledge/{noteId:guid}", AttachTenantKnowledgeAsync);
         tenant.MapDelete("/{agentId:guid}/knowledge/{noteId:guid}", DetachTenantKnowledgeAsync);
 
+        // D3: TENANT_OWNER-only department-agent entitlement management.
+        // ADMIN may NOT assign/revoke here (that would let a department
+        // manager grant itself agents its tenant owner never approved for
+        // that department) — mapped standalone with the literal
+        // tenant_owner policy, exactly like D2's /tenant/users/{id}/role.
+        var departmentAgents = app.MapGroup("/tenant/departments/{departmentId:guid}/agents")
+            .RequireAuthorization("tenant_governance").RequireRateLimiting("default");
+        departmentAgents.MapGet("/", ListDepartmentAgentsAsync);
+        departmentAgents.MapPut("/{agentId:guid}", AssignDepartmentAgentAsync);
+        departmentAgents.MapDelete("/{agentId:guid}", RevokeDepartmentAgentAsync);
+
         app.MapGet("/runtime/agents/{agentId:guid}/manifest", ManifestAsync)
-            .RequireAuthorization("user").RequireRateLimiting("default");
+            .RequireAuthorization("department_member").RequireRateLimiting("default");
         app.MapGet("/runtime/agents/{routerAgentId:guid}/delegate/{specialistAgentId:guid}/manifest", DelegateManifestAsync)
-            .RequireAuthorization("user").RequireRateLimiting("default");
+            .RequireAuthorization("department_member").RequireRateLimiting("default");
         return app;
     }
 
@@ -70,6 +88,22 @@ public static class DynamicAgentEndpoints
         {
             return Results.Conflict(new { error = "agent_slug_exists" });
         }
+    }
+
+    private static async Task<IResult> ListQuarantinedAsync(IDynamicAgentRepository repo, CancellationToken ct)
+    {
+        var items = await repo.ListQuarantinedAgentsAsync(ct);
+        return Results.Ok(new { items, total = items.Count });
+    }
+
+    public sealed record CloneToDepartmentRequest([property: Required] Guid TenantId, [property: Required] Guid DepartmentId);
+
+    private static async Task<IResult> CloneToDepartmentAsync(Guid agentId, CloneToDepartmentRequest request, IDynamicAgentRepository repo, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
+        if (!TryActor(ctx, out var actorId)) return Results.Unauthorized();
+        var result = await repo.CloneSharedAgentToDepartmentAsync(actorId, agentId, request.TenantId, request.DepartmentId, ct);
+        return result is null ? Results.NotFound() : Results.Created($"/system/agents/{result.ClonedAgentId}", result);
     }
 
     private static async Task<IResult> UpdateAgentAsync(Guid agentId, UpdateSystemAgentRequest request, IDynamicAgentRepository repo, HttpContext ctx, CancellationToken ct)
@@ -114,6 +148,10 @@ public static class DynamicAgentEndpoints
         catch (PostgresException ex) when (ex.SqlState == "23505")
         {
             return Results.Conflict(new { error = "agent_already_has_draft" });
+        }
+        catch (PostgresException ex) when (ex.SqlState is "23503" or "23514")
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["capabilities"] = [ex.MessageText] });
         }
     }
 
@@ -175,17 +213,64 @@ public static class DynamicAgentEndpoints
     private static async Task<IResult> RevokeTenantAsync(Guid agentId, Guid tenantId, IDynamicAgentRepository repo, CancellationToken ct) =>
         await repo.RevokeTenantAsync(agentId, tenantId, ct) ? Results.NoContent() : Results.NotFound();
 
+    /// <summary>
+    /// D3: canonical agent-visibility query for the whole /tenant/agents
+    /// page. TENANT_OWNER sees every tenant-entitled agent (unchanged);
+    /// ADMIN sees only agents actively assigned to their OWN department —
+    /// resolved by the repository's own department-scoped query, never by
+    /// fetching the tenant-wide list and filtering here.
+    /// </summary>
     private static async Task<IResult> ListTenantAgentsAsync(IDynamicAgentRepository repo, HttpContext ctx, CancellationToken ct)
     {
-        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest(new { error = "tenant_context_missing" });
-        var items = await repo.ListAgentsForTenantAsync(tenantId, ct);
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId)
+            return Results.BadRequest(new { error = "tenant_context_missing" });
+        var items = principal.IsInRole("tenant_owner")
+            ? await repo.ListAgentsForTenantAsync(tenantId, ct)
+            : await repo.ListAgentsForDepartmentAsync(tenantId, principal.DepartmentId!.Value, ct);
         return Results.Ok(new { items, total = items.Count });
+    }
+
+    /// <summary>TENANT_OWNER management view: every tenant-entitled agent, annotated with this department's assignment status.</summary>
+    private static async Task<IResult> ListDepartmentAgentsAsync(
+        Guid departmentId, IDynamicAgentRepository repo, IDepartmentRepository departments, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest(new { error = "tenant_context_missing" });
+        if (await departments.FindAsync(tenantId, departmentId, ct) is null) return Results.NotFound();
+        var items = await repo.ListDepartmentEntitlementsAsync(tenantId, departmentId, ct);
+        return Results.Ok(new { items, total = items.Count });
+    }
+
+    private static async Task<IResult> AssignDepartmentAgentAsync(
+        Guid departmentId, Guid agentId, IDynamicAgentRepository repo, IDepartmentRepository departments, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest(new { error = "tenant_context_missing" });
+        if (!TryActor(ctx, out var actorId)) return Results.Unauthorized();
+        if (await departments.FindAsync(tenantId, departmentId, ct) is not { Status: "active" })
+            return Results.BadRequest(new { error = "active_department_required" });
+        try
+        {
+            var assigned = await repo.AssignDepartmentAgentAsync(tenantId, departmentId, agentId, actorId, ct);
+            return assigned ? Results.NoContent() : Results.BadRequest(new { error = "invalid_tenant_department_or_agent" });
+        }
+        catch (PostgresException ex) when (ex.SqlState == "23514") { return Results.BadRequest(new { error = ex.MessageText }); }
+    }
+
+    private static async Task<IResult> RevokeDepartmentAgentAsync(
+        Guid departmentId, Guid agentId, IDynamicAgentRepository repo, IDepartmentRepository departments, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest(new { error = "tenant_context_missing" });
+        if (await departments.FindAsync(tenantId, departmentId, ct) is null) return Results.NotFound();
+        var revoked = await repo.RevokeDepartmentAgentAsync(tenantId, departmentId, agentId, ct);
+        return revoked ? Results.NoContent() : Results.NotFound();
     }
 
     private static async Task<IResult> ListUsersAsync(Guid agentId, IDynamicAgentRepository repo, HttpContext ctx, CancellationToken ct)
     {
-        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest(new { error = "tenant_context_missing" });
-        var items = await repo.ListAssignedUsersAsync(tenantId, agentId, ct);
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId)
+            return Results.BadRequest(new { error = "tenant_context_missing" });
+        var items = principal.IsInRole("tenant_owner")
+            ? await repo.ListAssignedUsersAsync(tenantId, agentId, ct)
+            : await repo.ListAssignedDepartmentUsersAsync(tenantId, principal.DepartmentId!.Value, agentId, ct);
         return items is null ? Results.NotFound() : Results.Ok(new { items, total = items.Count });
     }
 
@@ -222,14 +307,25 @@ public static class DynamicAgentEndpoints
     {
         if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest(new { error = "tenant_context_missing" });
         if (!TryActor(ctx, out var actorId)) return Results.Unauthorized();
-        try { return await repo.AssignUserAsync(tenantId, agentId, userId, actorId, ct) ? Results.NoContent() : Results.BadRequest(new { error = "invalid_tenant_agent_or_user" }); }
+        var principal = AuthenticatedPrincipalContext.Require(ctx);
+        try
+        {
+            var assigned = principal.IsInRole("tenant_owner")
+                ? await repo.AssignUserAsync(tenantId, agentId, userId, actorId, ct)
+                : await repo.AssignDepartmentUserAsync(tenantId, principal.DepartmentId!.Value, agentId, userId, actorId, ct);
+            return assigned ? Results.NoContent() : Results.BadRequest(new { error = "invalid_tenant_agent_or_user" });
+        }
         catch (PostgresException ex) when (ex.SqlState == "23514") { return Results.BadRequest(new { error = ex.MessageText }); }
     }
 
     private static async Task<IResult> RevokeUserAsync(Guid agentId, Guid userId, IDynamicAgentRepository repo, HttpContext ctx, CancellationToken ct)
     {
         if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.BadRequest(new { error = "tenant_context_missing" });
-        return await repo.RevokeUserAsync(tenantId, agentId, userId, ct) ? Results.NoContent() : Results.NotFound();
+        var principal = AuthenticatedPrincipalContext.Require(ctx);
+        var revoked = principal.IsInRole("tenant_owner")
+            ? await repo.RevokeUserAsync(tenantId, agentId, userId, ct)
+            : await repo.RevokeDepartmentUserAsync(tenantId, principal.DepartmentId!.Value, agentId, userId, ct);
+        return revoked ? Results.NoContent() : Results.NotFound();
     }
 
     private static async Task<IResult> ManifestAsync(
@@ -237,10 +333,46 @@ public static class DynamicAgentEndpoints
         IJwtTokenService jwt, IUserRepository users, HttpContext ctx, CancellationToken ct)
     {
         if (!TryActor(ctx, out var userId)) return Results.Unauthorized();
-        var mode = ManifestAccessRules.Resolve(ctx.User.IsInRole("super_admin"), ctx.User.IsInRole("user"));
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal)) return Results.Forbid();
+
+        // ACL V2-C: ADMIN's own Department Agent Builder needs to run its
+        // CURRENT DRAFT (pre-publish) — the same "test the thing you're
+        // editing" concept SUPER_ADMIN already has via ManifestAccessMode
+        // .SuperAdminTest, just scoped to structural department ownership
+        // instead of global platform access. Agent always calls this one
+        // canonical route regardless of test-vs-execute intent (see
+        // agent/src/aiq_agent/runtime/manifest.py), so the signal has to
+        // travel as an explicit, additive query parameter — absent (or on
+        // any other role), behavior is byte-for-byte the existing D3 dispatch
+        // below. This never returns a DRAFT to the general execution path:
+        // real Chat/production execution for ADMIN still requires a
+        // published version (see GetDepartmentAgentManifestAsync).
+        if (string.Equals(ctx.Request.Query["mode"], "test", StringComparison.Ordinal) && principal.IsInRole("admin"))
+        {
+            if (principal.TenantId is not { } testTenantId || principal.DepartmentId is not { } testDepartmentId)
+                return Results.Forbid();
+            var testResult = await repo.GetDepartmentAgentTestManifestAsync(userId, testTenantId, testDepartmentId, agentId, ct);
+            if (testResult.Manifest is not null)
+            {
+                var mintedTestToken = await MintToolExecutionTokenAsync(jwt, users, ctx, userId, testTenantId, testResult.Manifest.TimeoutSeconds, ct);
+                if (mintedTestToken is null) return Results.Forbid();
+                testResult = testResult with { Manifest = testResult.Manifest with { ToolExecutionToken = mintedTestToken } };
+            }
+            await audit.WriteAsync(new AuditEntry(userId, "GET runtime agent manifest (department agent test)",
+                "agent", agentId.ToString(),
+                new { tenantId = testTenantId, departmentId = testDepartmentId, allowed = testResult.Manifest is not null, denialReason = testResult.DenialReason },
+                ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
+            return testResult.Manifest is not null
+                ? Results.Ok(testResult.Manifest)
+                : Results.Json(new { error = testResult.DenialReason }, statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        var mode = ManifestAccessRules.Resolve(
+            principal.IsInRole("super_admin"), principal.IsInRole("admin"), principal.IsInRole("user"));
         if (mode == ManifestAccessMode.Forbidden) return Results.Forbid();
 
         Guid? tenantId = null;
+        Guid? departmentId = null;
         ManifestResult result;
         if (mode == ManifestAccessMode.SuperAdminTest)
         {
@@ -248,9 +380,26 @@ public static class DynamicAgentEndpoints
         }
         else
         {
-            if (!TenantContext.TryGet(ctx, out var resolvedTenantId)) return Results.Forbid();
+            // TenantContextMiddleware's DepartmentAccessPolicy check already
+            // guarantees an admin/user principal has a valid, active,
+            // same-tenant department by the time it reaches here — see D2.
+            if (principal.TenantId is not { } resolvedTenantId || principal.DepartmentId is not { } resolvedDepartmentId)
+                return Results.Forbid();
             tenantId = resolvedTenantId;
-            result = await repo.GetManifestAsync(userId, resolvedTenantId, agentId, ct);
+            departmentId = resolvedDepartmentId;
+            var isAdmin = mode == ManifestAccessMode.AdminDepartmentExecution;
+            // ACL V2-C: Department Agent ownership is the production root —
+            // checked FIRST and, when true, is authoritative (never falls
+            // through to the legacy entitlement chain below, so a Department
+            // Agent belonging to another department can never be reached via
+            // that chain either). False (not a resolved Department Agent —
+            // including "doesn't exist") preserves the exact pre-V2-C D3
+            // behavior for every scope='system' entitlement-based agent.
+            result = await repo.IsResolvedDepartmentAgentAsync(agentId, ct)
+                ? await repo.GetDepartmentAgentManifestAsync(userId, resolvedTenantId, resolvedDepartmentId, agentId, isAdmin, ct)
+                : isAdmin
+                    ? await repo.GetAdminManifestAsync(userId, resolvedTenantId, resolvedDepartmentId, agentId, ct)
+                    : await repo.GetManifestAsync(userId, resolvedTenantId, resolvedDepartmentId, agentId, ct);
             if (result.Manifest is not null)
             {
                 var minted = await MintToolExecutionTokenAsync(jwt, users, ctx, userId, resolvedTenantId, result.Manifest.TimeoutSeconds, ct);
@@ -259,10 +408,14 @@ public static class DynamicAgentEndpoints
             }
         }
 
-        await audit.WriteAsync(new AuditEntry(userId, mode == ManifestAccessMode.SuperAdminTest
-                ? "GET runtime agent manifest (super_admin test)" : "GET runtime agent manifest",
+        await audit.WriteAsync(new AuditEntry(userId, mode switch
+            {
+                ManifestAccessMode.SuperAdminTest => "GET runtime agent manifest (super_admin test)",
+                ManifestAccessMode.AdminDepartmentExecution => "GET runtime agent manifest (admin department execution)",
+                _ => "GET runtime agent manifest",
+            },
             "agent", agentId.ToString(),
-            new { tenantId, allowed = result.Manifest is not null, denialReason = result.DenialReason },
+            new { tenantId, departmentId, allowed = result.Manifest is not null, denialReason = result.DenialReason },
             ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
         return result.Manifest is not null
             ? Results.Ok(result.Manifest)
@@ -281,10 +434,14 @@ public static class DynamicAgentEndpoints
         IJwtTokenService jwt, IUserRepository users, HttpContext ctx, CancellationToken ct)
     {
         if (!TryActor(ctx, out var userId)) return Results.Unauthorized();
+        // Delegation stays USER-only in D3 (see GetDelegateManifestAsync's
+        // doc comment) — an ADMIN-router delegation path is not part of this phase.
         if (!ctx.User.IsInRole("user")) return Results.Forbid();
-        if (!TenantContext.TryGet(ctx, out var tenantId)) return Results.Forbid();
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal)
+            || principal.TenantId is not { } tenantId || principal.DepartmentId is not { } departmentId)
+            return Results.Forbid();
 
-        var result = await repo.GetDelegateManifestAsync(userId, tenantId, routerAgentId, specialistAgentId, ct);
+        var result = await repo.GetDelegateManifestAsync(userId, tenantId, departmentId, routerAgentId, specialistAgentId, ct);
         if (result.Manifest is not null)
         {
             var minted = await MintToolExecutionTokenAsync(jwt, users, ctx, userId, tenantId, result.Manifest.TimeoutSeconds, ct);
@@ -294,7 +451,7 @@ public static class DynamicAgentEndpoints
 
         await audit.WriteAsync(new AuditEntry(userId, "GET runtime agent delegate manifest",
             "agent", $"{routerAgentId}->{specialistAgentId}",
-            new { tenantId, routerAgentId, specialistAgentId, allowed = result.Manifest is not null, denialReason = result.DenialReason },
+            new { tenantId, departmentId, routerAgentId, specialistAgentId, allowed = result.Manifest is not null, denialReason = result.DenialReason },
             ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
         return result.Manifest is not null
             ? Results.Ok(result.Manifest)

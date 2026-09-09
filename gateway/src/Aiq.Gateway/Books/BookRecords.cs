@@ -24,9 +24,9 @@ public sealed record BookPageRecord(
     DateTime CreatedAt);
 
 public sealed record CreateBookRequest(
-    [Required, StringLength(500, MinimumLength = 1)] string Title,
-    [StringLength(255)] string? Author,
-    [StringLength(8)] string? Language);
+    [property: Required, StringLength(500, MinimumLength = 1)] string Title,
+    [property: StringLength(255)] string? Author,
+    [property: StringLength(8)] string? Language);
 
 public sealed record BookListItem(
     Guid Id,

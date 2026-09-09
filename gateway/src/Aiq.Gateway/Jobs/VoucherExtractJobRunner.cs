@@ -94,10 +94,16 @@ public sealed class VoucherExtractJobRunner
         string agentAnswer;
         try
         {
+            // D6: routes through the capability resolver (voucher.processing)
+            // instead of the legacy no-agent-id path — the resolved agent's
+            // own skill/tool grants govern execution now, not this
+            // hard-coded skills list. Authorization is the UPLOADING
+            // user's own tenant/department[/direct-assignment] chain,
+            // exactly as if they had called this interactively.
             agentAnswer = await _agent.RunAgentTaskAsync(
                 task,
                 userToken,
-                skills: new[] { "voucher-invoice-vat", "accounting-vietnam", "journal-entry-formatter", "vietnamese-style" },
+                capability: "voucher.processing",
                 maxTurns: 3,
                 ct);
         }

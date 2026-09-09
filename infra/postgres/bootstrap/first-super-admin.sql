@@ -30,8 +30,14 @@ WHERE user_id = (SELECT id FROM bootstrap_super_admin_target);
 DELETE FROM user_roles
 WHERE user_id = (SELECT id FROM bootstrap_super_admin_target);
 
+-- D1/D2 added users.department_id, and DepartmentAccessPolicy.ValidateMembership
+-- fails closed (403) unless a super_admin/tenant_owner is departmentless — a
+-- registered user promoted here may already carry the default tenant's
+-- default department_id from self-registration, so it must be cleared too,
+-- not just tenant_id.
 UPDATE users
 SET tenant_id = NULL,
+    department_id = NULL,
     updated_at = NOW()
 WHERE id = (SELECT id FROM bootstrap_super_admin_target);
 

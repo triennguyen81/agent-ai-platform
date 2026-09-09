@@ -13,7 +13,7 @@ public static class AgentKnowledgeEndpoints
         // knowledge base themselves.
         var admin = app
             .MapGroup("/agents/{agentId:guid}/knowledge")
-            .RequireAuthorization("admin")
+            .RequireAuthorization("department_admin")
             .RequireRateLimiting("default");
 
         admin.MapGet("/", ListAsync);
@@ -26,7 +26,7 @@ public static class AgentKnowledgeEndpoints
         // this — access to the agent itself is gated by /me/agents (ACL).
         // We keep this at the "user" policy so consumers can chat.
         app.MapGet("/agents/{agentId:guid}/knowledge/context", ContextAsync)
-            .RequireAuthorization("user")
+            .RequireAuthorization("department_member")
             .RequireRateLimiting("default");
 
         return app;
@@ -55,7 +55,7 @@ public static class AgentKnowledgeEndpoints
         return Results.Ok(new { items, total = items.Count });
     }
 
-    public sealed record AttachRequest([Required] Guid NoteId);
+    public sealed record AttachRequest([property: Required] Guid NoteId);
 
     private static async Task<IResult> AttachAsync(
         Guid agentId, AttachRequest request, IAgentKnowledgeRepository repo,

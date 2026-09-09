@@ -32,14 +32,20 @@ export default async function UserAgentAssignmentsPage({ params, searchParams }:
   searchParams: Promise<{ ok?: string; error?: string }>;
 }) {
   const viewer = await requireViewer(["tenant_owner", "admin"]);
+  const isOwner = viewer.roles.includes("tenant_owner");
   const { id } = await params;
   const { ok, error } = await searchParams;
-  const [usersResponse, agentsResponse] = await Promise.all([
+  // ADMIN accounts are only ever candidates here for a TENANT_OWNER viewer
+  // (the unified screen's ADMIN row) — a plain ADMIN viewer never links to
+  // an admin id in the first place, so this extra call is skipped for them.
+  const [usersResponse, adminsResponse, agentsResponse] = await Promise.all([
     gateway.listTenantUsers(viewer.token),
+    isOwner ? gateway.listOwnTenantAdmins(viewer.token) : Promise.resolve(null),
     gateway.listTenantAgents(viewer.token),
   ]);
   const users: TenantUser[] = usersResponse.ok ? ((await usersResponse.json()) as { items: TenantUser[] }).items : [];
-  const user = users.find((candidate) => candidate.id === id);
+  const admins: TenantUser[] = adminsResponse?.ok ? ((await adminsResponse.json()) as { items: TenantUser[] }).items : [];
+  const user = users.find((candidate) => candidate.id === id) ?? admins.find((candidate) => candidate.id === id);
   if (!user) redirect("/admin/tenant-users?error=user-not-found");
   const agents: TenantAgent[] = agentsResponse.ok ? ((await agentsResponse.json()) as { items: TenantAgent[] }).items : [];
   const assignmentResponses = await Promise.all(agents.map((agent) => gateway.listTenantAgentUsers(viewer.token, agent.agentId)));
