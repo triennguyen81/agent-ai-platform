@@ -37,6 +37,9 @@ public static class VoucherEndpoints
         group.MapGet("/", ListAsync);
         group.MapPost("/", CreateAsync);
         group.MapPost("/upload", UploadAsync).DisableAntiforgery();
+        // Sprint 6' A3: gói hồ sơ ZIP theo NCC + khoảng thời gian cho kế toán
+        // gửi bank / kiểm toán. Reuse filter A2 qua query string.
+        group.MapGet("/export", ExportAsync);
         group.MapGet("/{id:guid}", GetAsync);
         group.MapPatch("/{id:guid}", UpdateAsync);
 
@@ -765,6 +768,52 @@ public static class VoucherEndpoints
             sellerMst, dateFrom, dateTo,
             limit, offset, ct);
         return Results.Ok(new VouchersListResponse(items, items.Count));
+    }
+
+    private static async Task<IResult> ExportAsync(
+        VoucherExportService exportService,
+        HttpContext ctx,
+        CancellationToken ct,
+        string? voucherType = null,
+        string? status = null,
+        string? sellerMst = null,
+        string? documentDateFrom = null,
+        string? documentDateTo = null)
+    {
+        if (!TryGetUserId(ctx, out var userId))
+        {
+            return Results.Unauthorized();
+        }
+        var tenantId = TenantContext.Require(ctx);
+
+        DateOnly? dateFrom = null;
+        DateOnly? dateTo = null;
+        if (!string.IsNullOrWhiteSpace(documentDateFrom))
+        {
+            if (!DateOnly.TryParse(documentDateFrom, out var parsedFrom))
+            {
+                return Results.BadRequest(new { error = $"documentDateFrom không hợp lệ (yyyy-MM-dd): {documentDateFrom}" });
+            }
+            dateFrom = parsedFrom;
+        }
+        if (!string.IsNullOrWhiteSpace(documentDateTo))
+        {
+            if (!DateOnly.TryParse(documentDateTo, out var parsedTo))
+            {
+                return Results.BadRequest(new { error = $"documentDateTo không hợp lệ (yyyy-MM-dd): {documentDateTo}" });
+            }
+            dateTo = parsedTo;
+        }
+
+        var filter = new VoucherExportFilter(voucherType, status, sellerMst, dateFrom, dateTo);
+        var filename = VoucherExportService.BuildFilename(filter);
+
+        // Stream ZIP thẳng vào response body — không buffer full ZIP vào memory.
+        // Set headers trước khi write để browser download đúng filename.
+        ctx.Response.Headers.ContentDisposition = $"attachment; filename=\"{filename}\"";
+        ctx.Response.ContentType = "application/zip";
+        await exportService.WriteZipAsync(tenantId, userId, filter, ctx.Response.Body, ct);
+        return Results.Empty;
     }
 
     private static async Task<IResult> CreateAsync(

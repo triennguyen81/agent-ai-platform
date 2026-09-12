@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Filter, Search } from "lucide-react";
+import { Download, Filter, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface VouchersToolbarProps {
@@ -34,6 +34,15 @@ export function VouchersToolbar({
     currentSellerMst || currentDocumentDateFrom || currentDocumentDateTo,
   );
   const [advancedOpen, setAdvancedOpen] = useState(hasAdvancedFilter);
+
+  const buildExportUrl = (params: Record<string, string | undefined>): string => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== "" && v !== null) p.set(k, String(v));
+    }
+    const qs = p.toString();
+    return `/api/vouchers/export${qs ? `?${qs}` : ""}`;
+  };
 
   const buildUrl = (overrides: Record<string, string | undefined>): string => {
     const p = new URLSearchParams();
@@ -186,19 +195,35 @@ export function VouchersToolbar({
               />
             </label>
           </div>
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button type="submit" size="sm">Áp dụng</Button>
             {hasAdvancedFilter && (
-              <Link
-                href={buildUrl({
-                  sellerMst: undefined,
-                  documentDateFrom: undefined,
-                  documentDateTo: undefined,
-                })}
-                className="text-xs text-[var(--color-muted-fg)] hover:underline"
-              >
-                Xoá lọc nâng cao
-              </Link>
+              <>
+                <Link
+                  href={buildUrl({
+                    sellerMst: undefined,
+                    documentDateFrom: undefined,
+                    documentDateTo: undefined,
+                  })}
+                  className="text-xs text-[var(--color-muted-fg)] hover:underline"
+                >
+                  Xoá lọc nâng cao
+                </Link>
+                {/* A3: Export ZIP theo filter hiện tại — mở tab mới để browser
+                    download file. Dùng /api/vouchers/export proxy để attach JWT. */}
+                <a
+                  href={buildExportUrl({
+                    sellerMst: currentSellerMst,
+                    documentDateFrom: currentDocumentDateFrom,
+                    documentDateTo: currentDocumentDateTo,
+                    status: currentStatus,
+                  })}
+                  className="inline-flex items-center gap-1 rounded-[var(--radius)] border border-[var(--color-primary)] px-2 py-1 text-xs text-[var(--color-primary)] hover:bg-[var(--color-primary)]/10"
+                >
+                  <Download className="size-3" />
+                  Xuất hồ sơ ZIP
+                </a>
+              </>
             )}
             <span className="ml-auto text-[11px] text-[var(--color-muted-fg)]">
               Dùng cho tra cứu hồ sơ theo NCC + khoảng thời gian (bank / kiểm toán)

@@ -2,7 +2,7 @@
 // authenticated requests to Gateway + Agent without exposing tokens to
 // the browser.
 
-const GATEWAY_BASE = process.env.GATEWAY_BASE_URL ?? "http://aiq-gateway:8080";
+export const GATEWAY_BASE = process.env.GATEWAY_BASE_URL ?? "http://aiq-gateway:8080";
 const AGENT_BASE = process.env.AGENT_BASE_URL ?? "http://aiq-agent:8000";
 
 export type AuthResponse = {
