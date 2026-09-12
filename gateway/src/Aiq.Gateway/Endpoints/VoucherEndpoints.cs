@@ -40,6 +40,9 @@ public static class VoucherEndpoints
         // Sprint 6' A3: gói hồ sơ ZIP theo NCC + khoảng thời gian cho kế toán
         // gửi bank / kiểm toán. Reuse filter A2 qua query string.
         group.MapGet("/export", ExportAsync);
+        // Sprint 6' A6: báo cáo tổng hợp trạng thái (đã đối soát / treo /
+        // quá hạn) cho dashboard KT trưởng.
+        group.MapGet("/status-report", StatusReportAsync);
         group.MapGet("/{id:guid}", GetAsync);
         group.MapPatch("/{id:guid}", UpdateAsync);
 
@@ -768,6 +771,32 @@ public static class VoucherEndpoints
             sellerMst, dateFrom, dateTo,
             limit, offset, ct);
         return Results.Ok(new VouchersListResponse(items, items.Count));
+    }
+
+    private static async Task<IResult> StatusReportAsync(
+        IVoucherRepository repo,
+        HttpContext ctx,
+        CancellationToken ct,
+        int overdueDays = 30)
+    {
+        if (!TryGetUserId(ctx, out _))
+        {
+            return Results.Unauthorized();
+        }
+        var tenantId = TenantContext.Require(ctx);
+
+        // overdueDays hợp lệ trong [1, 365]. Default 30 = 1 tháng theo policy
+        // kế toán VN (kết sổ cuối tháng, chứng từ > 30 ngày chưa Accept = quá hạn).
+        var days = Math.Clamp(overdueDays, 1, 365);
+        var threshold = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-days));
+
+        var report = await repo.GetStatusReportAsync(tenantId, threshold, ct);
+        return Results.Ok(new
+        {
+            report,
+            overdueDays = days,
+            overdueThresholdDate = threshold.ToString("yyyy-MM-dd"),
+        });
     }
 
     private static async Task<IResult> ExportAsync(

@@ -84,7 +84,22 @@ public interface IVoucherRepository
         decimal? ocrConfidence,
         string? errorMessage,
         CancellationToken ct);
+
+    // Sprint 6' A6: aggregate status counts cho báo cáo tổng hợp
+    // "đã đối soát / còn treo / quá hạn". overdueThresholdDate = ngày
+    // ranh giới quá hạn (voucher chưa Accept trước ngày này = quá hạn).
+    Task<VoucherStatusReport> GetStatusReportAsync(
+        Guid tenantId,
+        DateOnly overdueThresholdDate,
+        CancellationToken ct);
 }
+
+public sealed record VoucherStatusReport(
+    int VerifiedCount,
+    int PendingCount,
+    int OverdueCount,
+    int FailedCount,
+    int RejectedCount);
 
 public sealed class VoucherRepository : IVoucherRepository
 {
@@ -797,6 +812,42 @@ public sealed class VoucherRepository : IVoucherRepository
                 sql,
                 new { tenantId, sellerMst, documentNumber, excludeId },
                 cancellationToken: ct));
+    }
+
+    public async Task<VoucherStatusReport> GetStatusReportAsync(
+        Guid tenantId,
+        DateOnly overdueThresholdDate,
+        CancellationToken ct)
+    {
+        // Sprint 6' A6: aggregate counts theo bucket nghiệp vụ.
+        //   verified          - đã Accept, đã ghi ledger
+        //   pending           - có OCR/extract nhưng chưa Accept (extracted, ocr_complete)
+        //   overdue           - pending AND document_date < overdueThresholdDate
+        //   failed            - OCR không đọc được (ocr_unavailable, processing timeout)
+        //   rejected          - explicitly rejected (dup, invalid)
+        // Bucket overdue subsume của pending — cần trừ ra để không double-count
+        // trên UI.
+        const string sql = """
+            SELECT
+              SUM(CASE WHEN status = 'verified' THEN 1 ELSE 0 END)::int              AS VerifiedCount,
+              SUM(CASE WHEN status IN ('extracted', 'ocr_complete') THEN 1 ELSE 0 END)::int AS PendingCount,
+              SUM(CASE
+                WHEN status IN ('extracted', 'ocr_complete')
+                 AND document_date IS NOT NULL
+                 AND document_date < @overdueThresholdDate
+                THEN 1 ELSE 0 END)::int                                                AS OverdueCount,
+              SUM(CASE WHEN status IN ('ocr_unavailable', 'processing') THEN 1 ELSE 0 END)::int AS FailedCount,
+              SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END)::int              AS RejectedCount
+            FROM vouchers
+            WHERE tenant_id = @tenantId;
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        var row = await conn.QuerySingleAsync<VoucherStatusReport>(
+            new CommandDefinition(
+                sql,
+                new { tenantId, overdueThresholdDate },
+                cancellationToken: ct));
+        return row;
     }
 
     private static string SerializeExtracted(object? fields)
