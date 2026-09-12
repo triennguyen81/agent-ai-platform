@@ -33,6 +33,9 @@ public interface IVoucherRepository
         string? voucherType,
         string? statusFilter,
         string? search,
+        string? sellerMst,
+        DateOnly? documentDateFrom,
+        DateOnly? documentDateTo,
         int limit,
         int offset,
         CancellationToken ct);
@@ -505,6 +508,9 @@ public sealed class VoucherRepository : IVoucherRepository
         string? voucherType,
         string? statusFilter,
         string? search,
+        string? sellerMst,
+        DateOnly? documentDateFrom,
+        DateOnly? documentDateTo,
         int limit,
         int offset,
         CancellationToken ct)
@@ -512,9 +518,16 @@ public sealed class VoucherRepository : IVoucherRepository
         var hasType = !string.IsNullOrWhiteSpace(voucherType);
         var hasStatus = !string.IsNullOrWhiteSpace(statusFilter);
         var hasSearch = !string.IsNullOrWhiteSpace(search);
+        var hasSellerMst = !string.IsNullOrWhiteSpace(sellerMst);
+        var hasDateFrom = documentDateFrom.HasValue;
+        var hasDateTo = documentDateTo.HasValue;
 
         // Tenant-scoped list (same as FindAsync). userId retained on
         // command for audit logging but not filtered on.
+        //
+        // A2 filters: sellerMst = exact MST match (dùng để export hồ sơ
+        // theo NCC), documentDateFrom/To = khoảng thời gian document_date
+        // (inclusive both ends) — dùng cho tra cứu theo yêu cầu bank.
         var sql = $"""
             SELECT {VoucherSelectColumns}
             FROM vouchers
@@ -523,6 +536,9 @@ public sealed class VoucherRepository : IVoucherRepository
               {(hasType ? "AND voucher_type = @voucherType" : "")}
               {(hasStatus ? "AND status = @statusFilter" : "")}
               {(hasSearch ? "AND (document_number ILIKE @searchPattern OR seller_name ILIKE @searchPattern OR seller_mst ILIKE @searchPattern)" : "")}
+              {(hasSellerMst ? "AND seller_mst = @sellerMst" : "")}
+              {(hasDateFrom ? "AND document_date >= @documentDateFrom" : "")}
+              {(hasDateTo ? "AND document_date <= @documentDateTo" : "")}
             ORDER BY created_at DESC
             LIMIT @limit OFFSET @offset;
             """;
@@ -538,6 +554,9 @@ public sealed class VoucherRepository : IVoucherRepository
                     voucherType,
                     statusFilter,
                     searchPattern = hasSearch ? $"%{search}%" : null,
+                    sellerMst,
+                    documentDateFrom,
+                    documentDateTo,
                     limit = Math.Clamp(limit, 1, 200),
                     offset = Math.Max(0, offset),
                 },

@@ -729,6 +729,9 @@ public static class VoucherEndpoints
         string? voucherType = null,
         string? status = null,
         string? q = null,
+        string? sellerMst = null,
+        string? documentDateFrom = null,
+        string? documentDateTo = null,
         int limit = 50,
         int offset = 0)
     {
@@ -738,7 +741,29 @@ public static class VoucherEndpoints
         }
         var tenantId = TenantContext.Require(ctx);
 
-        var items = await repo.ListAsync(tenantId, userId, voucherType, status, q, limit, offset, ct);
+        DateOnly? dateFrom = null;
+        DateOnly? dateTo = null;
+        if (!string.IsNullOrWhiteSpace(documentDateFrom))
+        {
+            if (!DateOnly.TryParse(documentDateFrom, out var parsedFrom))
+            {
+                return Results.BadRequest(new { error = $"documentDateFrom không hợp lệ (yyyy-MM-dd): {documentDateFrom}" });
+            }
+            dateFrom = parsedFrom;
+        }
+        if (!string.IsNullOrWhiteSpace(documentDateTo))
+        {
+            if (!DateOnly.TryParse(documentDateTo, out var parsedTo))
+            {
+                return Results.BadRequest(new { error = $"documentDateTo không hợp lệ (yyyy-MM-dd): {documentDateTo}" });
+            }
+            dateTo = parsedTo;
+        }
+
+        var items = await repo.ListAsync(
+            tenantId, userId, voucherType, status, q,
+            sellerMst, dateFrom, dateTo,
+            limit, offset, ct);
         return Results.Ok(new VouchersListResponse(items, items.Count));
     }
 

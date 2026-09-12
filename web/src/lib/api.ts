@@ -1218,6 +1218,9 @@ export const gateway = {
       voucherType?: string;
       status?: string;
       q?: string;
+      sellerMst?: string;
+      documentDateFrom?: string;
+      documentDateTo?: string;
       limit?: number;
       offset?: number;
     },
@@ -1226,6 +1229,9 @@ export const gateway = {
     if (params?.voucherType) search.set("voucherType", params.voucherType);
     if (params?.status) search.set("status", params.status);
     if (params?.q) search.set("q", params.q);
+    if (params?.sellerMst) search.set("sellerMst", params.sellerMst);
+    if (params?.documentDateFrom) search.set("documentDateFrom", params.documentDateFrom);
+    if (params?.documentDateTo) search.set("documentDateTo", params.documentDateTo);
     if (params?.limit) search.set("limit", String(params.limit));
     if (params?.offset) search.set("offset", String(params.offset));
     const qs = search.toString();

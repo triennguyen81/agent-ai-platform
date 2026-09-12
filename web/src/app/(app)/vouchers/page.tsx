@@ -113,6 +113,9 @@ interface PageProps {
   searchParams: Promise<{
     status?: string;
     q?: string;
+    sellerMst?: string;
+    documentDateFrom?: string;
+    documentDateTo?: string;
     page?: string;
     pageSize?: string;
     sort?: string;
@@ -128,6 +131,9 @@ export default async function VouchersListPage({ searchParams }: PageProps) {
 
   const status = params.status && params.status !== "all" ? params.status : undefined;
   const q = params.q?.trim() || undefined;
+  const sellerMst = params.sellerMst?.trim() || undefined;
+  const documentDateFrom = params.documentDateFrom?.trim() || undefined;
+  const documentDateTo = params.documentDateTo?.trim() || undefined;
   const page = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
   const pageSize = PAGE_SIZES.includes(parseInt(params.pageSize ?? "25", 10) as 25 | 50 | 100)
     ? (parseInt(params.pageSize!, 10) as 25 | 50 | 100)
@@ -138,7 +144,15 @@ export default async function VouchersListPage({ searchParams }: PageProps) {
   // Gateway supports voucherType/status/q + limit/offset. Sort is applied
   // client-side over the returned page — good enough for MVP, will move
   // to server-side ORDER BY once volumes grow.
-  const res = await gateway.listVouchers(token, { status, q, limit: pageSize, offset });
+  const res = await gateway.listVouchers(token, {
+    status,
+    q,
+    sellerMst,
+    documentDateFrom,
+    documentDateTo,
+    limit: pageSize,
+    offset,
+  });
   const body: VouchersListResponse = res.ok ? await res.json() : { items: [], total: 0 };
 
   const sorted = [...body.items].sort((a, b) => {
@@ -175,7 +189,17 @@ export default async function VouchersListPage({ searchParams }: PageProps) {
 
   const buildQs = (overrides: Record<string, string | undefined>) => {
     const p = new URLSearchParams();
-    const merged = { status: params.status, q, sort, pageSize: String(pageSize), page: String(page), ...overrides };
+    const merged = {
+      status: params.status,
+      q,
+      sellerMst,
+      documentDateFrom,
+      documentDateTo,
+      sort,
+      pageSize: String(pageSize),
+      page: String(page),
+      ...overrides,
+    };
     for (const [k, v] of Object.entries(merged)) {
       if (v !== undefined && v !== "" && v !== null) p.set(k, String(v));
     }
@@ -226,6 +250,9 @@ export default async function VouchersListPage({ searchParams }: PageProps) {
         currentPageSize={pageSize}
         currentQ={q ?? ""}
         currentStatus={params.status}
+        currentSellerMst={sellerMst}
+        currentDocumentDateFrom={documentDateFrom}
+        currentDocumentDateTo={documentDateTo}
         sortOptions={SORT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
         pageSizes={PAGE_SIZES}
       />
