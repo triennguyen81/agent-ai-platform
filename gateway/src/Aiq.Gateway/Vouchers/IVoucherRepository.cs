@@ -8,12 +8,14 @@ public interface IVoucherRepository
 {
     Task<VoucherDetail> CreateAsync(
         Guid tenantId,
+        Guid departmentId,
         Guid userId,
         CreateVoucherRequest request,
         CancellationToken ct);
 
     Task<Guid> CreateStubAsync(
         Guid tenantId,
+        Guid departmentId,
         Guid userId,
         string voucherType,
         string sourceFilePath,
@@ -26,6 +28,9 @@ public interface IVoucherRepository
         Guid userId,
         Guid id,
         CancellationToken ct);
+
+    Task<VoucherDetail?> FindInDepartmentAsync(Guid tenantId, Guid departmentId, Guid id, CancellationToken ct);
+    Task<IReadOnlyList<VoucherRecord>> ListInDepartmentAsync(Guid tenantId, Guid departmentId, string? voucherType, string? statusFilter, string? search, int limit, int offset, CancellationToken ct);
 
     Task<IReadOnlyList<VoucherRecord>> ListAsync(
         Guid tenantId,
@@ -53,18 +58,45 @@ public interface IVoucherRepository
         CancellationToken ct);
 
     Task<IReadOnlyList<VoucherJournalRecord>> SaveJournalSuggestionsAsync(
-        Guid tenantId, Guid userId, Guid voucherId,
+        Guid tenantId, Guid departmentId, Guid voucherId,
         SaveJournalSuggestionsRequest request,
         CancellationToken ct);
 
     Task<VoucherJournalRecord?> AcceptJournalAsync(
-        Guid tenantId, Guid voucherId,
+        Guid tenantId, Guid departmentId, Guid voucherId,
         Guid entryId,
         Guid userId,
         AcceptJournalRequest request,
         CancellationToken ct);
 
     Task<bool> DeleteAsync(Guid tenantId, Guid userId, Guid id, CancellationToken ct);
+
+    // R05 fix — persists a REAL tax-portal verification result (the Agent's
+    // verify_einvoice_tct tool, agent/src/aiq_agent/agentic/voucher_tools.py,
+    // makes a genuine best-effort call to hoadondientu.gdt.gov.vn). Only
+    // ever sets `true` on a determinate positive result. Also sets the
+    // tri-state tax_verification_status to 'verified' (see
+    // RejectTaxVerificationAsync for the other two states) so the Luồng 03
+    // approval gate in IExpenseClaimRepository.ConfirmAsync can read one
+    // consistent field. Department-scoped, not creator-scoped, matching
+    // every other apply-* action.
+    Task<bool> MarkTaxVerifiedAsync(Guid tenantId, Guid departmentId, Guid id, CancellationToken ct);
+
+    // P1 audit fix (tax-verification-as-gate) — records a determinate
+    // NEGATIVE outcome: the invoice was checked and found invalid/cancelled
+    // (providerUnavailable=false), or the check could not be completed at
+    // all because the government portal was unreachable
+    // (providerUnavailable=true). Either way this is an explicit, honest
+    // state — never silently left as "unverified" with no record of why,
+    // and never flipped to tct_verified=true.
+    Task<bool> RejectTaxVerificationAsync(Guid tenantId, Guid departmentId, Guid id, string reason, bool providerUnavailable, CancellationToken ct);
+
+    // R06 — records an explicit Contract -> Invoice/Receipt link. Returns
+    // false (no-op) if the voucher, or the contract (and installment, when
+    // given), don't all resolve within the SAME tenant+department — this is
+    // the tenant-isolation check; a caller can never link across tenants or
+    // departments even if they somehow know another tenant's contract id.
+    Task<bool> LinkContractAsync(Guid tenantId, Guid departmentId, Guid voucherId, Guid contractId, Guid? installmentId, CancellationToken ct);
 
     // UC-ACC-001 E2: dedup by (seller_mst + document_number) within a tenant.
     // Nullable tenant vì có thể gọi từ Hangfire job (no user context).
@@ -114,6 +146,7 @@ public sealed class VoucherRepository : IVoucherRepository
             id                AS Id,
             user_id           AS UserId,
             tenant_id         AS TenantId,
+            department_id     AS DepartmentId,
             voucher_type      AS VoucherType,
             status            AS Status,
             document_number   AS DocumentNumber,
@@ -135,6 +168,11 @@ public sealed class VoucherRepository : IVoucherRepository
             payment_method    AS PaymentMethod,
             tct_verified      AS TctVerified,
             tct_verified_at   AS TctVerifiedAt,
+            tax_verification_status     AS TaxVerificationStatus,
+            tax_verification_reason     AS TaxVerificationReason,
+            tax_verification_checked_at AS TaxVerificationCheckedAt,
+            contract_id             AS ContractId,
+            contract_installment_id AS ContractInstallmentId,
             source_file_path  AS SourceFilePath,
             source_file_name  AS SourceFileName,
             source_mime_type  AS SourceMimeType,
@@ -181,6 +219,7 @@ public sealed class VoucherRepository : IVoucherRepository
 
     public async Task<Guid> CreateStubAsync(
         Guid tenantId,
+        Guid departmentId,
         Guid userId,
         string voucherType,
         string sourceFilePath,
@@ -190,10 +229,10 @@ public sealed class VoucherRepository : IVoucherRepository
     {
         const string sql = """
             INSERT INTO vouchers (
-                tenant_id, user_id, voucher_type, status,
+                tenant_id, department_id, user_id, voucher_type, status,
                 source_file_path, source_file_name, source_mime_type
             ) VALUES (
-                @tenantId, @userId, @voucherType, 'processing',
+                @tenantId, @departmentId, @userId, @voucherType, 'processing',
                 @sourceFilePath, @sourceFileName, @sourceMimeType
             )
             RETURNING id;
@@ -206,6 +245,7 @@ public sealed class VoucherRepository : IVoucherRepository
                 new
                 {
                     tenantId,
+                    departmentId,
                     userId,
                     voucherType,
                     sourceFilePath,
@@ -217,6 +257,7 @@ public sealed class VoucherRepository : IVoucherRepository
 
     public async Task<VoucherDetail> CreateAsync(
         Guid tenantId,
+        Guid departmentId,
         Guid userId,
         CreateVoucherRequest request,
         CancellationToken ct)
@@ -228,7 +269,7 @@ public sealed class VoucherRepository : IVoucherRepository
 
         var insertSql = $"""
             INSERT INTO vouchers (
-                tenant_id, user_id, voucher_type, status,
+                tenant_id, department_id, user_id, voucher_type, status,
                 document_number, document_series, document_date,
                 seller_name, seller_mst, seller_address,
                 buyer_name, buyer_mst, buyer_address,
@@ -237,7 +278,7 @@ public sealed class VoucherRepository : IVoucherRepository
                 source_file_path, source_file_name, source_mime_type,
                 raw_ocr_text, ocr_confidence, extracted_fields, tags
             ) VALUES (
-                @tenantId, @userId, @voucherType, 'extracted',
+                @tenantId, @departmentId, @userId, @voucherType, 'extracted',
                 @documentNumber, @documentSeries, @documentDate,
                 @sellerName, @sellerMst, @sellerAddress,
                 @buyerName, @buyerMst, @buyerAddress,
@@ -278,6 +319,7 @@ public sealed class VoucherRepository : IVoucherRepository
         var parameters = new
         {
             tenantId,
+            departmentId,
             userId,
             voucherType = request.VoucherType,
             documentNumber = request.DocumentNumber,
@@ -517,6 +559,31 @@ public sealed class VoucherRepository : IVoucherRepository
         return new VoucherDetail(voucher, lines, journal);
     }
 
+    public async Task<VoucherDetail?> FindInDepartmentAsync(Guid tenantId, Guid departmentId, Guid id, CancellationToken ct)
+    {
+        var voucherSql = $"SELECT {VoucherSelectColumns} FROM vouchers WHERE id=@id AND tenant_id=@tenantId AND department_id=@departmentId";
+        await using var conn = await _factory.OpenAsync(ct);
+        var voucher = await conn.QuerySingleOrDefaultAsync<VoucherRecord>(new CommandDefinition(voucherSql, new { id, tenantId, departmentId }, cancellationToken: ct));
+        if (voucher is null) return null;
+        var lines = (await conn.QueryAsync<VoucherLineItemRecord>(new CommandDefinition($"SELECT {LineItemSelectColumns} FROM voucher_line_items WHERE voucher_id=@id ORDER BY ordinal", new { id }, cancellationToken: ct))).ToArray();
+        var journal = (await conn.QueryAsync<VoucherJournalRecord>(new CommandDefinition($"SELECT {JournalSelectColumns} FROM voucher_journal_suggestions WHERE voucher_id=@id ORDER BY entry_no", new { id }, cancellationToken: ct))).ToArray();
+        return new VoucherDetail(voucher, lines, journal);
+    }
+
+    public async Task<IReadOnlyList<VoucherRecord>> ListInDepartmentAsync(Guid tenantId, Guid departmentId, string? voucherType, string? statusFilter, string? search, int limit, int offset, CancellationToken ct)
+    {
+        var sql = $"""
+            SELECT {VoucherSelectColumns} FROM vouchers
+            WHERE tenant_id=@tenantId AND department_id=@departmentId
+              AND (@voucherType IS NULL OR voucher_type=@voucherType)
+              AND (@statusFilter IS NULL OR status=@statusFilter)
+              AND (@search IS NULL OR document_number ILIKE '%'||@search||'%' OR seller_name ILIKE '%'||@search||'%' OR seller_mst ILIKE @search||'%')
+            ORDER BY created_at DESC LIMIT @limit OFFSET @offset
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<VoucherRecord>(new CommandDefinition(sql, new { tenantId, departmentId, voucherType, statusFilter, search, limit=Math.Clamp(limit,1,200), offset=Math.Max(0,offset) }, cancellationToken: ct))).AsList();
+    }
+
     public async Task<IReadOnlyList<VoucherRecord>> ListAsync(
         Guid tenantId,
         Guid userId,
@@ -648,7 +715,7 @@ public sealed class VoucherRepository : IVoucherRepository
     }
 
     public async Task<IReadOnlyList<VoucherJournalRecord>> SaveJournalSuggestionsAsync(
-        Guid tenantId, Guid userId, Guid voucherId,
+        Guid tenantId, Guid departmentId, Guid voucherId,
         SaveJournalSuggestionsRequest request,
         CancellationToken ct)
     {
@@ -658,8 +725,8 @@ public sealed class VoucherRepository : IVoucherRepository
         if (request.ReplaceExisting)
         {
             await conn.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM voucher_journal_suggestions j WHERE voucher_id = @voucherId AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=j.voucher_id AND v.tenant_id=@tenantId AND v.user_id=@userId);",
-                new { voucherId, tenantId, userId },
+                "DELETE FROM voucher_journal_suggestions j WHERE voucher_id = @voucherId AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=j.voucher_id AND v.tenant_id=@tenantId AND v.department_id=@departmentId);",
+                new { voucherId, tenantId, departmentId },
                 transaction: tx,
                 cancellationToken: ct));
         }
@@ -672,7 +739,7 @@ public sealed class VoucherRepository : IVoucherRepository
             ) SELECT
                 @voucherId, @entryNo, @debitAccount, @creditAccount,
                 @amount, @description, @confidence
-            WHERE EXISTS (SELECT 1 FROM vouchers WHERE id=@voucherId AND tenant_id=@tenantId AND user_id=@userId)
+            WHERE EXISTS (SELECT 1 FROM vouchers WHERE id=@voucherId AND tenant_id=@tenantId AND department_id=@departmentId)
             ON CONFLICT (voucher_id, entry_no) DO UPDATE SET
                 debit_account  = EXCLUDED.debit_account,
                 credit_account = EXCLUDED.credit_account,
@@ -689,7 +756,7 @@ public sealed class VoucherRepository : IVoucherRepository
                     insertSql,
                     new
                     {
-                        voucherId, tenantId, userId,
+                        voucherId, tenantId, departmentId,
                         entryNo = e.EntryNo,
                         debitAccount = e.DebitAccount,
                         creditAccount = e.CreditAccount,
@@ -707,12 +774,15 @@ public sealed class VoucherRepository : IVoucherRepository
     }
 
     public async Task<VoucherJournalRecord?> AcceptJournalAsync(
-        Guid tenantId, Guid voucherId,
+        Guid tenantId, Guid departmentId, Guid voucherId,
         Guid entryId,
         Guid userId,
         AcceptJournalRequest request,
         CancellationToken ct)
     {
+        // Reachable only via the "department_admin" route — deciding is an
+        // ADMIN operational action over the whole Department, never
+        // creator-scoped. userId here is audit-only (accepted_by).
         var sql = request.Accept
             ? $"""
                 UPDATE voucher_journal_suggestions SET
@@ -721,7 +791,7 @@ public sealed class VoucherRepository : IVoucherRepository
                     rejected_at = NULL,
                     reject_reason = NULL
                 WHERE id = @entryId AND voucher_id = @voucherId
-                  AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=voucher_id AND v.tenant_id=@tenantId AND v.user_id=@userId)
+                  AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=voucher_id AND v.tenant_id=@tenantId AND v.department_id=@departmentId)
                 RETURNING {JournalSelectColumns};
                 """
             : $"""
@@ -731,7 +801,7 @@ public sealed class VoucherRepository : IVoucherRepository
                     accepted_by = NULL,
                     accepted_at = NULL
                 WHERE id = @entryId AND voucher_id = @voucherId
-                  AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=voucher_id AND v.tenant_id=@tenantId AND v.user_id=@userId)
+                  AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=voucher_id AND v.tenant_id=@tenantId AND v.department_id=@departmentId)
                 RETURNING {JournalSelectColumns};
                 """;
 
@@ -741,7 +811,7 @@ public sealed class VoucherRepository : IVoucherRepository
                 sql,
                 new
                 {
-                    tenantId, voucherId,
+                    tenantId, departmentId, voucherId,
                     entryId,
                     userId,
                     rejectReason = request.RejectReason,
@@ -751,8 +821,11 @@ public sealed class VoucherRepository : IVoucherRepository
 
     public async Task<bool> DeleteAsync(Guid tenantId, Guid userId, Guid id, CancellationToken ct)
     {
-        // Delete is admin-only at the endpoint layer (RequireAuthorization
-        // "admin"), so any admin in the tenant can remove any voucher.
+        // Delete is department_admin-only at the endpoint layer, but this
+        // method still scopes by (tenant_id, user_id) — the caller
+        // (VoucherEndpoints.DeleteAsync) is responsible for resolving the
+        // voucher's actual creator via FindInDepartmentAsync first and
+        // passing that id through, not the deleting admin's own id.
         const string sql = """
             DELETE FROM vouchers
             WHERE id = @id
@@ -762,6 +835,62 @@ public sealed class VoucherRepository : IVoucherRepository
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.ExecuteAsync(
             new CommandDefinition(sql, new { id, tenantId, userId }, cancellationToken: ct));
+        return rows > 0;
+    }
+
+    public async Task<bool> LinkContractAsync(Guid tenantId, Guid departmentId, Guid voucherId, Guid contractId, Guid? installmentId, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+
+        var contractInScope = await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT EXISTS(SELECT 1 FROM contracts WHERE id=@contractId AND tenant_id=@tenantId AND department_id=@departmentId)",
+            new { contractId, tenantId, departmentId }, cancellationToken: ct));
+        if (!contractInScope) return false;
+
+        if (installmentId is { } instId)
+        {
+            var installmentInScope = await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
+                "SELECT EXISTS(SELECT 1 FROM contract_payment_schedules WHERE id=@instId AND contract_id=@contractId AND tenant_id=@tenantId AND department_id=@departmentId)",
+                new { instId, contractId, tenantId, departmentId }, cancellationToken: ct));
+            if (!installmentInScope) return false;
+        }
+
+        const string sql = """
+            UPDATE vouchers SET contract_id = @contractId, contract_installment_id = @installmentId
+            WHERE id = @voucherId AND tenant_id = @tenantId AND department_id = @departmentId;
+            """;
+        var rows = await conn.ExecuteAsync(
+            new CommandDefinition(sql, new { voucherId, contractId, installmentId, tenantId, departmentId }, cancellationToken: ct));
+        return rows > 0;
+    }
+
+    public async Task<bool> MarkTaxVerifiedAsync(Guid tenantId, Guid departmentId, Guid id, CancellationToken ct)
+    {
+        const string sql = """
+            UPDATE vouchers SET
+                tct_verified = TRUE, tct_verified_at = NOW(),
+                tax_verification_status = 'verified', tax_verification_reason = NULL,
+                tax_verification_checked_at = NOW()
+            WHERE id = @id AND tenant_id = @tenantId AND department_id = @departmentId;
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.ExecuteAsync(
+            new CommandDefinition(sql, new { id, tenantId, departmentId }, cancellationToken: ct));
+        return rows > 0;
+    }
+
+    public async Task<bool> RejectTaxVerificationAsync(Guid tenantId, Guid departmentId, Guid id, string reason, bool providerUnavailable, CancellationToken ct)
+    {
+        var status = providerUnavailable ? "unavailable" : "invalid";
+        const string sql = """
+            UPDATE vouchers SET
+                tax_verification_status = @status, tax_verification_reason = @reason,
+                tax_verification_checked_at = NOW()
+            WHERE id = @id AND tenant_id = @tenantId AND department_id = @departmentId;
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.ExecuteAsync(
+            new CommandDefinition(sql, new { id, tenantId, departmentId, status, reason }, cancellationToken: ct));
         return rows > 0;
     }
 

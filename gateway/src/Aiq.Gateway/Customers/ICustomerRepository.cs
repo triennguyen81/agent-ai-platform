@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Aiq.Gateway.Data;
 using Dapper;
 
@@ -8,6 +9,19 @@ namespace Aiq.Gateway.Customers;
 // agent flow. Reads sim_* tables — later replaced by MCP adapters to real ERP
 // without changing this interface.
 // ============================================================================
+
+// Deterministic, local-only MST format check (Vietnamese tax code: 10 digits,
+// optionally a "-NNN" branch suffix — e.g. 0101234567 or 0101234567-001).
+// Never calls an external tax-registry service — real GDT lookup stays
+// deferred (no provider configured), same posture as Voucher's
+// verify_einvoice_tct tool, which is itself best-effort/fallback-only.
+public static class CustomerValidation
+{
+    private static readonly Regex MstPattern = new(@"^\d{10}(-\d{3})?$", RegexOptions.Compiled);
+
+    public static bool IsValidMstFormat(string? mst) =>
+        !string.IsNullOrWhiteSpace(mst) && MstPattern.IsMatch(mst.Trim());
+}
 
 public sealed record CustomerRecord(
     Guid Id,
@@ -20,7 +34,46 @@ public sealed record CustomerRecord(
     string Category,
     decimal CreditLimit,
     int CreditTermsDays,
-    decimal CurrentAr);
+    decimal CurrentAr,
+    string CustomerType,
+    string? Representative,
+    string Status,
+    string? Notes,
+    Guid? CreatedBy,
+    DateTime CreatedAt,
+    DateTime UpdatedAt);
+
+public sealed record CreateCustomerRequest(
+    [property: System.ComponentModel.DataAnnotations.Required] string CustomerCode,
+    [property: System.ComponentModel.DataAnnotations.Required] string Name,
+    string? Mst,
+    string? Address,
+    string? Phone,
+    string? Email,
+    string? Category,
+    string CustomerType,
+    string? Representative,
+    decimal? CreditLimit,
+    int? CreditTermsDays,
+    string? Notes);
+
+public sealed record UpdateCustomerRequest(
+    string? Name,
+    string? Mst,
+    string? Address,
+    string? Phone,
+    string? Email,
+    string? Category,
+    string? CustomerType,
+    string? Representative,
+    decimal? CreditLimit,
+    int? CreditTermsDays,
+    string? Notes);
+
+// Non-blocking duplicate signal returned alongside a successful create —
+// the caller decides whether to proceed; a hard conflict (same tax code or
+// customer code) is instead rejected outright by CreateAsync (409).
+public sealed record DuplicateCandidate(Guid Id, string CustomerCode, string Name, string? Mst, decimal Similarity);
 
 public sealed record ArLedgerRow(
     Guid Id,
@@ -116,11 +169,31 @@ public sealed record ReceiptUnapplyResult(
 
 public interface ICustomerRepository
 {
-    Task<IReadOnlyList<CustomerRecord>> ListAsync(Guid tenantId, string? category, string? search, CancellationToken ct);
-    Task<CustomerRecord?> FindByMstAsync(Guid tenantId, string mst, CancellationToken ct);
-    Task<CustomerRecord?> FindByIdAsync(Guid tenantId, Guid id, CancellationToken ct);
-    Task<CustomerReceivablesReport?> GetReceivablesAsync(Guid tenantId, Guid customerId, CancellationToken ct);
-    Task<SalesOrderMatch?> MatchInvoiceToSalesOrderAsync(Guid tenantId, string documentNumber, CancellationToken ct);
+    Task<IReadOnlyList<CustomerRecord>> ListAsync(Guid tenantId, Guid departmentId, string? category, string? search, bool includeInactive, CancellationToken ct);
+    Task<CustomerRecord?> FindByMstAsync(Guid tenantId, Guid departmentId, string mst, CancellationToken ct);
+    Task<CustomerRecord?> FindByIdAsync(Guid tenantId, Guid departmentId, Guid id, CancellationToken ct);
+    Task<CustomerReceivablesReport?> GetReceivablesAsync(Guid tenantId, Guid departmentId, Guid customerId, CancellationToken ct);
+    Task<SalesOrderMatch?> MatchInvoiceToSalesOrderAsync(Guid tenantId, Guid departmentId, string documentNumber, CancellationToken ct);
+
+    // Hard conflict on (tenant_id, customer_code) or (tenant_id, mst) — the
+    // real DB unique constraints are tenant-wide (a tax code identifies one
+    // real-world entity regardless of which Department first recorded it),
+    // so this check matches that scope, not just the caller's Department.
+    // Returns null on a hard conflict instead of throwing; the caller (the
+    // endpoint) turns that into 409. `possibleDuplicates` carries same-
+    // Department fuzzy name matches (pg_trgm) — informational only, never
+    // blocks creation.
+    Task<(CustomerRecord? Created, IReadOnlyList<DuplicateCandidate> PossibleDuplicates)> CreateAsync(
+        Guid tenantId, Guid departmentId, Guid createdBy, CreateCustomerRequest request, CancellationToken ct);
+
+    Task<CustomerRecord?> UpdateAsync(
+        Guid tenantId, Guid departmentId, Guid id, UpdateCustomerRequest request, CancellationToken ct);
+
+    // status: "active" | "inactive". Never deletes the row — Voucher AR
+    // ledger rows and Contract counterparty proposals reference customers
+    // by id, so a hard delete would orphan business history.
+    Task<CustomerRecord?> SetStatusAsync(
+        Guid tenantId, Guid departmentId, Guid id, string status, Guid actorId, CancellationToken ct);
 
     // Apply a receipt (phiếu thu) to a customer's open invoices in a
     // single transaction:
@@ -182,44 +255,177 @@ public sealed class CustomerRepository : ICustomerRepository
             category            AS Category,
             credit_limit        AS CreditLimit,
             credit_terms_days   AS CreditTermsDays,
-            current_ar          AS CurrentAr
+            current_ar          AS CurrentAr,
+            customer_type       AS CustomerType,
+            representative      AS Representative,
+            status              AS Status,
+            notes               AS Notes,
+            created_by          AS CreatedBy,
+            created_at          AS CreatedAt,
+            updated_at          AS UpdatedAt
         """;
 
     public async Task<IReadOnlyList<CustomerRecord>> ListAsync(
-        Guid tenantId, string? category, string? search, CancellationToken ct)
+        Guid tenantId, Guid departmentId, string? category, string? search, bool includeInactive, CancellationToken ct)
     {
         await using var conn = await _factory.OpenAsync(ct);
         var sql = $"""
             SELECT {CustomerCols}
             FROM sim_customers
-            WHERE tenant_id = @tenantId
+            WHERE tenant_id = @tenantId AND department_id=@departmentId
+              AND (@includeInactive OR status = 'active')
               AND (@category IS NULL OR category = @category)
               AND (@search IS NULL OR name ILIKE '%' || @search || '%' OR mst LIKE @search || '%' OR customer_code ILIKE @search || '%')
             ORDER BY current_ar DESC, name
             LIMIT 200
             """;
-        var rows = await conn.QueryAsync<CustomerRecord>(sql, new { tenantId, category, search });
+        var rows = await conn.QueryAsync<CustomerRecord>(sql, new { tenantId, departmentId, category, search, includeInactive });
         return rows.AsList();
     }
 
-    public async Task<CustomerRecord?> FindByMstAsync(Guid tenantId, string mst, CancellationToken ct)
+    public async Task<CustomerRecord?> FindByMstAsync(Guid tenantId, Guid departmentId, string mst, CancellationToken ct)
     {
         await using var conn = await _factory.OpenAsync(ct);
-        var sql = $"SELECT {CustomerCols} FROM sim_customers WHERE tenant_id = @tenantId AND mst = @mst LIMIT 1";
-        return await conn.QueryFirstOrDefaultAsync<CustomerRecord>(sql, new { tenantId, mst });
+        var sql = $"SELECT {CustomerCols} FROM sim_customers WHERE tenant_id=@tenantId AND department_id=@departmentId AND mst=@mst LIMIT 1";
+        return await conn.QueryFirstOrDefaultAsync<CustomerRecord>(sql, new { tenantId, departmentId, mst });
     }
 
-    public async Task<CustomerRecord?> FindByIdAsync(Guid tenantId, Guid id, CancellationToken ct)
+    public async Task<CustomerRecord?> FindByIdAsync(Guid tenantId, Guid departmentId, Guid id, CancellationToken ct)
     {
         await using var conn = await _factory.OpenAsync(ct);
-        var sql = $"SELECT {CustomerCols} FROM sim_customers WHERE tenant_id = @tenantId AND id = @id LIMIT 1";
-        return await conn.QueryFirstOrDefaultAsync<CustomerRecord>(sql, new { tenantId, id });
+        var sql = $"SELECT {CustomerCols} FROM sim_customers WHERE tenant_id=@tenantId AND department_id=@departmentId AND id=@id LIMIT 1";
+        return await conn.QueryFirstOrDefaultAsync<CustomerRecord>(sql, new { tenantId, departmentId, id });
+    }
+
+    private async Task<CustomerRecord?> FindByIdAsync(Guid tenantId, Guid id, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.QueryFirstOrDefaultAsync<CustomerRecord>($"SELECT {CustomerCols} FROM sim_customers WHERE tenant_id=@tenantId AND id=@id", new { tenantId, id });
+    }
+
+    public async Task<(CustomerRecord? Created, IReadOnlyList<DuplicateCandidate> PossibleDuplicates)> CreateAsync(
+        Guid tenantId, Guid departmentId, Guid createdBy, CreateCustomerRequest request, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+
+        // Hard conflict check — tenant-wide, matching the real DB unique
+        // constraints on (tenant_id, customer_code) and (tenant_id, mst).
+        // Checked explicitly (not just left to the DB) so the endpoint can
+        // return a clear 409 with which field conflicted, instead of a raw
+        // constraint-violation exception.
+        var codeConflict = await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT EXISTS(SELECT 1 FROM sim_customers WHERE tenant_id=@tenantId AND customer_code=@CustomerCode)",
+            new { tenantId, request.CustomerCode }, cancellationToken: ct));
+        if (codeConflict) return (null, Array.Empty<DuplicateCandidate>());
+
+        if (!string.IsNullOrWhiteSpace(request.Mst))
+        {
+            var mstConflict = await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
+                "SELECT EXISTS(SELECT 1 FROM sim_customers WHERE tenant_id=@tenantId AND mst=@Mst)",
+                new { tenantId, request.Mst }, cancellationToken: ct));
+            if (mstConflict) return (null, Array.Empty<DuplicateCandidate>());
+        }
+
+        // Fuzzy same-Department name duplicates — informational only via
+        // pg_trgm similarity(), never blocks creation.
+        var duplicates = (await conn.QueryAsync<DuplicateCandidate>(new CommandDefinition("""
+            SELECT id AS Id, customer_code AS CustomerCode, name AS Name, mst AS Mst,
+                   similarity(name, @Name)::numeric AS Similarity
+            FROM sim_customers
+            WHERE tenant_id=@tenantId AND department_id=@departmentId AND status='active'
+              AND similarity(name, @Name) > 0.4
+            ORDER BY similarity(name, @Name) DESC
+            LIMIT 5
+            """, new { tenantId, departmentId, request.Name }, cancellationToken: ct))).AsList();
+
+        var insertSql = $"""
+            INSERT INTO sim_customers (
+                tenant_id, department_id, customer_code, name, mst, address, phone, email,
+                category, customer_type, representative, credit_limit, credit_terms_days,
+                notes, created_by
+            ) VALUES (
+                @tenantId, @departmentId, @CustomerCode, @Name, @Mst, @Address, @Phone, @Email,
+                COALESCE(@Category,'phong_kham'), @CustomerType, @Representative,
+                COALESCE(@CreditLimit,0), COALESCE(@CreditTermsDays,0),
+                @Notes, @createdBy
+            )
+            RETURNING {CustomerCols};
+            """;
+        var created = await conn.QuerySingleAsync<CustomerRecord>(new CommandDefinition(
+            insertSql,
+            new
+            {
+                tenantId, departmentId, createdBy,
+                request.CustomerCode, request.Name, request.Mst, request.Address, request.Phone, request.Email,
+                request.Category, request.CustomerType, request.Representative,
+                request.CreditLimit, request.CreditTermsDays, request.Notes,
+            },
+            cancellationToken: ct));
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO customer_history(tenant_id,department_id,customer_id,actor_id,event_type,details) VALUES(@tenantId,@departmentId,@id,@createdBy,'created','{}'::jsonb)",
+            new { tenantId, departmentId, id = created.Id, createdBy }, cancellationToken: ct));
+
+        return (created, duplicates);
+    }
+
+    public async Task<CustomerRecord?> UpdateAsync(
+        Guid tenantId, Guid departmentId, Guid id, UpdateCustomerRequest request, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        var sql = $"""
+            UPDATE sim_customers SET
+                name              = COALESCE(@Name, name),
+                mst               = COALESCE(@Mst, mst),
+                address           = COALESCE(@Address, address),
+                phone             = COALESCE(@Phone, phone),
+                email             = COALESCE(@Email, email),
+                category          = COALESCE(@Category, category),
+                customer_type     = COALESCE(@CustomerType, customer_type),
+                representative    = COALESCE(@Representative, representative),
+                credit_limit      = COALESCE(@CreditLimit, credit_limit),
+                credit_terms_days = COALESCE(@CreditTermsDays, credit_terms_days),
+                notes             = COALESCE(@Notes, notes),
+                updated_at        = NOW()
+            WHERE id = @id AND tenant_id = @tenantId AND department_id = @departmentId AND status = 'active'
+            RETURNING {CustomerCols};
+            """;
+        return await conn.QueryFirstOrDefaultAsync<CustomerRecord>(new CommandDefinition(
+            sql,
+            new
+            {
+                id, tenantId, departmentId,
+                request.Name, request.Mst, request.Address, request.Phone, request.Email,
+                request.Category, request.CustomerType, request.Representative,
+                request.CreditLimit, request.CreditTermsDays, request.Notes,
+            },
+            cancellationToken: ct));
+    }
+
+    public async Task<CustomerRecord?> SetStatusAsync(
+        Guid tenantId, Guid departmentId, Guid id, string status, Guid actorId, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        var updated = await conn.QueryFirstOrDefaultAsync<CustomerRecord>(new CommandDefinition(
+            $"""
+            UPDATE sim_customers SET status=@status, updated_at=NOW()
+            WHERE id=@id AND tenant_id=@tenantId AND department_id=@departmentId
+            RETURNING {CustomerCols};
+            """,
+            new { id, tenantId, departmentId, status }, cancellationToken: ct));
+        if (updated is null) return null;
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO customer_history(tenant_id,department_id,customer_id,actor_id,event_type,details) VALUES(@tenantId,@departmentId,@id,@actorId,@eventType,'{}'::jsonb)",
+            new { tenantId, departmentId, id, actorId, eventType = status == "active" ? "reactivated" : "deactivated" },
+            cancellationToken: ct));
+        return updated;
     }
 
     public async Task<CustomerReceivablesReport?> GetReceivablesAsync(
-        Guid tenantId, Guid customerId, CancellationToken ct)
+        Guid tenantId, Guid departmentId, Guid customerId, CancellationToken ct)
     {
-        var customer = await FindByIdAsync(tenantId, customerId, ct);
+        var customer = await FindByIdAsync(tenantId, departmentId, customerId, ct);
         if (customer is null) return null;
 
         await using var conn = await _factory.OpenAsync(ct);
@@ -283,17 +489,17 @@ public sealed class CustomerRepository : ICustomerRepository
     }
 
     public async Task<SalesOrderMatch?> MatchInvoiceToSalesOrderAsync(
-        Guid tenantId, string documentNumber, CancellationToken ct)
+        Guid tenantId, Guid departmentId, string documentNumber, CancellationToken ct)
     {
         await using var conn = await _factory.OpenAsync(ct);
 
         // 1. Find sales order where invoiced_ref matches. If none, we're done —
         //    invoice was bán không qua đơn hàng (§5.6 A2).
         const string soSql = """
-            SELECT id               AS Id,
+            SELECT so.id            AS Id,
                    order_number     AS OrderNumber,
                    order_date       AS OrderDate,
-                   status           AS Status,
+                   so.status        AS Status,
                    subtotal         AS Subtotal,
                    vat_amount       AS VatAmount,
                    total_amount     AS TotalAmount,
@@ -302,13 +508,13 @@ public sealed class CustomerRepository : ICustomerRepository
                    delivery_note_ref AS DeliveryNoteRef,
                    salesperson_code AS SalespersonCode,
                    notes            AS Notes
-            FROM sim_sales_orders
-            WHERE tenant_id = @tenantId
+            FROM sim_sales_orders so JOIN sim_customers c ON c.id=so.customer_id
+            WHERE so.tenant_id = @tenantId AND c.department_id=@departmentId
               AND invoiced_ref = @documentNumber
             LIMIT 1
             """;
         var so = await conn.QueryFirstOrDefaultAsync<SalesOrderMatchRow>(
-            new CommandDefinition(soSql, new { tenantId, documentNumber }, cancellationToken: ct));
+            new CommandDefinition(soSql, new { tenantId, departmentId, documentNumber }, cancellationToken: ct));
         if (so is null) return null;
 
         // 2. Delivery note (if any)

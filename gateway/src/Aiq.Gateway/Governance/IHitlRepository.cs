@@ -416,9 +416,21 @@ public sealed class HitlRepository : IHitlRepository
             return new(HitlOutcome.Rejected, prior.Id, matched.Name);
         }
 
+        var pendingId = await conn.QueryFirstOrDefaultAsync<Guid?>(new CommandDefinition("""
+            SELECT id FROM hitl_pending_actions
+            WHERE tenant_id=@tenantId AND agent_id=@agentId AND gate_id=@gateId AND tool_code=@toolCode
+              AND payload=@payloadJson::jsonb AND status='pending'
+            ORDER BY created_at DESC LIMIT 1
+            """, new { tenantId, agentId, gateId = matched.Id, toolCode, payloadJson }, cancellationToken: ct));
+        if (pendingId is not null)
+        {
+            return new(HitlOutcome.PendingApproval, pendingId, matched.Name);
+        }
+
         var newId = await conn.QuerySingleAsync<Guid>(new CommandDefinition("""
-            INSERT INTO hitl_pending_actions (tenant_id, gate_id, agent_id, triggered_by, tool_code, payload)
-            VALUES (@tenantId, @gateId, @agentId, @actorId, @toolCode, @payloadJson::jsonb)
+            INSERT INTO hitl_pending_actions (tenant_id, department_id, gate_id, agent_id, triggered_by, tool_code, payload)
+            SELECT @tenantId, department_id, id, @agentId, @actorId, @toolCode, @payloadJson::jsonb
+            FROM hitl_gates WHERE id=@gateId AND tenant_id=@tenantId
             RETURNING id
             """, new { tenantId, gateId = matched.Id, agentId, actorId, toolCode, payloadJson }, cancellationToken: ct));
         return new(HitlOutcome.PendingApproval, newId, matched.Name);

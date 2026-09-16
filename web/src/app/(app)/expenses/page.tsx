@@ -21,8 +21,32 @@ interface SuppliersListResponse {
   total: number;
 }
 
+interface ApAgingSummary {
+  supplierCount: number;
+  totalPayable: number;
+  current: number;
+  bucket_0_30: number;
+  bucket_31_60: number;
+  bucket_61_90: number;
+  over90: number;
+  overdueAmount: number;
+  dueWithin7Days: number;
+  dueWithin30Days: number;
+  largeBalanceSupplierCount: number;
+}
+
 function fmtMoney(n: number): string {
   return n.toLocaleString("vi-VN");
+}
+
+function AgingStat({ label, amount, tone }: { label: string; amount: number; tone?: "amber" | "red" }) {
+  const toneClass = tone === "red" && amount > 0 ? "text-red-700" : tone === "amber" && amount > 0 ? "text-amber-700" : "";
+  return (
+    <div>
+      <div className="text-[10px] text-[var(--color-muted-fg)]">{label}</div>
+      <div className={`font-mono text-sm font-bold ${toneClass}`}>{fmtMoney(amount)}</div>
+    </div>
+  );
 }
 
 function countryFlag(c: string): string {
@@ -37,13 +61,24 @@ function countryFlag(c: string): string {
 
 export default async function ExpensesPage() {
   const token = await requireSession();
-  const res = await gateway.listSuppliers(token, {});
-  const body = res.ok
-    ? ((await res.json()) as SuppliersListResponse)
+  const [suppliersRes, apSummaryRes, unverifiedRes] = await Promise.all([
+    gateway.listSuppliers(token, {}),
+    gateway.apSummary(token),
+    gateway.listVouchers(token, { status: "extracted", limit: 200 }),
+  ]);
+  const body = suppliersRes.ok
+    ? ((await suppliersRes.json()) as SuppliersListResponse)
     : { items: [], total: 0 };
+  const apSummary = apSummaryRes.ok ? ((await apSummaryRes.json()) as ApAgingSummary) : null;
+  const unverifiedCount = unverifiedRes.ok
+    ? ((await unverifiedRes.json()) as { total: number }).total
+    : null;
 
-  // Aggregate stats.
-  const totalAp = body.items.reduce((sum, s) => sum + s.currentAp, 0);
+  // Aggregate stats. Prefer the real ap-summary aggregate (derived from
+  // sim_ap_ledger) when available; fall back to the per-supplier list sum
+  // only if that call failed, so the dashboard degrades gracefully instead
+  // of showing nothing.
+  const totalAp = apSummary?.totalPayable ?? body.items.reduce((sum, s) => sum + s.currentAp, 0);
   const largeSuppliers = body.items.filter((s) => s.currentAp >= 500_000_000);
   const importSuppliers = body.items.filter((s) => s.country !== "VN");
   const top5 = [...body.items].sort((a, b) => b.currentAp - a.currentAp).slice(0, 5);
@@ -103,7 +138,9 @@ export default async function ExpensesPage() {
         </div>
         <div className="rounded-[var(--radius)] border p-4">
           <div className="text-xs text-[var(--color-muted-fg)]">Vouchers chưa verify</div>
-          <div className="mt-1 font-mono text-2xl font-bold text-amber-700">—</div>
+          <div className="mt-1 font-mono text-2xl font-bold text-amber-700">
+            {unverifiedCount === null ? "—" : unverifiedCount}
+          </div>
           <div className="text-xs text-[var(--color-muted-fg)]">
             <Link
               href="/vouchers?status=extracted"
@@ -114,6 +151,24 @@ export default async function ExpensesPage() {
           </div>
         </div>
       </section>
+
+      {apSummary && (
+        <section className="rounded-[var(--radius)] border p-5">
+          <h2 className="mb-3 font-serif text-lg">Tuổi nợ phải trả (từ sim_ap_ledger)</h2>
+          <div className="grid gap-3 sm:grid-cols-3 md:grid-cols-6">
+            <AgingStat label="Trong hạn" amount={apSummary.current} />
+            <AgingStat label="Quá hạn 1-30 ngày" amount={apSummary.bucket_0_30} tone="amber" />
+            <AgingStat label="Quá hạn 31-60 ngày" amount={apSummary.bucket_31_60} tone="amber" />
+            <AgingStat label="Quá hạn 61-90 ngày" amount={apSummary.bucket_61_90} tone="red" />
+            <AgingStat label="Quá hạn > 90 ngày" amount={apSummary.over90} tone="red" />
+            <AgingStat label="Tổng quá hạn" amount={apSummary.overdueAmount} tone="red" />
+          </div>
+          <div className="mt-3 flex flex-wrap gap-4 text-xs text-[var(--color-muted-fg)]">
+            <span>Đến hạn trong 7 ngày tới: <b className="text-[var(--color-fg)]">{fmtMoney(apSummary.dueWithin7Days)} VNĐ</b></span>
+            <span>Đến hạn trong 30 ngày tới: <b className="text-[var(--color-fg)]">{fmtMoney(apSummary.dueWithin30Days)} VNĐ</b></span>
+          </div>
+        </section>
+      )}
 
       <section className="rounded-[var(--radius)] border p-5">
         <div className="mb-3 flex items-center justify-between">
@@ -176,12 +231,15 @@ export default async function ExpensesPage() {
           <UserCircle2 className="mr-2 inline size-4" /> Hoàn ứng nhân viên
         </h2>
         <p className="text-sm text-[var(--color-muted-fg)]">
-          Sprint 5 sẽ có widget hiển thị tạm ứng chưa hoàn (TK 141) + expense claim pending.
-          Hiện tại upload đề nghị hoàn ứng qua{" "}
+          Đề nghị hoàn ứng được upload qua{" "}
           <Link href="/vouchers" className="text-[var(--color-primary)] underline">
             /vouchers
           </Link>{" "}
-          với voucherType=<span className="font-mono">expense_claim</span>.
+          với voucherType=<span className="font-mono">expense_claim</span> — dùng chung pipeline
+          OCR/trích xuất/duyệt như mọi voucher khác, không phải một luồng riêng.
+          Widget tạm ứng chưa hoàn (TK 141) theo từng nhân viên chưa hiển thị ở đây: dữ liệu
+          nhân viên hiện chưa gắn theo Department (chỉ có nhãn phòng ban dạng text), nên chưa
+          thể hiển thị đúng theo ACL Department như các phần khác của trang này.
         </p>
       </section>
 

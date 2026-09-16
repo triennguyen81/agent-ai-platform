@@ -1,152 +1,70 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Contracts;
+using Aiq.Gateway.Governance;
 using Aiq.Gateway.Middleware;
-using Microsoft.AspNetCore.Http;
+using Aiq.Gateway.Security;
+using Aiq.Gateway.Storage;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace Aiq.Gateway.Endpoints;
 
 public static class ContractEndpoints
 {
+    public sealed record ReviewContractRequest(bool Approve, string? Comment);
     public static IEndpointRouteBuilder MapContractEndpoints(this IEndpointRouteBuilder app)
     {
-        // admin / super_admin can manage contracts directly. A plain role=user
-        // browser session still never gets in — "resource_or_tool" only adds a
-        // short-lived, server-minted tool_execution token (see manifest
-        // endpoint), never handed to a user directly.
-        var group = app
-            .MapGroup("/contracts")
-            .RequireAuthorization("resource_or_tool")
-            .RequireRateLimiting("default");
-
-        group.MapGet("/", ListAsync);
-        group.MapPost("/", CreateAsync);
-        group.MapGet("/{id:guid}", GetAsync);
-        group.MapPatch("/{id:guid}", UpdateAsync);
-        group.MapDelete("/{id:guid}", DeleteAsync);
-
+        var g=app.MapGroup("/contracts").RequireAuthorization("department_member").RequireRateLimiting("default");
+        g.MapGet("/",List); g.MapPost("/",Create); g.MapGet("/{id:guid}",Get); g.MapPatch("/{id:guid}",Update); g.MapDelete("/{id:guid}",Delete);
+        g.MapPost("/{id:guid}/process",Process); g.MapPost("/{id:guid}/review",Review); g.MapPost("/{id:guid}/handoff",Handoff);
+        g.MapGet("/{id:guid}/documents",Documents);
+        g.MapPost("/{id:guid}/documents",UploadDocument).DisableAntiforgery();
+        g.MapDelete("/{id:guid}/documents/{documentId:guid}",DeleteDocument);
         return app;
     }
-
-    private static async Task<IResult> ListAsync(
-        IContractRepository repo,
-        HttpContext ctx,
-        CancellationToken ct,
-        string? status = null,
-        string? q = null,
-        int limit = 50,
-        int offset = 0)
+    private static async Task<IResult> List(IContractRepository r,ICapabilityRepository c,HttpContext x,CancellationToken ct,string? status=null,string? q=null,int limit=50,int offset=0)
+    {if(!Scope(x,out var p,out var t,out var d)||!await Consume(p,"contract.processing",c,ct))return Results.Forbid();var a=await r.ListAsync(t,d,status,q,limit,offset,ct);return Results.Ok(new ContractsListResponse(a,a.Count));}
+    private static async Task<IResult> Create(CreateContractRequest q,IContractRepository r,ICapabilityRepository c,HttpContext x,CancellationToken ct)
+    {if(!Valid(q,out var e))return Results.ValidationProblem(e);if(!Scope(x,out var p,out var t,out var d)||!await Consume(p,"contract.intake",c,ct))return Results.Forbid();var a=await r.CreateAsync(t,d,p.UserId,q,ct);return Results.Created($"/contracts/{a.Contract.Id}",a);}
+    private static async Task<IResult> Get(Guid id,IContractRepository r,ICapabilityRepository c,HttpContext x,CancellationToken ct)
+    {if(!Scope(x,out var p,out var t,out var d)||!await Consume(p,"contract.processing",c,ct))return Results.Forbid();var a=await r.FindAggregateAsync(t,d,id,ct);return a is null?Results.NotFound():Results.Ok(a);}
+    // ADMIN keeps unrestricted edit access. A USER may edit only a contract
+    // they themselves created (contracts.user_id, never client-supplied),
+    // only while ADMIN hasn't yet decided it (approve/handoff/reject all
+    // close the editable window), and only while their capability grant is
+    // still active — created_by gates USER edit rights, never Department
+    // ownership itself (that's still tenant_id+department_id via Scope()).
+    private static async Task<IResult> Update(Guid id,UpdateContractRequest q,IContractRepository r,ICapabilityRepository c,HttpContext x,CancellationToken ct)
     {
-        if (!TryGetUserId(ctx, out var userId))
+        if(!Scope(x,out var p,out var t,out var d))return Results.Forbid();
+        if(!p.IsInRole("admin"))
         {
-            return Results.Unauthorized();
+            if(!await Consume(p,"contract.processing",c,ct))return Results.Forbid();
+            var existing=await r.FindAsync(t,d,id,ct);
+            if(existing is null)return Results.NotFound();
+            if(existing.Contract.UserId!=p.UserId)return Results.Forbid();
+            if(existing.Contract.WorkflowState is "APPROVED" or "HANDED_OFF" or "REJECTED")return Results.Forbid();
         }
-        if (!TenantContext.TryGet(ctx, out var tenantId))
-        {
-            return Results.BadRequest(new { error = "tenant context missing" });
-        }
-
-        var items = await repo.ListAsync(tenantId, userId, status, q, limit, offset, ct);
-        return Results.Ok(new ContractsListResponse(items, items.Count));
+        var a=await r.UpdateAsync(t,d,id,q,ct);return a is null?Results.NotFound():Results.Ok(a);
     }
-
-    private static async Task<IResult> CreateAsync(
-        CreateContractRequest request,
-        IContractRepository repo,
-        HttpContext ctx,
-        CancellationToken ct)
-    {
-        if (!TryValidate(request, out var errors))
-        {
-            return Results.ValidationProblem(errors);
-        }
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
-        if (!TenantContext.TryGet(ctx, out var tenantId))
-        {
-            return Results.BadRequest(new { error = "tenant context missing" });
-        }
-
-        var created = await repo.CreateAsync(tenantId, userId, request, ct);
-        return Results.Created($"/contracts/{created.Contract.Id}", created);
-    }
-
-    private static async Task<IResult> GetAsync(
-        Guid id,
-        IContractRepository repo,
-        HttpContext ctx,
-        CancellationToken ct)
-    {
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
-        if (!TenantContext.TryGet(ctx, out var tenantId))
-        {
-            return Results.BadRequest(new { error = "tenant context missing" });
-        }
-
-        var contract = await repo.FindAsync(tenantId, userId, id, ct);
-        return contract is null ? Results.NotFound() : Results.Ok(contract);
-    }
-
-    private static async Task<IResult> UpdateAsync(
-        Guid id,
-        UpdateContractRequest request,
-        IContractRepository repo,
-        HttpContext ctx,
-        CancellationToken ct)
-    {
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
-        if (!TenantContext.TryGet(ctx, out var tenantId))
-        {
-            return Results.BadRequest(new { error = "tenant context missing" });
-        }
-
-        var updated = await repo.UpdateAsync(tenantId, userId, id, request, ct);
-        return updated is null ? Results.NotFound() : Results.Ok(updated);
-    }
-
-    private static async Task<IResult> DeleteAsync(
-        Guid id,
-        IContractRepository repo,
-        HttpContext ctx,
-        CancellationToken ct)
-    {
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
-        if (!TenantContext.TryGet(ctx, out var tenantId))
-        {
-            return Results.BadRequest(new { error = "tenant context missing" });
-        }
-
-        var deleted = await repo.DeleteAsync(tenantId, userId, id, ct);
-        return deleted ? Results.NoContent() : Results.NotFound();
-    }
-
-    private static bool TryGetUserId(HttpContext ctx, out Guid userId)
-    {
-        var raw = ctx.User.FindFirst("sub")?.Value
-            ?? ctx.User.FindFirst("nameidentifier")?.Value
-            ?? ctx.User.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value;
-        return Guid.TryParse(raw, out userId);
-    }
-
-    private static bool TryValidate(object instance, out Dictionary<string, string[]> errors)
-    {
-        var ctx = new ValidationContext(instance);
-        var results = new List<ValidationResult>();
-        var ok = Validator.TryValidateObject(instance, ctx, results, validateAllProperties: true);
-        errors = results
-            .SelectMany(r => r.MemberNames.Select(m => (Member: m, r.ErrorMessage)))
-            .GroupBy(t => t.Member)
-            .ToDictionary(g => g.Key, g => g.Select(x => x.ErrorMessage ?? "Invalid").ToArray());
-        return ok;
-    }
+    private static async Task<IResult> Delete(Guid id,IContractRepository r,HttpContext x,CancellationToken ct)
+    {if(!Admin(x,out _,out var t,out var d))return Results.Forbid();return await r.DeleteAsync(t,d,id,ct)?Results.NoContent():Results.NotFound();}
+    private static async Task<IResult> Process(Guid id,ProcessContractRequest q,IContractRepository r,ICapabilityRepository c,IHitlRepository hitl,HttpContext x,CancellationToken ct)
+    {if(!Scope(x,out var p,out var t,out var d))return Results.Forbid();var contract=await r.FindAsync(t,d,id,ct);if(contract is null)return Results.NotFound();if(!p.IsInRole("admin")&&contract.Contract.UserId!=p.UserId)return Results.Forbid();if(contract.Contract.WorkflowState is "APPROVED" or "HANDED_OFF" or "REJECTED")return Results.Conflict(new{error="contract_finalized"});var resolved=await c.ResolveAgentAsync(t,d,p.IsInRole("admin")?null:p.UserId,p.IsInRole("admin"),"contract.validate",ct);if(resolved.AgentId is null){resolved=await c.ResolveAgentAsync(t,d,p.IsInRole("admin")?null:p.UserId,p.IsInRole("admin"),"contract.processing",ct);if(resolved.AgentId is null)return Results.Forbid();}var a=await r.ProcessAsync(t,d,p.UserId,id,q,ct);if(a is null)return Results.Conflict(new{error="contract_not_processable"});if(a.WorkflowState is "WAITING_REVIEW" or "NEEDS_REVIEW"){using var doc=System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(new{contractId=id,workflowState=a.WorkflowState,totalValue=q.TotalValue}));var gate=await hitl.EvaluateAsync(t,resolved.AgentId.Value,p.UserId,"contract.handoff",doc.RootElement,ct);await r.SetHitlActionAsync(t,d,id,gate.ActionId,ct);a=a with{HitlActionId=gate.ActionId};}return Results.Ok(a);}
+    private static async Task<IResult> Review(Guid id,ReviewContractRequest q,IContractRepository r,IHitlRepository hitl,HttpContext x,CancellationToken ct)
+    {if(!Admin(x,out var p,out var t,out var d))return Results.Forbid();var contract=await r.FindAsync(t,d,id,ct);if(contract is null)return Results.NotFound();if(contract.Contract.WorkflowState is not("WAITING_REVIEW" or "NEEDS_REVIEW"))return Results.BadRequest(new{error="contract_not_waiting_review"});if(contract.Contract.HitlActionId is{} actionId){var decision=await hitl.DecideAsync(t,d,actionId,p.UserId,new DecideActionRequest(q.Approve?"approve":"reject",q.Comment),ct);if(decision is null)return Results.BadRequest(new{error="hitl_action_not_pending"});}var a=await r.ReviewAsync(t,d,p.UserId,id,q.Approve,q.Comment,ct);return a is null?Results.BadRequest(new{error="contract_not_waiting_review"}):Results.Ok(new{workflowState=a});}
+    private static async Task<IResult> Handoff(Guid id,IContractRepository r,HttpContext x,CancellationToken ct)
+    {if(!Admin(x,out var p,out var t,out var d))return Results.Forbid();var a=await r.PrepareHandoffAsync(t,d,p.UserId,id,ct);return a is null?Results.BadRequest(new{error="human_approval_required"}):Results.Ok(a);}
+    private static async Task<IResult> Documents(Guid id,IContractRepository contracts,IContractDocumentRepository docs,ICapabilityRepository caps,HttpContext x,CancellationToken ct)
+    {if(!Scope(x,out var p,out var t,out var d)||!await Consume(p,"contract.processing",caps,ct))return Results.Forbid();if(await contracts.FindAsync(t,d,id,ct)is null)return Results.NotFound();var rows=await docs.ListAsync(t,d,id,ct);return Results.Ok(new{items=rows,total=rows.Count});}
+    private static readonly HashSet<string> DocumentTypes=["contract","sale_contract","purchase_contract","rent_contract","loan_contract","appendix","acceptance","delivery","other"];
+    private static async Task<IResult> UploadDocument(Guid id,[FromForm] IFormFile file,[FromForm] string documentType,IContractRepository contracts,IContractDocumentRepository docs,ICapabilityRepository caps,IFileUploadGuard guard,IObjectStorage storage,IOptions<S3Options> options,HttpContext x,CancellationToken ct,[FromForm] string? referencedCode=null)
+    {if(!Scope(x,out var p,out var t,out var d)||!await Consume(p,"contract.intake",caps,ct))return Results.Forbid();if(!DocumentTypes.Contains(documentType))return Results.BadRequest(new{error="invalid_document_type"});var contract=await contracts.FindAsync(t,d,id,ct);if(contract is null)return Results.NotFound();if(!CanEdit(p,contract.Contract))return Results.Forbid();var metadata=guard.ValidateMetadata(file.FileName,file.ContentType,file.Length);if(!metadata.Ok)return Results.BadRequest(new{error=metadata.Code,detail=metadata.Reason});await using var input=file.OpenReadStream();await using var buffer=new MemoryStream();await input.CopyToAsync(buffer,ct);buffer.Position=0;var header=buffer.ToArray().AsSpan(0,(int)Math.Min(buffer.Length,16));var bodyCheck=guard.ValidateBody(file.ContentType,header);if(!bodyCheck.Ok)return Results.BadRequest(new{error=bodyCheck.Code,detail=bodyCheck.Reason});buffer.Position=0;var sha=await guard.ComputeSha256Async(buffer,ct);buffer.Position=0;var extension=Path.GetExtension(file.FileName).ToLowerInvariant();var key=TenantObjectKey.Build(t,"contracts",d.ToString("N"),id.ToString("N"),$"{sha}{extension}");var put=await storage.PutAsync(options.Value.ContractBucket,key,buffer,file.ContentType,ct);var row=await docs.AddAsync(t,d,p.UserId,id,documentType,referencedCode,file.FileName,file.ContentType,key,put.Sha256Hex,put.SizeBytes,ct);return row is null?Results.Conflict(new{error="contract_not_editable"}):Results.Created($"/contracts/{id}/documents/{row.Id}",row);}
+    private static async Task<IResult> DeleteDocument(Guid id,Guid documentId,IContractRepository contracts,IContractDocumentRepository docs,ICapabilityRepository caps,IObjectStorage storage,IOptions<S3Options> options,HttpContext x,CancellationToken ct)
+    {if(!Scope(x,out var p,out var t,out var d)||!await Consume(p,"contract.intake",caps,ct))return Results.Forbid();var contract=await contracts.FindAsync(t,d,id,ct);if(contract is null)return Results.NotFound();if(!CanEdit(p,contract.Contract))return Results.Forbid();var doc=await docs.FindAsync(t,d,documentId,ct);if(doc is null||doc.ContractId!=id)return Results.NotFound();if(!await docs.DeleteAsync(t,d,documentId,ct))return Results.Conflict(new{error="contract_not_editable"});await storage.DeleteAsync(options.Value.ContractBucket,doc.StorageKey,ct);return Results.NoContent();}
+    private static bool CanEdit(PrincipalContext p,ContractRecord c)=>c.WorkflowState is not("APPROVED" or "HANDED_OFF" or "REJECTED")&&(p.IsInRole("admin")||c.UserId==p.UserId);
+    private static bool Scope(HttpContext x,out PrincipalContext p,out Guid t,out Guid d){p=null!;t=d=Guid.Empty;if(!AuthenticatedPrincipalContext.TryGet(x,out p)||p.TenantId is not{}a||p.DepartmentId is not{}b||(!p.IsInRole("admin")&&!p.IsInRole("user")))return false;t=a;d=b;return true;}
+    private static bool Admin(HttpContext x,out PrincipalContext p,out Guid t,out Guid d)=>Scope(x,out p,out t,out d)&&p.IsInRole("admin");
+    private static async Task<bool> Consume(PrincipalContext p,string code,ICapabilityRepository r,CancellationToken ct){if(p.IsInRole("admin"))return true;var a=await r.ResolveAgentAsync(p.TenantId!.Value,p.DepartmentId!.Value,p.UserId,false,code,ct);if(a.AgentId is not null)return true;return (await r.ResolveAgentAsync(p.TenantId.Value,p.DepartmentId.Value,p.UserId,false,"contract.processing",ct)).AgentId is not null;}
+    private static bool Valid(object v,out Dictionary<string,string[]> e){var r=new List<ValidationResult>();var ok=Validator.TryValidateObject(v,new ValidationContext(v),r,true);e=r.SelectMany(a=>a.MemberNames.DefaultIfEmpty("request").Select(m=>(m,a.ErrorMessage))).GroupBy(a=>a.m).ToDictionary(g=>g.Key,g=>g.Select(a=>a.ErrorMessage??"invalid").ToArray());return ok;}
 }

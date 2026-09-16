@@ -86,7 +86,7 @@ services:
       # Object storage (MinIO). Gateway talks to it over aiq-net.
       Object__ServiceUrl: ${OBJECT_SERVICE_URL:-http://aiq-minio:9000}
       Object__AccessKey: ${MINIO_ROOT_USER:-aiq}
-      Object__SecretKey: ${MINIO_ROOT_PASSWORD:-}
+      Object__SecretKey: ${MINIO_ROOT_PASSWORD:-changeme_min_32_chars_before_prod}
       Object__ForcePathStyle: "true"
       Object__VoucherBucket: ${OBJECT_VOUCHER_BUCKET:-voucher-uploads}
       Object__ContractBucket: ${OBJECT_CONTRACT_BUCKET:-contract-uploads}

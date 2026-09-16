@@ -115,6 +115,33 @@ if (string.IsNullOrWhiteSpace(jwtOptions.SigningKey) || jwtOptions.SigningKey.Le
 var connectionString = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("ConnectionStrings:Postgres is missing.");
 
+static bool IsMissingOrPlaceholder(string? value) =>
+    string.IsNullOrWhiteSpace(value)
+    || value.Contains("changeme", StringComparison.OrdinalIgnoreCase);
+
+var objectServiceUrl = builder.Configuration[$"{S3Options.SectionName}:ServiceUrl"];
+var objectAccessKey = builder.Configuration[$"{S3Options.SectionName}:AccessKey"];
+var objectSecretKey = builder.Configuration[$"{S3Options.SectionName}:SecretKey"];
+
+// Fail fast in EVERY environment (not just Production) if object storage
+// credentials are genuinely absent. S3Options.SecretKey/AccessKey are
+// `required` at compile time only — the options binder silently leaves
+// them null when the env var isn't set, and IObjectStorage is a DI
+// singleton that isn't eagerly resolved at startup, so a missing
+// Object__SecretKey previously surfaced as a raw
+// ArgumentNullException('awsSecretAccessKey') 500 on the *first upload*
+// instead of a clear config error at boot. This does not weaken the
+// stricter Production check below — it only catches "not configured at
+// all", which is never valid in any environment.
+if (string.IsNullOrWhiteSpace(objectServiceUrl)
+    || string.IsNullOrWhiteSpace(objectAccessKey)
+    || string.IsNullOrWhiteSpace(objectSecretKey))
+{
+    throw new InvalidOperationException(
+        "Object__ServiceUrl/Object__AccessKey/Object__SecretKey must all be set " +
+        "— object storage (MinIO/S3) credentials are required in every environment.");
+}
+
 // ACL V2 final phase (V2-H): docker-compose.yml's local-dev fallback
 // credentials (POSTGRES_PASSWORD/Object__AccessKey/Object__SecretKey all
 // defaulting to the literal "aiq", MinIO's documented
@@ -125,16 +152,9 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
 // local/dev/CI behavior is completely unchanged.
 if (builder.Environment.IsProduction())
 {
-    static bool IsMissingOrPlaceholder(string? value) =>
-        string.IsNullOrWhiteSpace(value)
-        || value.Contains("changeme", StringComparison.OrdinalIgnoreCase);
-
     static bool IsWeakSecret(string? value) =>
         IsMissingOrPlaceholder(value)
         || string.Equals(value, "aiq", StringComparison.Ordinal);
-
-    var objectAccessKey = builder.Configuration[$"{S3Options.SectionName}:AccessKey"];
-    var objectSecretKey = builder.Configuration[$"{S3Options.SectionName}:SecretKey"];
 
     // Existing production MinIO uses AccessKey="aiq".
     // Allow that access key, but still require a real non-default secret.
@@ -160,6 +180,7 @@ builder.Services.AddSingleton<DatabaseMigrator>();
 builder.Services.AddScoped<IBookRepository, BookRepository>();
 builder.Services.AddScoped<INoteRepository, NoteRepository>();
 builder.Services.AddScoped<IContractRepository, ContractRepository>();
+builder.Services.AddScoped<IContractDocumentRepository, ContractDocumentRepository>();
 builder.Services.AddScoped<IChecklistRepository, ChecklistRepository>();
 builder.Services.AddScoped<IVoucherRepository, VoucherRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Vouchers.VoucherExportService>();
@@ -178,7 +199,10 @@ builder.Services.AddScoped<ISkillRepository, SkillRepository>();
 builder.Services.AddScoped<IDepartmentKnowledgeRepository, DepartmentKnowledgeRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Customers.ICustomerRepository, Aiq.Gateway.Customers.CustomerRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Suppliers.ISupplierRepository, Aiq.Gateway.Suppliers.SupplierRepository>();
+builder.Services.AddScoped<Aiq.Gateway.Reports.IWeeklySummaryReportRepository, Aiq.Gateway.Reports.WeeklySummaryReportRepository>();
+builder.Services.AddScoped<Aiq.Gateway.Receipts.IReceiptMatchRepository, Aiq.Gateway.Receipts.ReceiptMatchRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Employees.IEmployeeRepository, Aiq.Gateway.Employees.EmployeeRepository>();
+builder.Services.AddScoped<Aiq.Gateway.Employees.IExpenseClaimRepository, Aiq.Gateway.Employees.ExpenseClaimRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Approvals.IApprovalRepository, Aiq.Gateway.Approvals.ApprovalRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
@@ -191,6 +215,7 @@ builder.Services.AddSingleton<IBookAccessControl, BookAccessControl>();
 // a feature flag (see docs/arch/s3-migration-plan.md).
 builder.Services.Configure<S3Options>(builder.Configuration.GetSection(S3Options.SectionName));
 builder.Services.Configure<Aiq.Gateway.Jobs.ExpenseRiskOptions>(builder.Configuration.GetSection(Aiq.Gateway.Jobs.ExpenseRiskOptions.SectionName));
+builder.Services.Configure<Aiq.Gateway.Jobs.ArOverdueOptions>(builder.Configuration.GetSection(Aiq.Gateway.Jobs.ArOverdueOptions.SectionName));
 builder.Services.AddSingleton<IObjectStorage, S3ObjectStorage>();
 
 builder.Services
@@ -420,6 +445,7 @@ app.MapChecklistEndpoints();
 app.MapVoucherEndpoints();
 app.MapCustomerEndpoints();
 app.MapSupplierEndpoints();
+app.MapReportsEndpoints();
 app.MapApprovalEndpoints();
 app.MapNotificationEndpoints();
 app.MapTenantEndpoints();
@@ -454,6 +480,27 @@ if (!string.IsNullOrWhiteSpace(jobsOptions.DashboardPath))
 // Daily 07:00 Asia/Ho_Chi_Minh scan for contract checklist deadlines.
 RecurringJob.AddOrUpdate<ContractDeadlineJob>(
     ContractDeadlineJob.RecurringJobId,
+    job => job.RunAsync(CancellationToken.None),
+    "0 7 * * *",
+    new RecurringJobOptions
+    {
+        TimeZone = TryGetVnTimeZone(),
+    });
+
+// R08 — daily 07:00 VN scan for overdue AR invoices (escalation ladder).
+RecurringJob.AddOrUpdate<Aiq.Gateway.Jobs.AccountsReceivableOverdueJob>(
+    Aiq.Gateway.Jobs.AccountsReceivableOverdueJob.RecurringJobId,
+    job => job.RunAsync(CancellationToken.None),
+    "0 7 * * *",
+    new RecurringJobOptions
+    {
+        TimeZone = TryGetVnTimeZone(),
+    });
+
+// P2 audit fix — daily 07:00 VN scan recomputing late-payment penalties on
+// overdue contract installments (see ContractInstallmentPenaltyJob).
+RecurringJob.AddOrUpdate<Aiq.Gateway.Jobs.ContractInstallmentPenaltyJob>(
+    Aiq.Gateway.Jobs.ContractInstallmentPenaltyJob.RecurringJobId,
     job => job.RunAsync(CancellationToken.None),
     "0 7 * * *",
     new RecurringJobOptions

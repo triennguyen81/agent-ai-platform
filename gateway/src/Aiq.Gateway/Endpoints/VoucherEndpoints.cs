@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Books;
 using Aiq.Gateway.Middleware;
+using Aiq.Gateway.Security;
 using Aiq.Gateway.Storage;
 using Aiq.Gateway.Vouchers;
 using Microsoft.AspNetCore.Http;
@@ -31,8 +32,9 @@ public static class VoucherEndpoints
         // required because the browser-facing flow is the primary path.
         var group = app
             .MapGroup("/vouchers")
-            .RequireAuthorization("user")
-            .RequireRateLimiting("default");
+            .RequireAuthorization("department_member")
+            .RequireRateLimiting("default")
+            .RequireBusinessCapability("voucher.processing");
 
         group.MapGet("/", ListAsync);
         group.MapPost("/", CreateAsync);
@@ -47,10 +49,10 @@ public static class VoucherEndpoints
         group.MapPatch("/{id:guid}", UpdateAsync);
 
         // Destructive delete stays admin-only.
-        group.MapDelete("/{id:guid}", DeleteAsync).RequireAuthorization("admin");
+        group.MapDelete("/{id:guid}", DeleteAsync).RequireAuthorization("department_admin");
 
         group.MapPost("/{id:guid}/journal-suggestions", SaveJournalAsync);
-        group.MapPost("/{id:guid}/journal-suggestions/{entryId:guid}/decision", DecideJournalAsync);
+        group.MapPost("/{id:guid}/journal-suggestions/{entryId:guid}/decision", DecideJournalAsync).RequireAuthorization("department_admin");
 
         // Preview: streams the uploaded voucher file through the gateway
         // so the browser never needs a direct route to MinIO. Signed URLs
@@ -73,24 +75,128 @@ public static class VoucherEndpoints
         // reads receipt_matching from extracted_fields, inserts credit
         // rows in sim_ar_ledger (one per application + optional discount),
         // updates sim_customers.current_ar, marks voucher status='verified'.
-        group.MapPost("/{id:guid}/apply-receipt", ApplyReceiptAsync);
+        group.MapPost("/{id:guid}/apply-receipt", ApplyReceiptAsync).RequireAuthorization("department_admin");
 
         // UC3 counterpart — kế toán viên bấm "Chấp nhận chi" trên voucher
         // AP side detail page. Routes based on voucher_type:
         //   invoice_vat_in → book credit row (Có 331 tăng)
         //   payment/bank_transfer → apply debit rows per payment_matching.applications
         //   expense_claim → update sim_employees.outstanding_advance + ytd_expense
-        group.MapPost("/{id:guid}/apply-expense", ApplyExpenseAsync);
+        group.MapPost("/{id:guid}/apply-expense", ApplyExpenseAsync).RequireAuthorization("department_admin");
 
         // Sprint 4 gap UC1: bấm "Chấp nhận HĐ" trên invoice_vat_out detail page
         // → insert debit row vào sim_ar_ledger (Nợ 131 tăng) + update current_ar.
-        group.MapPost("/{id:guid}/apply-invoice", ApplyInvoiceAsync);
+        group.MapPost("/{id:guid}/apply-invoice", ApplyInvoiceAsync).RequireAuthorization("department_admin");
 
         // Sprint 4 gap UC2: bấm "Huỷ áp thu" khi cần rollback receipt đã áp.
         // DELETE rows tagged voucher:{id} + recompute current_ar.
-        group.MapPost("/{id:guid}/unapply-receipt", UnapplyReceiptAsync);
+        group.MapPost("/{id:guid}/unapply-receipt", UnapplyReceiptAsync).RequireAuthorization("department_admin");
+
+        // Luồng 02 — Customer/AR/Contract-installment match proposal for a
+        // receipt voucher. Read is Department-scoped like GetAsync; reject
+        // (ADMIN decides the proposed match is wrong, e.g. UNKNOWN_PAYER/
+        // OVERPAYMENT needing a different treatment) is department_admin-only,
+        // same posture as apply-receipt which confirms it.
+        group.MapGet("/{id:guid}/receipt-match", GetReceiptMatchAsync);
+        // "Process a record I created" (creator-or-admin, not read-only) —
+        // classifies the outcome from the voucher's own buyerMst/totalAmount/
+        // currency directly, independent of the LLM extraction pipeline
+        // having run. apply-receipt also (re-)proposes internally so a real
+        // upload flow never needs this called explicitly; exposed so a USER
+        // can process their own receipt without waiting on/needing an ADMIN.
+        group.MapPost("/{id:guid}/receipt-match/propose", ProposeReceiptMatchAsync);
+        group.MapPost("/{id:guid}/reject-receipt-match", RejectReceiptMatchAsync).RequireAuthorization("department_admin");
+
+        // Luồng 03 — expense_claim outcome classification (duplicate/policy/
+        // advance reconciliation). Same posture as receipt-match: read is
+        // Department-scoped, propose is creator-or-admin (a USER may process
+        // their own claim), reject/grant-exception/export are ADMIN-only.
+        group.MapGet("/{id:guid}/expense-claim-result", GetExpenseClaimResultAsync);
+        group.MapPost("/{id:guid}/expense-claim-result/propose", ProposeExpenseClaimAsync);
+        group.MapPost("/{id:guid}/reject-expense-claim", RejectExpenseClaimAsync).RequireAuthorization("department_admin");
+        group.MapPost("/{id:guid}/grant-expense-exception", GrantExpenseExceptionAsync).RequireAuthorization("department_admin");
+        // R14 — Luồng 03's 3-stage approval (Department review -> Accounting
+        // review -> Payment approval == apply-expense above). Each stage is
+        // ADMIN-only, Department-scoped, and enforces a different actor than
+        // every earlier stage (IExpenseClaimRepository) plus never the
+        // claim's own creator (R16, checked here before calling in).
+        group.MapPost("/{id:guid}/expense-claim/department-review", DepartmentReviewExpenseClaimAsync).RequireAuthorization("department_admin");
+        group.MapPost("/{id:guid}/expense-claim/accounting-review", AccountingReviewExpenseClaimAsync).RequireAuthorization("department_admin");
+        // Read-only payment/export handoff payload — never marks anything
+        // paid; only valid once ADMIN has confirmed (review_status=confirmed).
+        group.MapGet("/{id:guid}/expense-claim-export", GetExpenseClaimExportAsync).RequireAuthorization("department_admin");
+
+        // R05 fix — persists a REAL positive result from the Agent's
+        // verify_einvoice_tct tool (genuine hoadondientu.gdt.gov.vn lookup,
+        // agent/src/aiq_agent/agentic/voucher_tools.py). Deterministic
+        // one-way flip (false→true only); never called for an "unavailable"
+        // or negative result, so this endpoint never fabricates a
+        // verification that didn't happen.
+        group.MapPost("/{id:guid}/tax-verification/confirm", ConfirmTaxVerifiedAsync);
+
+        // P1 audit fix — the other two honest outcomes of a tax-portal
+        // check: found-and-invalid/cancelled, or the portal was
+        // unreachable. Recording these (instead of leaving the voucher
+        // silently "unverified" with no trace of why) is what lets
+        // IExpenseClaimRepository.ConfirmAsync's approval gate distinguish
+        // "never checked" from "checked and blocked".
+        group.MapPost("/{id:guid}/tax-verification/reject", RejectTaxVerificationAsync);
+
+        // R06 — explicit, human-recorded Contract -> Invoice/Receipt link.
+        // Department-scoped; the repository itself re-verifies the contract
+        // (and installment, if given) resolve in the SAME tenant+department
+        // as the voucher, so this can never cross a tenant/department
+        // boundary even if the caller supplies a foreign id.
+        group.MapPatch("/{id:guid}/link-contract", LinkContractAsync);
 
         return app;
+    }
+
+    private static async Task<IResult> ConfirmTaxVerifiedAsync(
+        Guid id,
+        IVoucherRepository repo,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
+        var updated = await repo.MarkTaxVerifiedAsync(tenantId, departmentId, id, ct);
+        return updated ? Results.Ok(new { voucherId = id, tctVerified = true }) : Results.NotFound();
+    }
+
+    private sealed record RejectTaxVerificationRequest(string Reason, bool ProviderUnavailable);
+
+    private static async Task<IResult> RejectTaxVerificationAsync(
+        Guid id,
+        RejectTaxVerificationRequest request,
+        IVoucherRepository repo,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(request.Reason))
+        {
+            return Results.BadRequest(new { error = "reason required" });
+        }
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
+        var updated = await repo.RejectTaxVerificationAsync(tenantId, departmentId, id, request.Reason, request.ProviderUnavailable, ct);
+        return updated
+            ? Results.Ok(new { voucherId = id, taxVerificationStatus = request.ProviderUnavailable ? "unavailable" : "invalid" })
+            : Results.NotFound();
+    }
+
+    private sealed record LinkContractRequest(Guid ContractId, Guid? InstallmentId);
+
+    private static async Task<IResult> LinkContractAsync(
+        Guid id,
+        LinkContractRequest request,
+        IVoucherRepository repo,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
+        var updated = await repo.LinkContractAsync(tenantId, departmentId, id, request.ContractId, request.InstallmentId, ct);
+        return updated
+            ? Results.Ok(new { voucherId = id, contractId = request.ContractId, installmentId = request.InstallmentId })
+            : Results.NotFound(new { error = "voucher hoặc hợp đồng/đợt thanh toán không thuộc cùng phòng ban" });
     }
 
     private sealed record ReextractRequest(string? RawText, string? VoucherType);
@@ -99,23 +205,26 @@ public static class VoucherEndpoints
         Guid id,
         IVoucherRepository repo,
         Aiq.Gateway.Customers.ICustomerRepository customers,
+        Aiq.Gateway.Receipts.IReceiptMatchRepository receiptMatches,
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
-        if (!TenantContext.TryGet(ctx, out var tenantId))
-        {
-            return Results.BadRequest(new { error = "tenant scope required" });
-        }
+        // Route is department_admin-only — ADMIN applies on any Department
+        // voucher regardless of who created it, so scope by tenant+department,
+        // never by the acting admin's own userId (that was the bug: an ADMIN
+        // could previously only apply-receipt on vouchers they themselves had
+        // uploaded).
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
 
-        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (voucher is null) return Results.NotFound();
         if (voucher.Voucher.VoucherType != "receipt")
         {
             return Results.BadRequest(new { error = "apply-receipt chỉ áp dụng cho phiếu thu" });
+        }
+        if (BusinessModuleAuthorization.IsSelfApproval(voucher.Voucher.UserId, principal.UserId))
+        {
+            return Results.Forbid();
         }
         if (voucher.Voucher.Status == "verified")
         {
@@ -178,10 +287,27 @@ public static class VoucherEndpoints
             discountReason,
             ct);
 
+        // Luồng 02 — (re-)propose then confirm. Proposing here too (not only
+        // from the extraction pipeline) makes apply-receipt self-contained:
+        // it works even if the LLM extraction step never ran/failed to
+        // persist a proposal, using the same ar_context/receipt_matching
+        // data already required above. ProposeMatchAsync only touches rows
+        // still in 'proposed' state, so this never clobbers an existing
+        // confirmed/rejected result. ConfirmMatchAsync itself no-ops if
+        // already confirmed, matching ApplyReceiptAsync's own ledger-side
+        // idempotency above.
+        var originalReceiptAmount = matchEl.TryGetProperty("receipt_amount", out var raEl) && raEl.ValueKind == System.Text.Json.JsonValueKind.Number
+            ? raEl.GetDecimal()
+            : apps.Sum(a => a.AppliedAmount) + discount;
+        await receiptMatches.ProposeMatchAsync(
+            tenantId, departmentId, id, voucher.Voucher.BuyerMst,
+            originalReceiptAmount, voucher.Voucher.Currency, ct);
+        var receiptMatch = await receiptMatches.ConfirmMatchAsync(tenantId, departmentId, id, principal.UserId, ct);
+
         // Flip voucher to verified so the Accept button hides.
         await repo.UpdateAsync(
             tenantId,
-            userId,
+            voucher.Voucher.UserId,
             id,
             new UpdateVoucherRequest(
                 Status: "verified",
@@ -204,6 +330,292 @@ public static class VoucherEndpoints
             total_applied = result.TotalApplied,
             discount_amount = result.DiscountAmount,
             ledger_rows_inserted = result.LedgerRowsInserted,
+            receipt_match = receiptMatch,
+        });
+    }
+
+    // Luồng 02 — any Department member with voucher.processing may read the
+    // proposed/confirmed match for a receipt voucher, same read-scope as
+    // GetAsync (department-wide, not creator-scoped).
+    private static async Task<IResult> GetReceiptMatchAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Receipts.IReceiptMatchRepository receiptMatches,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
+        if (await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct) is null) return Results.NotFound();
+        var match = await receiptMatches.GetByVoucherIdAsync(tenantId, departmentId, id, ct);
+        return match is null ? Results.NotFound() : Results.Ok(match);
+    }
+
+    // "USER may process records they created" — creator-or-admin, same
+    // posture as ReextractAsync/UpdateAsync. Classifies directly from the
+    // voucher's own buyerMst/totalAmount/currency, so this works even when
+    // extracted_fields has no ar_context/receipt_matching yet (e.g. the LLM
+    // extraction step never ran) — the whole point of exposing it standalone
+    // rather than only ever firing inside the extraction pipeline.
+    private static async Task<IResult> ProposeReceiptMatchAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Receipts.IReceiptMatchRepository receiptMatches,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        if (voucher.Voucher.VoucherType != "receipt")
+        {
+            return Results.BadRequest(new { error = "receipt-match/propose chỉ áp dụng cho phiếu thu" });
+        }
+        if (!principal.IsInRole("admin") && voucher.Voucher.UserId != principal.UserId)
+        {
+            return Results.Forbid();
+        }
+
+        var match = await receiptMatches.ProposeMatchAsync(
+            tenantId, departmentId, id, voucher.Voucher.BuyerMst,
+            voucher.Voucher.TotalAmount ?? 0m, voucher.Voucher.Currency, ct);
+
+        // J1 fix — deterministic journal-entry proposal from the outcome
+        // ProposeMatchAsync just classified (never from an LLM). fxRateConfigured
+        // is hard-false: no FX rate source exists anywhere in this system
+        // (BR09, still BLOCKED) — passing anything else would fabricate a rate.
+        var routing = Aiq.Gateway.Accounting.JournalRoutingRules.ForReceiptOutcome(
+            match.Outcome, voucher.Voucher.PaymentMethod,
+            match.ReceiptAmount, match.MatchedAmount, match.UnallocatedAmount,
+            fxRateConfigured: false);
+        if (routing.Outcome == Aiq.Gateway.Accounting.JournalRoutingOutcome.Proposed)
+        {
+            try
+            {
+                await repo.SaveJournalSuggestionsAsync(tenantId, departmentId, id,
+                    new SaveJournalSuggestionsRequest(
+                        routing.Entries.Select(e => new SaveJournalSuggestionDto(
+                            e.EntryNo, e.DebitAccount, e.CreditAccount, e.Amount, e.Description, Confidence: 1.0m)).ToList(),
+                        ReplaceExisting: true),
+                    ct);
+            }
+            catch (Exception) { /* proposal is best-effort — never breaks the already-committed classification */ }
+        }
+
+        return Results.Ok(match);
+    }
+
+    private static async Task<IResult> RejectReceiptMatchAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Receipts.IReceiptMatchRepository receiptMatches,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        if (BusinessModuleAuthorization.IsSelfApproval(voucher.Voucher.UserId, principal.UserId)) return Results.Forbid();
+        var updated = await receiptMatches.RejectMatchAsync(tenantId, departmentId, id, principal.UserId, ct);
+        return updated is null ? Results.Conflict(new { error = "receipt_match_not_pending" }) : Results.Ok(updated);
+    }
+
+    // Luồng 03 — any Department member with voucher.processing may read the
+    // proposed/confirmed expense claim result, same read-scope as GetAsync.
+    private static async Task<IResult> GetExpenseClaimResultAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Employees.IExpenseClaimRepository expenseClaims,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
+        if (await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct) is null) return Results.NotFound();
+        var result = await expenseClaims.GetByVoucherIdAsync(tenantId, departmentId, id, ct);
+        return result is null ? Results.NotFound() : Results.Ok(result);
+    }
+
+    // "USER may process records they created" — creator-or-admin, same
+    // posture as receipt-match/propose. Re-parses employee_code/total_claim/
+    // advance_taken/items directly from the voucher's own extracted_fields
+    // (the raw pre-enrichment keys survive alongside expense_claim_matching),
+    // so this works even when the LLM extraction pipeline never ran.
+    private static async Task<IResult> ProposeExpenseClaimAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Employees.IExpenseClaimRepository expenseClaims,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        if (voucher.Voucher.VoucherType != "expense_claim")
+        {
+            return Results.BadRequest(new { error = "expense-claim-result/propose chỉ áp dụng cho đề nghị hoàn ứng" });
+        }
+        if (!principal.IsInRole("admin") && voucher.Voucher.UserId != principal.UserId)
+        {
+            return Results.Forbid();
+        }
+
+        var extractedJson = voucher.Voucher.ExtractedFieldsJson ?? "{}";
+        using var doc = System.Text.Json.JsonDocument.Parse(extractedJson);
+        var root = doc.RootElement;
+
+        string? employeeCode = root.TryGetProperty("employee_code", out var ecEl) && ecEl.ValueKind == System.Text.Json.JsonValueKind.String
+            ? ecEl.GetString() : null;
+        decimal? totalClaim = root.TryGetProperty("total_claim", out var tcEl) && tcEl.ValueKind == System.Text.Json.JsonValueKind.Number
+            ? tcEl.GetDecimal() : null;
+        decimal advanceTaken = root.TryGetProperty("advance_taken", out var atEl) && atEl.ValueKind == System.Text.Json.JsonValueKind.Number
+            ? atEl.GetDecimal() : 0m;
+        string currency = root.TryGetProperty("currency", out var curEl) && curEl.ValueKind == System.Text.Json.JsonValueKind.String
+            ? curEl.GetString() ?? "VND" : "VND";
+
+        var items = new List<Aiq.Gateway.Employees.ExpenseClaimItemInput>();
+        if (root.TryGetProperty("items", out var itemsEl) && itemsEl.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            var seq = 0;
+            foreach (var it in itemsEl.EnumerateArray())
+            {
+                seq++;
+                var category = it.TryGetProperty("category", out var catEl) && catEl.ValueKind == System.Text.Json.JsonValueKind.String ? catEl.GetString()! : "khác";
+                string? description = it.TryGetProperty("description", out var descEl) && descEl.ValueKind == System.Text.Json.JsonValueKind.String ? descEl.GetString() : null;
+                var amount = it.TryGetProperty("amount", out var amtEl) && amtEl.ValueKind == System.Text.Json.JsonValueKind.Number ? amtEl.GetDecimal() : 0m;
+                bool? receiptAttached = it.TryGetProperty("receipt_attached", out var raEl)
+                    ? raEl.ValueKind switch { System.Text.Json.JsonValueKind.True => true, System.Text.Json.JsonValueKind.False => false, _ => null }
+                    : null;
+                string? vendorMst = it.TryGetProperty("vendor_mst", out var vmEl) && vmEl.ValueKind == System.Text.Json.JsonValueKind.String ? vmEl.GetString() : null;
+                string? invoiceNo = it.TryGetProperty("invoice_no", out var invEl) && invEl.ValueKind == System.Text.Json.JsonValueKind.String ? invEl.GetString() : null;
+                DateOnly? docDate = it.TryGetProperty("document_date", out var ddEl) && ddEl.ValueKind == System.Text.Json.JsonValueKind.String
+                    && DateOnly.TryParse(ddEl.GetString(), out var parsedDate) ? parsedDate : null;
+                decimal? vatAmount = it.TryGetProperty("vat_amount", out var vatEl) && vatEl.ValueKind == System.Text.Json.JsonValueKind.Number
+                    ? vatEl.GetDecimal() : null;
+                items.Add(new Aiq.Gateway.Employees.ExpenseClaimItemInput(seq, category, description, amount, receiptAttached, vendorMst, invoiceNo, docDate, vatAmount));
+            }
+        }
+
+        var result = await expenseClaims.ProposeAsync(
+            tenantId, departmentId, id,
+            new Aiq.Gateway.Employees.ExpenseClaimProposalInput(employeeCode, totalClaim, advanceTaken, currency, items),
+            ct);
+        return Results.Ok(result);
+    }
+
+    private static async Task<IResult> RejectExpenseClaimAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Employees.IExpenseClaimRepository expenseClaims,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        if (BusinessModuleAuthorization.IsSelfApproval(voucher.Voucher.UserId, principal.UserId)) return Results.Forbid();
+        var updated = await expenseClaims.RejectAsync(tenantId, departmentId, id, principal.UserId, ct);
+        return updated is null ? Results.Conflict(new { error = "expense_claim_not_pending" }) : Results.Ok(updated);
+    }
+
+    // R14 stage 1 — "Bộ phận" (department review): claim reasonableness.
+    private static async Task<IResult> DepartmentReviewExpenseClaimAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Employees.IExpenseClaimRepository expenseClaims,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        if (BusinessModuleAuthorization.IsSelfApproval(voucher.Voucher.UserId, principal.UserId)) return Results.Forbid();
+        var updated = await expenseClaims.DepartmentReviewAsync(tenantId, departmentId, id, principal.UserId, ct);
+        return updated is null
+            ? Results.Conflict(new { error = "expense_claim_not_ready_for_department_review" })
+            : Results.Ok(updated);
+    }
+
+    // R14 stage 2 — "Kế toán" (accounting review): tax/account validity.
+    // Rejected with a 409 (not Forbid) when the actor is the same as stage
+    // 1's reviewer, since that's a business-state conflict (this specific
+    // claim can't proceed with this reviewer), not an authorization denial.
+    private static async Task<IResult> AccountingReviewExpenseClaimAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Employees.IExpenseClaimRepository expenseClaims,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        if (BusinessModuleAuthorization.IsSelfApproval(voucher.Voucher.UserId, principal.UserId)) return Results.Forbid();
+        var updated = await expenseClaims.AccountingReviewAsync(tenantId, departmentId, id, principal.UserId, ct);
+        return updated is null
+            ? Results.Conflict(new { error = "expense_claim_not_ready_for_accounting_review_or_same_reviewer_as_department_stage" })
+            : Results.Ok(updated);
+    }
+
+    // ADMIN grants a policy exception on a WAITING_EXCEPTION_APPROVAL claim
+    // — un-caps to the full requested amount (minus only genuinely blocked
+    // duplicate lines) and applies it immediately (same one-step
+    // confirm-and-apply posture as ApplyExpenseAsync's plain confirm).
+    private static async Task<IResult> GrantExpenseExceptionAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Employees.IExpenseClaimRepository expenseClaims,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        if (BusinessModuleAuthorization.IsSelfApproval(voucher.Voucher.UserId, principal.UserId)) return Results.Forbid();
+        var updated = await expenseClaims.GrantExceptionAsync(tenantId, departmentId, id, principal.UserId, ct);
+        return updated is null ? Results.Conflict(new { error = "expense_claim_not_waiting_exception" }) : Results.Ok(updated);
+    }
+
+    // Payment/export prep (EXP-14) — read-only, structured handoff payload.
+    // Never marks anything paid; only reachable once ADMIN has confirmed.
+    // The Agent boundary: AiQ prepares this data, a human/external system
+    // executes the actual bank payment.
+    private static async Task<IResult> GetExpenseClaimExportAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Employees.IExpenseClaimRepository expenseClaims,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        var result = await expenseClaims.GetByVoucherIdAsync(tenantId, departmentId, id, ct);
+        if (result is null) return Results.NotFound();
+        if (result.ReviewStatus != "confirmed")
+        {
+            return Results.BadRequest(new { error = "expense_claim chưa được duyệt — không thể chuẩn bị dữ liệu thanh toán" });
+        }
+        return Results.Ok(new
+        {
+            voucherId = id,
+            documentNumber = voucher.Voucher.DocumentNumber,
+            employeeId = result.EmployeeId,
+            outcome = result.Outcome,
+            approvedAmount = result.ApprovedAmount,
+            advanceAmount = result.AdvanceAmount,
+            payableAmount = result.PayableAmount,
+            payableDirection = result.PayableAmount >= 0m ? "company_owes_employee" : "employee_owes_company",
+            currency = result.Currency,
+            // R15 — vatAmount/vatDeductibleAmount are real per-item VAT
+            // sums (0 if the source never carried a VAT breakdown — never
+            // fabricated), independent of citNonDeductibleAmount (a
+            // separate flag: a line can be VAT-deductible and CIT-non-
+            // deductible or vice versa).
+            vatAmount = result.VatAmount,
+            vatDeductibleAmount = result.VatDeductibleAmount,
+            citNonDeductibleAmount = result.NonDeductibleAmount,
+            readyForPayment = true,
+            paymentExecuted = false,
+            note = "Dữ liệu chuẩn bị xuất/thanh toán — AiQ không tự động thực hiện thanh toán ngân hàng.",
         });
     }
 
@@ -214,13 +626,9 @@ public static class VoucherEndpoints
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
-        if (!TenantContext.TryGet(ctx, out var tenantId))
-        {
-            return Results.BadRequest(new { error = "tenant scope required" });
-        }
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
 
-        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (voucher is null) return Results.NotFound();
         var vt = voucher.Voucher.VoucherType?.ToLowerInvariant() ?? "";
         if (vt is not ("invoice_vat_out" or "invoice_vat"))
@@ -229,6 +637,10 @@ public static class VoucherEndpoints
             {
                 error = "apply-invoice chỉ áp dụng cho invoice_vat_out (hoá đơn bán)",
             });
+        }
+        if (BusinessModuleAuthorization.IsSelfApproval(voucher.Voucher.UserId, principal.UserId))
+        {
+            return Results.Forbid();
         }
         if (voucher.Voucher.Status == "verified")
         {
@@ -266,7 +678,7 @@ public static class VoucherEndpoints
             tenantId, customerId, id, docNumber, docDate, dueDate, invoiceTotal, ct);
 
         await repo.UpdateAsync(
-            tenantId, userId, id,
+            tenantId, voucher.Voucher.UserId, id,
             new UpdateVoucherRequest(
                 Status: "verified",
                 DocumentNumber: null, DocumentSeries: null, DocumentDate: null,
@@ -298,13 +710,9 @@ public static class VoucherEndpoints
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TryGetUserId(ctx, out var userId)) return Results.Unauthorized();
-        if (!TenantContext.TryGet(ctx, out var tenantId))
-        {
-            return Results.BadRequest(new { error = "tenant scope required" });
-        }
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
 
-        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (voucher is null) return Results.NotFound();
         if (voucher.Voucher.VoucherType != "receipt")
         {
@@ -333,7 +741,7 @@ public static class VoucherEndpoints
 
         // Rollback voucher status về 'extracted' để user có thể apply lại.
         await repo.UpdateAsync(
-            tenantId, userId, id,
+            tenantId, voucher.Voucher.UserId, id,
             new UpdateVoucherRequest(
                 Status: "extracted",
                 DocumentNumber: null, DocumentSeries: null, DocumentDate: null,
@@ -360,20 +768,13 @@ public static class VoucherEndpoints
         Guid id,
         IVoucherRepository repo,
         Aiq.Gateway.Suppliers.ISupplierRepository suppliers,
-        Aiq.Gateway.Employees.IEmployeeRepository employees,
+        Aiq.Gateway.Employees.IExpenseClaimRepository expenseClaims,
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
-        if (!TenantContext.TryGet(ctx, out var tenantId))
-        {
-            return Results.BadRequest(new { error = "tenant scope required" });
-        }
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
 
-        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (voucher is null) return Results.NotFound();
         var vt = voucher.Voucher.VoucherType?.ToLowerInvariant() ?? "";
         if (vt is not ("invoice_vat_in" or "payment" or "bank_transfer" or "expense_claim"))
@@ -382,6 +783,10 @@ public static class VoucherEndpoints
             {
                 error = "apply-expense chỉ áp dụng cho invoice_vat_in / payment / bank_transfer / expense_claim",
             });
+        }
+        if (BusinessModuleAuthorization.IsSelfApproval(voucher.Voucher.UserId, principal.UserId))
+        {
+            return Results.Forbid();
         }
         if (voucher.Voucher.Status == "verified")
         {
@@ -502,40 +907,48 @@ public static class VoucherEndpoints
 
             case "expense_claim":
             {
-                if (!root.TryGetProperty("expense_claim_matching", out var ecEl)
-                    || !ecEl.TryGetProperty("employee", out var empEl)
-                    || !empEl.TryGetProperty("Id", out var empIdEl))
+                // Luồng 03 — the outcome classification (duplicate/policy/
+                // advance reconciliation) must already have been proposed,
+                // either by the extraction pipeline or by explicitly calling
+                // POST /expense-claim-result/propose first (same posture as
+                // apply-receipt requiring receipt_matching beforehand).
+                var existing = await expenseClaims.GetByVoucherIdAsync(tenantId, departmentId, id, ct);
+                if (existing is null)
                 {
-                    return Results.BadRequest(new { error = "voucher chưa có expense_claim_matching.employee" });
+                    return Results.BadRequest(new { error = "voucher chưa có expense_claim_result — chạy trích xuất lại hoặc gọi expense-claim-result/propose trước" });
                 }
-                var employeeId = empIdEl.GetGuid();
-                decimal totalClaim = 0m, advanceTaken = 0m;
-                if (ecEl.TryGetProperty("total_claim", out var tcEl)
-                    && tcEl.ValueKind == System.Text.Json.JsonValueKind.Number)
+                if (existing.Outcome is "RETURN_FOR_DOCUMENTS" or "REJECTED")
                 {
-                    totalClaim = tcEl.GetDecimal();
+                    return Results.BadRequest(new { error = $"expense_claim outcome={existing.Outcome} — không thể apply, cần bổ sung chứng từ hoặc đã bị từ chối" });
                 }
-                if (ecEl.TryGetProperty("advance_taken", out var atEl)
-                    && atEl.ValueKind == System.Text.Json.JsonValueKind.Number)
+                // P1 audit fix — internal-control gate #1: a claim carrying a
+                // real invoice cannot reach final payment approval unless
+                // that invoice was actually checked against the tax portal
+                // and came back positive. "Never checked" (null) and
+                // "checked and invalid/cancelled/unavailable" are both
+                // blocked here — this is the one and only path that settles
+                // an expense_claim voucher, so there is no way around it.
+                if (existing.RequiresTaxVerification && voucher.Voucher.TaxVerificationStatus != "verified")
                 {
-                    advanceTaken = atEl.GetDecimal();
-                }
-                if (totalClaim <= 0m)
-                {
-                    return Results.BadRequest(new { error = "expense_claim không có total_claim" });
+                    return Results.Conflict(new
+                    {
+                        error = "tax_verification_required",
+                        taxVerificationStatus = voucher.Voucher.TaxVerificationStatus,
+                        reason = voucher.Voucher.TaxVerificationReason,
+                    });
                 }
 
-                var result = await employees.ApplyExpenseClaimAsync(
-                    tenantId, employeeId, voucher.Voucher.DocumentNumber, totalClaim, advanceTaken, ct);
+                var confirmed = await expenseClaims.ConfirmAsync(tenantId, departmentId, id, principal.UserId, ct);
+                if (confirmed is null)
+                {
+                    return Results.Conflict(new { error = "expense_claim_result không ở trạng thái có thể apply" });
+                }
                 payload = new
                 {
                     voucherId = id,
                     status = "applied",
                     voucher_type = vt,
-                    previous_advance = result.PreviousAdvance,
-                    new_advance = result.NewAdvance,
-                    previous_ytd_expense = result.PreviousYtdExpense,
-                    new_ytd_expense = result.NewYtdExpense,
+                    expense_claim_result = confirmed,
                 };
                 break;
             }
@@ -547,7 +960,7 @@ public static class VoucherEndpoints
         // Flip voucher to verified so the Accept button hides + auto-refresh.
         await repo.UpdateAsync(
             tenantId,
-            userId,
+            voucher.Voucher.UserId,
             id,
             new UpdateVoucherRequest(
                 Status: "verified",
@@ -572,16 +985,20 @@ public static class VoucherEndpoints
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
-        TenantContext.TryGet(ctx, out var tenantId);
+        // Re-running extraction mutates the voucher (raw_ocr_text, then
+        // re-triggers the LLM step) — same creator-scoped-USER /
+        // unrestricted-ADMIN rule as UpdateAsync, not just a read.
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
+        var userId = principal.UserId;
 
-        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (voucher is null)
         {
             return Results.NotFound();
+        }
+        if (!principal.IsInRole("admin") && voucher.Voucher.UserId != userId)
+        {
+            return Results.Forbid();
         }
 
         // If caller provided raw text (paste-fallback flow), stash it into
@@ -647,7 +1064,7 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        var tenantId = TenantContext.Require(ctx);
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
 
         var contentType = (file.ContentType ?? "").ToLowerInvariant();
         var isImage = ImageContentTypes.Contains(contentType);
@@ -687,6 +1104,7 @@ public static class VoucherEndpoints
 
         var voucherId = await repo.CreateStubAsync(
             tenantId,
+            departmentId,
             userId,
             voucherType,
             s3Key,
@@ -745,7 +1163,7 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        var tenantId = TenantContext.Require(ctx);
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
 
         DateOnly? dateFrom = null;
         DateOnly? dateTo = null;
@@ -859,9 +1277,9 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        var tenantId = TenantContext.Require(ctx);
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
 
-        var created = await repo.CreateAsync(tenantId, userId, request, ct);
+        var created = await repo.CreateAsync(tenantId, departmentId, userId, request, ct);
         return Results.Created($"/vouchers/{created.Voucher.Id}", created);
     }
 
@@ -875,9 +1293,9 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        var tenantId = TenantContext.Require(ctx);
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
 
-        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         return voucher is null ? Results.NotFound() : Results.Ok(voucher);
     }
 
@@ -892,9 +1310,12 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
-        var tenantId = TenantContext.Require(ctx);
-
-        var updated = await repo.UpdateAsync(tenantId, userId, id, request, ct);
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
+        var existing = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (existing is null) return Results.NotFound();
+        if (!principal.IsInRole("admin") && existing.Voucher.UserId != userId) return Results.Forbid();
+        if (existing.Voucher.Status is "verified" or "journalized" or "rejected") return Results.Conflict(new { error = "voucher_finalized" });
+        var updated = await repo.UpdateAsync(tenantId, existing.Voucher.UserId, id, request, ct);
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
 
@@ -920,13 +1341,12 @@ public static class VoucherEndpoints
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
-        var tenantId = TenantContext.Require(ctx);
+        // Department-scoped read, matching GetAsync — any Department member
+        // with voucher.processing may view the metadata AND the attached
+        // file of any Department voucher, not just their own uploads.
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
 
-        var voucher = await repo.FindAsync(tenantId, userId, id, ct);
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (voucher is null)
         {
             return Results.NotFound();
@@ -941,9 +1361,11 @@ public static class VoucherEndpoints
 
         // S3-hosted rows use the vouchers/... prefix from the E-4 upload
         // path. Everything else is a legacy /var/aiq/uploads/... path
-        // from before the migration.
+        // from before the migration. Checked against the voucher's actual
+        // owner, not the viewing caller — a department-mate previewing a
+        // colleague's voucher is legitimate now.
         var isTenantObject = TenantObjectKey.BelongsTo(tenantId, path);
-        var isOwnedLegacyObject = path.StartsWith($"vouchers/{userId:N}/", StringComparison.Ordinal);
+        var isOwnedLegacyObject = path.StartsWith($"vouchers/{voucher.Voucher.UserId:N}/", StringComparison.Ordinal);
         if (isTenantObject || isOwnedLegacyObject)
         {
             var signedUrl = await storage.GetSignedUrlAsync(
@@ -1038,13 +1460,16 @@ public static class VoucherEndpoints
         HttpContext ctx,
         CancellationToken ct)
     {
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
-        var tenantId = TenantContext.Require(ctx);
+        // Route is department_admin-only. The repo's DeleteAsync still
+        // filters by (tenant_id, user_id) — so look the voucher up by
+        // Department first and pass its actual creator's id through, never
+        // the deleting admin's own id (that was the bug: an ADMIN could
+        // previously only delete vouchers they themselves had created).
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
+        var existing = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (existing is null) return Results.NotFound();
 
-        var deleted = await repo.DeleteAsync(tenantId, userId, id, ct);
+        var deleted = await repo.DeleteAsync(tenantId, existing.Voucher.UserId, id, ct);
         return deleted ? Results.NoContent() : Results.NotFound();
     }
 
@@ -1064,9 +1489,35 @@ public static class VoucherEndpoints
             return Results.BadRequest(new { error = "entries required" });
         }
 
-        var tenantId = TenantContext.Require(ctx);
-        if (await repo.FindAsync(tenantId, userId, id, ct) is null) return Results.NotFound();
-        var saved = await repo.SaveJournalSuggestionsAsync(tenantId, userId, id, request, ct);
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
+        var existing = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (existing is null) return Results.NotFound();
+        // Proposing journal entries is an edit on the voucher itself — same
+        // creator-scoped rule as PATCH /vouchers/{id}: ADMIN unrestricted,
+        // USER only on their own, still-editable voucher.
+        if (!principal.IsInRole("admin") && existing.Voucher.UserId != userId) return Results.Forbid();
+        if (existing.Voucher.Status is "verified" or "journalized" or "rejected") return Results.Conflict(new { error = "voucher_finalized" });
+
+        // J1 fix — the business process document's situational journal
+        // table is a closed allow-list for receipt/expense_claim vouchers
+        // ("ngoài danh mục này, agent không tự sinh bút toán nào khác").
+        // This blocks any (debit,credit) pair outside that list from being
+        // saved for those two voucher types, regardless of whether it came
+        // from the deterministic router above or the Agent's free-form
+        // suggest_journal_entry tool.
+        if (existing.Voucher.VoucherType is "receipt" or "expense_claim")
+        {
+            var disallowed = request.Entries
+                .Where(e => !Aiq.Gateway.Accounting.JournalRoutingRules.IsAllowed(e.DebitAccount, e.CreditAccount))
+                .Select(e => $"{e.DebitAccount}/{e.CreditAccount}")
+                .ToArray();
+            if (disallowed.Length > 0)
+            {
+                return Results.BadRequest(new { error = "account_pair_not_allowed", pairs = disallowed });
+            }
+        }
+
+        var saved = await repo.SaveJournalSuggestionsAsync(tenantId, departmentId, id, request, ct);
         return Results.Ok(saved);
     }
 
@@ -1082,8 +1533,12 @@ public static class VoucherEndpoints
         {
             return Results.Unauthorized();
         }
+        // Route already requires "department_admin" — ADMIN decides on any
+        // Department voucher regardless of who created it, so scoping is
+        // tenant+department here, never creator.
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
 
-        var updated = await repo.AcceptJournalAsync(TenantContext.Require(ctx), id, entryId, userId, request, ct);
+        var updated = await repo.AcceptJournalAsync(tenantId, departmentId, id, entryId, userId, request, ct);
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
 

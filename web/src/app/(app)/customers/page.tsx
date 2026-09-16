@@ -2,6 +2,7 @@ import Link from "next/link";
 import { AlertTriangle, Building2, Search, Users } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
+import { CustomerAddPanel } from "@/components/customer-add-panel";
 
 // UC-ACC-001 §5.9 read-only view: sales team + accounting can see the full
 // customer master with A/R exposure at a glance. Feeds into: (1) demo showing
@@ -20,6 +21,7 @@ interface CustomerRecord {
   creditLimit: number;
   creditTermsDays: number;
   currentAr: number;
+  status: string;
 }
 
 interface CustomersListResponse {
@@ -88,14 +90,17 @@ export default async function CustomersPage({ searchParams }: PageProps) {
 
   return (
     <div className="space-y-6">
-      <header className="space-y-1">
-        <h1 className="font-serif text-3xl">
-          <Users className="mr-2 inline size-6" /> Khách hàng
-        </h1>
-        <p className="text-sm text-[var(--color-muted-fg)]">
-          Danh mục khách hàng + công nợ hiện hành. Data đọc từ hệ thống master (giai
-          đoạn pilot: simulator, giai đoạn triển khai: MCP sync từ ERP thật).
-        </p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <h1 className="font-serif text-3xl">
+            <Users className="mr-2 inline size-6" /> Khách hàng
+          </h1>
+          <p className="text-sm text-[var(--color-muted-fg)]">
+            Danh mục khách hàng + công nợ hiện hành. Data đọc từ hệ thống master (giai
+            đoạn pilot: simulator, giai đoạn triển khai: MCP sync từ ERP thật).
+          </p>
+        </div>
+        <CustomerAddPanel />
       </header>
 
       <section className="grid gap-3 sm:grid-cols-3">
@@ -183,12 +188,17 @@ export default async function CustomersPage({ searchParams }: PageProps) {
                 const overLimit = c.creditLimit > 0 && c.currentAr > c.creditLimit;
                 return (
                   <tr key={c.id} className="border-t hover:bg-[var(--color-muted)]/30">
-                    <td className="px-3 py-2 font-mono text-xs">{c.customerCode}</td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      <Link href={`/customers/${c.id}`} className="hover:underline">{c.customerCode}</Link>
+                    </td>
                     <td className="px-3 py-2">
-                      <div className="font-medium">
+                      <Link href={`/customers/${c.id}`} className="font-medium hover:underline">
                         <Building2 className="mr-1 inline size-3.5 text-[var(--color-muted-fg)]" />
                         {c.name}
-                      </div>
+                      </Link>
+                      {c.status === "inactive" && (
+                        <span className="ml-2 rounded-full border px-1.5 py-0.5 text-[10px] text-[var(--color-muted-fg)]">Ngừng HĐ</span>
+                      )}
                       {c.address && (
                         <div className="mt-0.5 text-[10px] text-[var(--color-muted-fg)]">
                           {c.address}

@@ -411,3 +411,63 @@ Capability, Workflow, Skill và Knowledge attachment đều chấp nhận Global
 own Department và fail-closed với scope khác. Business page tiếp tục gửi
 `capability_code`; USER menu tiếp tục được suy ra từ capability của assigned,
 published Agent, không từ catalog quản trị.
+
+---
+
+## 14. Business Module Department ACL (Kế toán / Chứng từ / Hợp đồng /
+    Khách hàng / Nhà cung cấp / Chi phí)
+
+Khác với §3 (Agent/Skill/Workflow/Tool là tài nguyên *governance*), các module
+nghiệp vụ này thao tác trên **dữ liệu vận hành** (vouchers, contracts, sim
+customer/supplier master data). Model áp dụng ở đây:
+
+```text
+Resource luôn thuộc Department (tenant_id + department_id, không phải chỉ
+created_by). created_by chỉ giới hạn quyền EDIT của USER, không phải
+visibility — mọi thành viên cùng Department đều READ được record của nhau.
+
+USER (có Agent được assign + capability đúng module):
+  - READ mọi record trong Department mình
+  - CREATE/UPLOAD nếu module đó thực sự hỗ trợ intake (Vouchers, Contracts)
+  - EDIT chỉ record do chính USER tạo (created_by), và chỉ khi còn ở trạng
+    thái editable (chưa verified/journalized/rejected, hoặc chưa
+    APPROVED/HANDED_OFF/REJECTED)
+  - KHÔNG delete, KHÔNG approve/reject/apply (post AR/AP, decide journal,
+    review/handoff hợp đồng) — mọi hành động "quyết định" là department_admin
+
+ADMIN:
+  - Toàn quyền trên mọi record trong Department mình, không phân biệt
+    created_by
+  - Riêng có: delete, apply-receipt/apply-invoice/apply-expense, decide
+    journal suggestion, review/approve/reject/handoff hợp đồng
+  - KHÔNG thấy Department khác, KHÔNG thấy Tenant khác
+
+Khách hàng (customer.management) / Nhà cung cấp (supplier.management):
+  read-only theo Department — hai module này không có endpoint tạo/sửa qua
+  HTTP (dữ liệu đến từ vận hành voucher/ledger), nên "Add/Create" không áp
+  dụng — đúng với nguyên tắc "chỉ thêm nút Add khi module thực sự hỗ trợ
+  intake".
+```
+
+Triển khai: `Aiq.Gateway.Security.BusinessModuleAuthorization.TryScope` đọc
+`tenant_id`/`department_id` từ principal đã xác thực (không bao giờ từ
+browser payload) và `RequireBusinessCapability(...)` gate theo capability
+code đúng module (`voucher.processing`, `customer.management`,
+`supplier.management`, `expense.processing`, `contract.processing` /
+`contract.intake`). Mỗi repository (`IVoucherRepository`,
+`ICustomerRepository`, `ISupplierRepository`, `IContractRepository`,
+`IChecklistRepository`) nhận `departmentId` thay vì `userId` để scope
+READ/LIST; endpoint tự kiểm `existing.CreatedBy == principal.UserId ||
+principal.IsInRole("admin")` trước khi cho EDIT — cùng một pattern lặp lại ở
+cả 5 module, không có triển khai USER riêng song song với ADMIN.
+
+Migration `030_business_module_department_acl.sql` backfill `department_id`
+cho `vouchers`/`sim_customers`/`sim_suppliers` từ `created_by`/tenant mặc định
+cho dữ liệu cũ. `contracts`/`contract_checklist_items` đã có `department_id`
+từ trước (migration 019/029).
+
+E2E: `scripts/test_business_module_acl_e2e.sh` (Vouchers/Customers/Suppliers)
+và `scripts/test_contract_processing_e2e.sh` (Contracts) xác nhận đủ các
+trường hợp USER-with-capability / USER-without-capability / edit-own /
+cannot-edit-others / ADMIN-full-department / cross-department-denied /
+cross-tenant-denied.

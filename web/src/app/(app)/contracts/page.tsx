@@ -60,10 +60,16 @@ export default async function ContractsListPage() {
   if (meRes.ok) {
     const me = (await meRes.json()) as { roles?: string[] };
     const roles = me.roles ?? [];
-    if (!roles.includes("super_admin") && !roles.includes("tenant_owner") && !roles.includes("admin")) {
+    if (!roles.includes("admin") && !roles.includes("user")) {
       redirect("/chat");
     }
   }
+  // Both ADMIN and USER may reach this point (see redirect above). Whether
+  // intake actually succeeds is a backend decision (POST /contracts, gated
+  // by contract.intake capability resolution for USER) — same "show the
+  // button, let the Gateway be the authority" pattern /vouchers already
+  // uses, matching D6/D11's "frontend is not an authorization boundary".
+  const canManage = true;
 
   const res = await gateway.listContracts(token);
   const body: ContractsListResponse = res.ok
@@ -79,11 +85,11 @@ export default async function ContractsListPage() {
             {body.total} hợp đồng. AI tự trích xuất các trường + clauses từ PDF / text.
           </p>
         </div>
-        <Button asChild>
+        {canManage && <Button asChild>
           <Link href="/contracts/upload">
             <Plus className="size-4" /> Thêm hợp đồng
           </Link>
-        </Button>
+        </Button>}
       </header>
 
       {body.items.length === 0 ? (
@@ -93,11 +99,11 @@ export default async function ContractsListPage() {
           <p className="mt-1 text-sm text-[var(--color-muted-fg)]">
             Bấm "Thêm hợp đồng" để upload PDF hoặc paste nội dung.
           </p>
-          <Button asChild className="mt-4">
+          {canManage && <Button asChild className="mt-4">
             <Link href="/contracts/upload">
               <Plus className="size-4" /> Thêm hợp đồng đầu tiên
             </Link>
-          </Button>
+          </Button>}
         </div>
       ) : (
         <div className="overflow-hidden rounded-[var(--radius)] border">

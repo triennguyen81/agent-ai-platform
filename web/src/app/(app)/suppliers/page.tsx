@@ -2,6 +2,7 @@ import Link from "next/link";
 import { AlertTriangle, Building2, Search, Truck } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
+import { SupplierAddPanel } from "@/components/supplier-add-panel";
 
 // UC3 §5.9 read-only view: kế toán viên xem toàn bộ NCC + công nợ 331 tại 1
 // chỗ. Cùng pattern với /customers, đối xứng AP side. Dùng để (1) demo bức
@@ -18,6 +19,7 @@ interface SupplierRecord {
   paymentTerms: string | null;
   paymentTermsDays: number;
   currentAp: number;
+  status: string;
 }
 
 interface SuppliersListResponse {
@@ -84,14 +86,17 @@ export default async function SuppliersPage({ searchParams }: PageProps) {
 
   return (
     <div className="space-y-6">
-      <header className="space-y-1">
-        <h1 className="font-serif text-3xl">
-          <Truck className="mr-2 inline size-6" /> Nhà cung cấp
-        </h1>
-        <p className="text-sm text-[var(--color-muted-fg)]">
-          Danh mục NCC + công nợ phải trả 331 hiện hành. Data đọc từ hệ thống master
-          (giai đoạn pilot: simulator, giai đoạn triển khai: MCP sync từ ERP thật).
-        </p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <h1 className="font-serif text-3xl">
+            <Truck className="mr-2 inline size-6" /> Nhà cung cấp
+          </h1>
+          <p className="text-sm text-[var(--color-muted-fg)]">
+            Danh mục NCC + công nợ phải trả 331 hiện hành. Data đọc từ hệ thống master
+            (giai đoạn pilot: simulator, giai đoạn triển khai: MCP sync từ ERP thật).
+          </p>
+        </div>
+        <SupplierAddPanel />
       </header>
 
       <section className="grid gap-3 sm:grid-cols-3">
@@ -191,12 +196,17 @@ export default async function SuppliersPage({ searchParams }: PageProps) {
                 const isLarge = s.currentAp >= 500_000_000;
                 return (
                   <tr key={s.id} className="border-t hover:bg-[var(--color-muted)]/30">
-                    <td className="px-3 py-2 font-mono text-xs">{s.supplierCode}</td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      <Link href={`/suppliers/${s.id}`} className="hover:underline">{s.supplierCode}</Link>
+                    </td>
                     <td className="px-3 py-2">
-                      <div className="font-medium">
+                      <Link href={`/suppliers/${s.id}`} className="font-medium hover:underline">
                         <Building2 className="mr-1 inline size-3.5 text-[var(--color-muted-fg)]" />
                         {s.name}
-                      </div>
+                      </Link>
+                      {s.status === "inactive" && (
+                        <span className="ml-2 rounded-full border px-1.5 py-0.5 text-[10px] text-[var(--color-muted-fg)]">Ngừng HT</span>
+                      )}
                       {s.paymentTerms && (
                         <div className="mt-0.5 text-[10px] italic text-[var(--color-muted-fg)]">
                           {s.paymentTerms}

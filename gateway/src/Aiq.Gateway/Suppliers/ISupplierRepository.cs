@@ -1,7 +1,22 @@
+using System.Text.RegularExpressions;
 using Aiq.Gateway.Data;
 using Dapper;
 
 namespace Aiq.Gateway.Suppliers;
+
+// Deterministic, local-only MST format check — same rule as
+// Aiq.Gateway.Customers.CustomerValidation (Vietnamese tax code: 10 digits,
+// optionally a "-NNN" branch suffix). Never calls an external tax-registry
+// service; kept as its own copy (not a shared helper) since Customers/
+// Suppliers have always been independent modules in this codebase and a
+// cross-module dependency isn't worth it for one regex.
+public static class SupplierValidation
+{
+    private static readonly Regex MstPattern = new(@"^\d{10}(-\d{3})?$", RegexOptions.Compiled);
+
+    public static bool IsValidMstFormat(string? mst) =>
+        !string.IsNullOrWhiteSpace(mst) && MstPattern.IsMatch(mst.Trim());
+}
 
 // ============================================================================
 // UC3 (Expense/AP): mirror của Customers/ICustomerRepository. Reads sim_*
@@ -24,7 +39,48 @@ public sealed record SupplierRecord(
     string Currency,
     string? PaymentTerms,
     int PaymentTermsDays,
-    decimal CurrentAp);
+    decimal CurrentAp,
+    string SupplierType,
+    string? Representative,
+    string? Phone,
+    string? Email,
+    string? Address,
+    string Status,
+    string? Notes,
+    Guid? CreatedBy,
+    DateTime CreatedAt,
+    DateTime UpdatedAt);
+
+public sealed record CreateSupplierRequest(
+    [property: System.ComponentModel.DataAnnotations.Required] string SupplierCode,
+    [property: System.ComponentModel.DataAnnotations.Required] string Name,
+    string? Mst,
+    string? Country,
+    string? Currency,
+    string? PaymentTerms,
+    int? PaymentTermsDays,
+    string SupplierType,
+    string? Representative,
+    string? Phone,
+    string? Email,
+    string? Address,
+    string? Notes);
+
+public sealed record UpdateSupplierRequest(
+    string? Name,
+    string? Mst,
+    string? Country,
+    string? Currency,
+    string? PaymentTerms,
+    int? PaymentTermsDays,
+    string? SupplierType,
+    string? Representative,
+    string? Phone,
+    string? Email,
+    string? Address,
+    string? Notes);
+
+public sealed record DuplicateSupplierCandidate(Guid Id, string SupplierCode, string Name, string? Mst, decimal Similarity);
 
 public sealed record ApLedgerRow(
     Guid Id,
@@ -86,6 +142,24 @@ public sealed record PurchaseOrderMatch(
     GoodsReceivedNoteRow? GoodsReceivedNote,
     string MatchQuality);   // exact / partial / not_found
 
+// AP dashboard aggregate — same aging logic as SupplierPayablesReport.Aging
+// but summed across every supplier in the Department in one query, from the
+// real sim_ap_ledger open-invoice rows (document_type='invoice' AND debit=0).
+// Nothing here is invented: a Department with no unpaid supplier invoices
+// gets all-zero buckets, not a fabricated number.
+public sealed record ApAgingSummary(
+    int SupplierCount,
+    decimal TotalPayable,
+    decimal Current,
+    decimal Bucket_0_30,
+    decimal Bucket_31_60,
+    decimal Bucket_61_90,
+    decimal Over90,
+    decimal OverdueAmount,
+    decimal DueWithin7Days,
+    decimal DueWithin30Days,
+    int LargeBalanceSupplierCount);
+
 public sealed record ExpenseApplicationInput(
     string DocumentNumber,
     decimal AppliedAmount);
@@ -105,11 +179,31 @@ public sealed record BookInvoiceResult(
 
 public interface ISupplierRepository
 {
-    Task<IReadOnlyList<SupplierRecord>> ListAsync(Guid tenantId, string? country, string? search, CancellationToken ct);
-    Task<SupplierRecord?> FindByMstAsync(Guid tenantId, string mst, CancellationToken ct);
-    Task<SupplierRecord?> FindByIdAsync(Guid tenantId, Guid id, CancellationToken ct);
-    Task<SupplierPayablesReport?> GetPayablesAsync(Guid tenantId, Guid supplierId, CancellationToken ct);
-    Task<PurchaseOrderMatch?> MatchInvoiceToPurchaseOrderAsync(Guid tenantId, string documentNumber, CancellationToken ct);
+    Task<IReadOnlyList<SupplierRecord>> ListAsync(Guid tenantId, Guid departmentId, string? country, string? search, bool includeInactive, CancellationToken ct);
+    Task<SupplierRecord?> FindByMstAsync(Guid tenantId, Guid departmentId, string mst, CancellationToken ct);
+    Task<SupplierRecord?> FindByIdAsync(Guid tenantId, Guid departmentId, Guid id, CancellationToken ct);
+    Task<SupplierPayablesReport?> GetPayablesAsync(Guid tenantId, Guid departmentId, Guid supplierId, CancellationToken ct);
+    Task<PurchaseOrderMatch?> MatchInvoiceToPurchaseOrderAsync(Guid tenantId, Guid departmentId, string documentNumber, CancellationToken ct);
+
+    Task<ApAgingSummary> GetApSummaryAsync(Guid tenantId, Guid departmentId, CancellationToken ct);
+
+    // Hard conflict on (tenant_id, supplier_code) [DB-enforced] or
+    // (tenant_id, mst) [app-enforced only — see docs/SUPPLIER_MODULE_TODO.md
+    // for why no DB constraint backs it]. Returns null on a hard conflict
+    // instead of throwing; the endpoint turns that into 409.
+    // `possibleDuplicates` is same-Department fuzzy name matches (pg_trgm),
+    // informational only.
+    Task<(SupplierRecord? Created, IReadOnlyList<DuplicateSupplierCandidate> PossibleDuplicates)> CreateAsync(
+        Guid tenantId, Guid departmentId, Guid createdBy, CreateSupplierRequest request, CancellationToken ct);
+
+    Task<SupplierRecord?> UpdateAsync(
+        Guid tenantId, Guid departmentId, Guid id, UpdateSupplierRequest request, CancellationToken ct);
+
+    // status: "active" | "inactive". Never deletes the row — Voucher AP
+    // ledger rows and Contract counterparty proposals reference suppliers
+    // by id, so a hard delete would orphan business history.
+    Task<SupplierRecord?> SetStatusAsync(
+        Guid tenantId, Guid departmentId, Guid id, string status, Guid actorId, CancellationToken ct);
 
     // Apply a payment (phiếu chi / uỷ nhiệm chi) to a supplier's open payables
     // in a single transaction:
@@ -162,44 +256,174 @@ public sealed class SupplierRepository : ISupplierRepository
             currency              AS Currency,
             payment_terms         AS PaymentTerms,
             COALESCE(payment_terms_days, 0) AS PaymentTermsDays,
-            current_ap            AS CurrentAp
+            current_ap            AS CurrentAp,
+            supplier_type         AS SupplierType,
+            representative        AS Representative,
+            phone                 AS Phone,
+            email                 AS Email,
+            address               AS Address,
+            status                AS Status,
+            notes                 AS Notes,
+            created_by            AS CreatedBy,
+            created_at            AS CreatedAt,
+            updated_at            AS UpdatedAt
         """;
 
     public async Task<IReadOnlyList<SupplierRecord>> ListAsync(
-        Guid tenantId, string? country, string? search, CancellationToken ct)
+        Guid tenantId, Guid departmentId, string? country, string? search, bool includeInactive, CancellationToken ct)
     {
         await using var conn = await _factory.OpenAsync(ct);
         var sql = $"""
             SELECT {SupplierCols}
             FROM sim_suppliers
-            WHERE tenant_id = @tenantId
+            WHERE tenant_id = @tenantId AND department_id=@departmentId
+              AND (@includeInactive OR status = 'active')
               AND (@country IS NULL OR country = @country)
               AND (@search IS NULL OR name ILIKE '%' || @search || '%' OR mst LIKE @search || '%' OR supplier_code ILIKE @search || '%')
             ORDER BY current_ap DESC, name
             LIMIT 200
             """;
-        var rows = await conn.QueryAsync<SupplierRecord>(sql, new { tenantId, country, search });
+        var rows = await conn.QueryAsync<SupplierRecord>(sql, new { tenantId, departmentId, country, search, includeInactive });
         return rows.AsList();
     }
 
-    public async Task<SupplierRecord?> FindByMstAsync(Guid tenantId, string mst, CancellationToken ct)
+    public async Task<SupplierRecord?> FindByMstAsync(Guid tenantId, Guid departmentId, string mst, CancellationToken ct)
     {
         await using var conn = await _factory.OpenAsync(ct);
-        var sql = $"SELECT {SupplierCols} FROM sim_suppliers WHERE tenant_id = @tenantId AND mst = @mst LIMIT 1";
-        return await conn.QueryFirstOrDefaultAsync<SupplierRecord>(sql, new { tenantId, mst });
+        var sql = $"SELECT {SupplierCols} FROM sim_suppliers WHERE tenant_id=@tenantId AND department_id=@departmentId AND mst=@mst LIMIT 1";
+        return await conn.QueryFirstOrDefaultAsync<SupplierRecord>(sql, new { tenantId, departmentId, mst });
     }
 
-    public async Task<SupplierRecord?> FindByIdAsync(Guid tenantId, Guid id, CancellationToken ct)
+    public async Task<SupplierRecord?> FindByIdAsync(Guid tenantId, Guid departmentId, Guid id, CancellationToken ct)
     {
         await using var conn = await _factory.OpenAsync(ct);
-        var sql = $"SELECT {SupplierCols} FROM sim_suppliers WHERE tenant_id = @tenantId AND id = @id LIMIT 1";
-        return await conn.QueryFirstOrDefaultAsync<SupplierRecord>(sql, new { tenantId, id });
+        var sql = $"SELECT {SupplierCols} FROM sim_suppliers WHERE tenant_id=@tenantId AND department_id=@departmentId AND id=@id LIMIT 1";
+        return await conn.QueryFirstOrDefaultAsync<SupplierRecord>(sql, new { tenantId, departmentId, id });
+    }
+
+    private async Task<SupplierRecord?> FindByIdAsync(Guid tenantId, Guid id, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.QueryFirstOrDefaultAsync<SupplierRecord>($"SELECT {SupplierCols} FROM sim_suppliers WHERE tenant_id=@tenantId AND id=@id", new { tenantId, id });
+    }
+
+    public async Task<(SupplierRecord? Created, IReadOnlyList<DuplicateSupplierCandidate> PossibleDuplicates)> CreateAsync(
+        Guid tenantId, Guid departmentId, Guid createdBy, CreateSupplierRequest request, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+
+        var codeConflict = await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT EXISTS(SELECT 1 FROM sim_suppliers WHERE tenant_id=@tenantId AND supplier_code=@SupplierCode)",
+            new { tenantId, request.SupplierCode }, cancellationToken: ct));
+        if (codeConflict) return (null, Array.Empty<DuplicateSupplierCandidate>());
+
+        if (!string.IsNullOrWhiteSpace(request.Mst))
+        {
+            var mstConflict = await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
+                "SELECT EXISTS(SELECT 1 FROM sim_suppliers WHERE tenant_id=@tenantId AND mst=@Mst)",
+                new { tenantId, request.Mst }, cancellationToken: ct));
+            if (mstConflict) return (null, Array.Empty<DuplicateSupplierCandidate>());
+        }
+
+        var duplicates = (await conn.QueryAsync<DuplicateSupplierCandidate>(new CommandDefinition("""
+            SELECT id AS Id, supplier_code AS SupplierCode, name AS Name, mst AS Mst,
+                   similarity(name, @Name)::numeric AS Similarity
+            FROM sim_suppliers
+            WHERE tenant_id=@tenantId AND department_id=@departmentId AND status='active'
+              AND similarity(name, @Name) > 0.4
+            ORDER BY similarity(name, @Name) DESC
+            LIMIT 5
+            """, new { tenantId, departmentId, request.Name }, cancellationToken: ct))).AsList();
+
+        var insertSql = $"""
+            INSERT INTO sim_suppliers (
+                tenant_id, department_id, supplier_code, name, mst, country, currency,
+                payment_terms, payment_terms_days, supplier_type, representative,
+                phone, email, address, notes, created_by
+            ) VALUES (
+                @tenantId, @departmentId, @SupplierCode, @Name, @Mst,
+                COALESCE(@Country,'VN'), COALESCE(@Currency,'VND'),
+                @PaymentTerms, COALESCE(@PaymentTermsDays,0), @SupplierType, @Representative,
+                @Phone, @Email, @Address, @Notes, @createdBy
+            )
+            RETURNING {SupplierCols};
+            """;
+        var created = await conn.QuerySingleAsync<SupplierRecord>(new CommandDefinition(
+            insertSql,
+            new
+            {
+                tenantId, departmentId, createdBy,
+                request.SupplierCode, request.Name, request.Mst, request.Country, request.Currency,
+                request.PaymentTerms, request.PaymentTermsDays, request.SupplierType, request.Representative,
+                request.Phone, request.Email, request.Address, request.Notes,
+            },
+            cancellationToken: ct));
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO supplier_history(tenant_id,department_id,supplier_id,actor_id,event_type,details) VALUES(@tenantId,@departmentId,@id,@createdBy,'created','{}'::jsonb)",
+            new { tenantId, departmentId, id = created.Id, createdBy }, cancellationToken: ct));
+
+        return (created, duplicates);
+    }
+
+    public async Task<SupplierRecord?> UpdateAsync(
+        Guid tenantId, Guid departmentId, Guid id, UpdateSupplierRequest request, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        var sql = $"""
+            UPDATE sim_suppliers SET
+                name              = COALESCE(@Name, name),
+                mst               = COALESCE(@Mst, mst),
+                country           = COALESCE(@Country, country),
+                currency          = COALESCE(@Currency, currency),
+                payment_terms     = COALESCE(@PaymentTerms, payment_terms),
+                payment_terms_days = COALESCE(@PaymentTermsDays, payment_terms_days),
+                supplier_type     = COALESCE(@SupplierType, supplier_type),
+                representative    = COALESCE(@Representative, representative),
+                phone             = COALESCE(@Phone, phone),
+                email             = COALESCE(@Email, email),
+                address           = COALESCE(@Address, address),
+                notes             = COALESCE(@Notes, notes),
+                updated_at        = NOW()
+            WHERE id = @id AND tenant_id = @tenantId AND department_id = @departmentId AND status = 'active'
+            RETURNING {SupplierCols};
+            """;
+        return await conn.QueryFirstOrDefaultAsync<SupplierRecord>(new CommandDefinition(
+            sql,
+            new
+            {
+                id, tenantId, departmentId,
+                request.Name, request.Mst, request.Country, request.Currency,
+                request.PaymentTerms, request.PaymentTermsDays, request.SupplierType, request.Representative,
+                request.Phone, request.Email, request.Address, request.Notes,
+            },
+            cancellationToken: ct));
+    }
+
+    public async Task<SupplierRecord?> SetStatusAsync(
+        Guid tenantId, Guid departmentId, Guid id, string status, Guid actorId, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        var updated = await conn.QueryFirstOrDefaultAsync<SupplierRecord>(new CommandDefinition(
+            $"""
+            UPDATE sim_suppliers SET status=@status, updated_at=NOW()
+            WHERE id=@id AND tenant_id=@tenantId AND department_id=@departmentId
+            RETURNING {SupplierCols};
+            """,
+            new { id, tenantId, departmentId, status }, cancellationToken: ct));
+        if (updated is null) return null;
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO supplier_history(tenant_id,department_id,supplier_id,actor_id,event_type,details) VALUES(@tenantId,@departmentId,@id,@actorId,@eventType,'{}'::jsonb)",
+            new { tenantId, departmentId, id, actorId, eventType = status == "active" ? "reactivated" : "deactivated" },
+            cancellationToken: ct));
+        return updated;
     }
 
     public async Task<SupplierPayablesReport?> GetPayablesAsync(
-        Guid tenantId, Guid supplierId, CancellationToken ct)
+        Guid tenantId, Guid departmentId, Guid supplierId, CancellationToken ct)
     {
-        var supplier = await FindByIdAsync(tenantId, supplierId, ct);
+        var supplier = await FindByIdAsync(tenantId, departmentId, supplierId, ct);
         if (supplier is null) return null;
 
         await using var conn = await _factory.OpenAsync(ct);
@@ -257,35 +481,35 @@ public sealed class SupplierRepository : ISupplierRepository
     }
 
     public async Task<PurchaseOrderMatch?> MatchInvoiceToPurchaseOrderAsync(
-        Guid tenantId, string documentNumber, CancellationToken ct)
+        Guid tenantId, Guid departmentId, string documentNumber, CancellationToken ct)
     {
         await using var conn = await _factory.OpenAsync(ct);
 
         // Find PO where matched_invoice_number matches. If none → invoice_vat_in
         // không có PO tương ứng (mua vặt, không qua đơn đặt hàng).
         const string poSql = """
-            SELECT id                    AS Id,
+            SELECT po.id                 AS Id,
                    po_number             AS PoNumber,
                    po_date               AS PoDate,
                    supplier_code         AS SupplierCode,
-                   status                AS Status,
-                   currency              AS Currency,
+                   po.status             AS Status,
+                   po.currency           AS Currency,
                    COALESCE(exchange_rate, 1) AS ExchangeRate,
                    COALESCE(subtotal_vnd, 0)  AS SubtotalVnd,
                    total_amount          AS TotalAmount,
                    incoterm              AS Incoterm,
-                   payment_terms         AS PaymentTerms,
+                   po.payment_terms      AS PaymentTerms,
                    COALESCE(payment_terms_days, 0) AS PaymentTermsDays,
                    COALESCE(delivery_note_ref, goods_received_note) AS DeliveryNoteRef,
                    matched_invoice_number AS MatchedInvoiceNumber,
                    notes                 AS Notes
-            FROM sim_purchase_orders
-            WHERE tenant_id = @tenantId
+            FROM sim_purchase_orders po JOIN sim_suppliers s ON s.tenant_id=po.tenant_id AND s.supplier_code=po.supplier_code
+            WHERE po.tenant_id = @tenantId AND s.department_id=@departmentId
               AND matched_invoice_number = @documentNumber
             LIMIT 1
             """;
         var po = await conn.QueryFirstOrDefaultAsync<PurchaseOrderMatchRow>(
-            new CommandDefinition(poSql, new { tenantId, documentNumber }, cancellationToken: ct));
+            new CommandDefinition(poSql, new { tenantId, departmentId, documentNumber }, cancellationToken: ct));
         if (po is null) return null;
 
         // GRN — Sprint 4: join real sim_goods_received_notes table (fall back
@@ -328,6 +552,60 @@ public sealed class SupplierRepository : ISupplierRepository
 
         var quality = grn is null ? "partial" : "exact";
         return new PurchaseOrderMatch(po, grn, quality);
+    }
+
+    public async Task<ApAgingSummary> GetApSummaryAsync(Guid tenantId, Guid departmentId, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        var scope = new { tenantId, departmentId };
+
+        // Open (unpaid) supplier invoices only — same filter GetPayablesAsync
+        // uses per-supplier, aggregated here across the whole Department in
+        // one query. credit = the outstanding invoice amount (Có 331 tăng).
+        var aging = await conn.QuerySingleAsync<(
+            decimal Current, decimal B30, decimal B60, decimal B90, decimal Over90,
+            decimal Overdue, decimal Due7, decimal Due30, int SupplierCount)>(
+            new CommandDefinition("""
+                SELECT
+                    COALESCE(SUM(CASE WHEN l.due_date IS NULL OR l.due_date >= CURRENT_DATE THEN l.credit ELSE 0 END),0) AS Current,
+                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE AND CURRENT_DATE - l.due_date <= 30 THEN l.credit ELSE 0 END),0) AS B30,
+                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE AND CURRENT_DATE - l.due_date BETWEEN 31 AND 60 THEN l.credit ELSE 0 END),0) AS B60,
+                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE AND CURRENT_DATE - l.due_date BETWEEN 61 AND 90 THEN l.credit ELSE 0 END),0) AS B90,
+                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE AND CURRENT_DATE - l.due_date > 90 THEN l.credit ELSE 0 END),0) AS Over90,
+                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE THEN l.credit ELSE 0 END),0) AS Overdue,
+                    COALESCE(SUM(CASE WHEN l.due_date >= CURRENT_DATE AND l.due_date <= CURRENT_DATE + 7 THEN l.credit ELSE 0 END),0) AS Due7,
+                    COALESCE(SUM(CASE WHEN l.due_date >= CURRENT_DATE AND l.due_date <= CURRENT_DATE + 30 THEN l.credit ELSE 0 END),0) AS Due30,
+                    COUNT(DISTINCT l.supplier_id) AS SupplierCount
+                FROM sim_ap_ledger l
+                JOIN sim_suppliers s ON s.id = l.supplier_id
+                WHERE s.tenant_id=@tenantId AND s.department_id=@departmentId
+                  AND l.document_type='invoice' AND l.debit=0
+                """, scope, cancellationToken: ct));
+
+        // Total payable + large-balance count come from the denormalized
+        // sim_suppliers.current_ap snapshot (same source the /suppliers list
+        // already shows), not re-derived from the ledger — keeps this number
+        // consistent with what the Supplier detail page displays.
+        var totals = await conn.QuerySingleAsync<(decimal TotalAp, int LargeCount)>(
+            new CommandDefinition("""
+                SELECT COALESCE(SUM(current_ap),0) AS TotalAp,
+                       COUNT(*) FILTER (WHERE current_ap >= 500000000) AS LargeCount
+                FROM sim_suppliers
+                WHERE tenant_id=@tenantId AND department_id=@departmentId AND status='active'
+                """, scope, cancellationToken: ct));
+
+        return new ApAgingSummary(
+            SupplierCount: aging.SupplierCount,
+            TotalPayable: totals.TotalAp,
+            Current: aging.Current,
+            Bucket_0_30: aging.B30,
+            Bucket_31_60: aging.B60,
+            Bucket_61_90: aging.B90,
+            Over90: aging.Over90,
+            OverdueAmount: aging.Overdue,
+            DueWithin7Days: aging.Due7,
+            DueWithin30Days: aging.Due30,
+            LargeBalanceSupplierCount: totals.LargeCount);
     }
 
     public async Task<ExpenseApplyResult> ApplyExpenseAsync(

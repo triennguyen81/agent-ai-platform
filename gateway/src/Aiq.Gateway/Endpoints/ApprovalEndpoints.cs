@@ -6,6 +6,17 @@ namespace Aiq.Gateway.Endpoints;
 // Sprint 5 HITL endpoints — kế toán trưởng (admin+) duyệt voucher risk cao.
 // Approve → auto trigger apply-* endpoint tương ứng. Reject → voucher chuyển
 // status 'rejected'.
+//
+// R21 (business remediation, DUPLICATE finding) — this is a LEGACY,
+// tenant-wide HITL mechanism (RequireAuthorization("admin") has no
+// Department scoping) that predates the Business-Module Department-ACL
+// migration. It still has a real, live caller
+// (VoucherExtractJobRunner.MaybeEnqueueForApprovalAsync, L2-risk triggers
+// on ar_context/ap_context) so it is kept working and NOT removed here.
+// It is deprecated for new use: every newer HITL surface (receipt_match_
+// results / expense_claim_results review_status) uses the Department-
+// scoped pattern instead — do not add new triggers into this queue; extend
+// the Department-scoped pattern for any new business-consequence review.
 
 public static class ApprovalEndpoints
 {

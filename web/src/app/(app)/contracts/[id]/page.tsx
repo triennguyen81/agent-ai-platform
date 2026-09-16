@@ -4,9 +4,12 @@ import { AlertTriangle, ArrowLeft, Calendar, FileText, Scale } from "lucide-reac
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
 import { ContractChecklist } from "@/components/contract-checklist";
+import { ContractDocuments } from "@/components/contract-documents";
+import { ContractReviewActions } from "@/components/contract-review-actions";
 
 interface ContractRecord {
   id: string;
+  userId: string;
   title: string;
   partyA?: string | null;
   partyB?: string | null;
@@ -16,6 +19,15 @@ interface ContractRecord {
   totalValue?: number | null;
   currency?: string | null;
   status: string;
+  workflowState: string;
+  documentType: string;
+  contractNumber?: string | null;
+  subtotal?: number | null;
+  vatRate?: number | null;
+  vatAmount?: number | null;
+  retentionPercent?: number | null;
+  penaltyPercent?: number | null;
+  progressPercent?: number | null;
   tags?: string[];
   rawText?: string | null;
   sourcePdfPath?: string | null;
@@ -35,6 +47,14 @@ interface ClauseRecord {
 interface ContractWithClauses {
   contract: ContractRecord;
   clauses: ClauseRecord[];
+  parties: Array<{ id:string; partyRole:string; name:string; taxCode?:string|null }>;
+  payments: Array<{ id:string; ordinal:number; description:string; percentage:number; totalAmount:number; dueDate?:string|null; triggerEvent?:string|null; offsetDays?:number|null; expectedDate?:string|null; status:string; penaltyOverdueAmount?:number|null; penaltyOverdueDays?:number|null; penaltyRate?:number|null; penaltyAmount?:number|null; penaltyCalculatedAt?:string|null }>;
+  milestones: Array<{ id:string; ordinal:number; name:string; dueDate?:string|null; reminderDays:number; triggerEvent?:string|null; durationMonths?:number|null; expectedDate?:string|null; status:string }>;
+  alerts: Array<{ id:string; code:string; severity:string; message:string; resolvedAt?:string|null }>;
+  counterpartyProposals: Array<{ id:string; proposedAction:string; rationale:string; status:string }>;
+  handoffs: Array<{ id:string; payload:string; status:string; createdAt:string }>;
+  history: Array<{ id:string; eventType:string; fromState?:string|null; toState?:string|null; createdAt:string }>;
+  documents: Array<{id:string;documentType:string;referencedCode?:string|null;originalFilename:string;sizeBytes:number;createdAt:string}>;
 }
 
 interface ChecklistItem {
@@ -74,12 +94,16 @@ interface Props {
 export default async function ContractDetailPage({ params }: Props) {
   const { id } = await params;
   const token = await requireSession();
+  let viewerId = "";
+  let isAdmin = false;
 
   const meRes = await gateway.me(token);
   if (meRes.ok) {
-    const me = (await meRes.json()) as { roles?: string[] };
+    const me = (await meRes.json()) as { sub?: string; roles?: string[] };
     const roles = me.roles ?? [];
-    if (!roles.includes("super_admin") && !roles.includes("tenant_owner") && !roles.includes("admin")) {
+    viewerId = me.sub ?? "";
+    isAdmin = roles.includes("admin");
+    if (!roles.includes("admin") && !roles.includes("user")) {
       redirect("/chat");
     }
   }
@@ -95,7 +119,7 @@ export default async function ContractDetailPage({ params }: Props) {
   }
 
   const data = (await res.json()) as ContractWithClauses;
-  const { contract, clauses } = data;
+  const { contract, clauses, parties, payments, milestones, alerts, counterpartyProposals, documents, handoffs, history } = data;
 
   // Best-effort: load checklist via gateway helper. Failures fall through
   // to empty initial state (the client component will refetch on mount
@@ -120,7 +144,7 @@ export default async function ContractDetailPage({ params }: Props) {
         <h1 className="font-serif text-3xl">{contract.title}</h1>
         <div className="flex flex-wrap items-center gap-2">
           <span className="rounded-full border px-2 py-0.5 text-xs">
-            {contract.status}
+            {contract.workflowState}
           </span>
           {contract.tags?.map((t) => (
             <span key={t} className="rounded-full border px-2 py-0.5 text-[10px] text-[var(--color-muted-fg)]">
@@ -129,6 +153,7 @@ export default async function ContractDetailPage({ params }: Props) {
           ))}
         </div>
       </header>
+      {isAdmin && <ContractReviewActions contractId={contract.id} state={contract.workflowState} />}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
@@ -142,6 +167,17 @@ export default async function ContractDetailPage({ params }: Props) {
               <span className="text-[var(--color-muted-fg)]">Bên B:</span>{" "}
               <span className="font-medium">{contract.partyB ?? "—"}</span>
             </div>
+            {parties.length > 0 && (
+              <div className="mt-2 space-y-1 border-t pt-2">
+                {parties.map((p) => (
+                  <div key={p.id}>
+                    <span className="text-[var(--color-muted-fg)]">{p.partyRole}:</span>{" "}
+                    <span className="font-medium">{p.name}</span>
+                    {p.taxCode && <span className="text-[var(--color-muted-fg)]"> — MST {p.taxCode}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </section>
 
@@ -165,6 +201,18 @@ export default async function ContractDetailPage({ params }: Props) {
           <p className="font-mono text-lg">
             {formatVnd(contract.totalValue, contract.currency)}
           </p>
+          {(contract.subtotal != null || contract.vatAmount != null) && (
+            <div className="text-xs text-[var(--color-muted-fg)]">
+              Trước thuế: {formatVnd(contract.subtotal, contract.currency)}
+              {contract.vatRate != null && <> · VAT {contract.vatRate}%</>}
+              {contract.vatAmount != null && <> ({formatVnd(contract.vatAmount, contract.currency)})</>}
+            </div>
+          )}
+          <div className="space-y-0.5 text-xs text-[var(--color-muted-fg)]">
+            {contract.penaltyPercent != null && <div>Phạt chậm: {contract.penaltyPercent}%/ngày</div>}
+            {contract.retentionPercent != null && <div>Tiền giữ lại: {contract.retentionPercent}%</div>}
+            <div>Tiến độ thực hiện: {(contract.progressPercent ?? 0)}%</div>
+          </div>
         </section>
 
         <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
@@ -178,7 +226,11 @@ export default async function ContractDetailPage({ params }: Props) {
         </section>
       </div>
 
-      <section className="space-y-3">
+      <nav className="flex flex-wrap gap-2 text-sm" aria-label="Contract detail sections">
+        {[['overview','Tổng quan'],['payments','Thanh toán'],['milestones','Mốc theo dõi'],['alerts','Cảnh báo'],['counterparty','Đối tác'],['handoff','Bàn giao'],['history','Lịch sử']].map(([id,label]) => <a key={id} href={`#${id}`} className="rounded-full border px-3 py-1 hover:bg-[var(--color-muted)]">{label}</a>)}
+      </nav>
+
+      <section id="overview" className="space-y-3">
         <h2 className="font-serif text-xl">
           <FileText className="mr-2 inline size-5 text-[var(--color-primary)]" />
           Điều khoản ({clauses.length})
@@ -221,6 +273,15 @@ export default async function ContractDetailPage({ params }: Props) {
           </div>
         )}
       </section>
+
+      <section id="payments" className="space-y-3"><h2 className="font-serif text-xl">Thanh toán</h2>{payments.length===0?<p className="text-sm text-[var(--color-muted-fg)]">Chưa tạo lịch thanh toán.</p>:payments.map(p=><div key={p.id} className="rounded border p-3 text-sm"><b>{p.ordinal}. {p.description}</b><span className="float-right">{p.percentage}% · {formatVnd(p.totalAmount,contract.currency)}</span><div className="text-[var(--color-muted-fg)]">{p.triggerEvent?<>Chờ: {p.triggerEvent}{p.offsetDays!=null?` (+${p.offsetDays} ngày)`:""}{p.expectedDate?<> · Dự kiến: {formatDate(p.expectedDate)}</>:null}</>:<>Đến hạn: {formatDate(p.dueDate)}</>} · {p.status}</div>{p.penaltyAmount!=null&&<div className="mt-1 text-xs text-red-700">Quá hạn {p.penaltyOverdueDays} ngày · phạt {p.penaltyRate}%/ngày trên {formatVnd(p.penaltyOverdueAmount,contract.currency)} = {formatVnd(p.penaltyAmount,contract.currency)} (tính lúc {formatDate(p.penaltyCalculatedAt)})</div>}</div>)}</section>
+      <section id="milestones" className="space-y-3"><h2 className="font-serif text-xl">Mốc theo dõi</h2>{milestones.length===0?<p className="text-sm text-[var(--color-muted-fg)]">Chưa có mốc.</p>:milestones.map(m=><div key={m.id} className="rounded border p-3 text-sm"><b>{m.name}</b><div className="text-[var(--color-muted-fg)]">{m.triggerEvent?<>Chờ: {m.triggerEvent}{m.durationMonths!=null?` (${m.durationMonths} tháng)`:""}{m.expectedDate?<> · Dự kiến: {formatDate(m.expectedDate)}</>:null}</>:<>{formatDate(m.dueDate)} · nhắc trước {m.reminderDays} ngày</>}</div></div>)}</section>
+      <section id="alerts" className="space-y-3"><h2 className="font-serif text-xl">Cảnh báo</h2>{alerts.length===0?<p className="text-sm text-emerald-700">Không có sai lệch đang mở.</p>:alerts.map(a=>{const cls=a.severity==="error"?"border-red-300 bg-red-50":a.severity==="warning"?"border-amber-300 bg-amber-50":"border-blue-200 bg-blue-50";const label=a.severity==="error"?"Chặn":a.severity==="warning"?"Cảnh báo":"Thông tin";return <div key={a.id} className={`rounded border p-3 text-sm ${cls}`}><span className="mr-2 rounded-full border px-1.5 py-0.5 text-[10px] uppercase tracking-wide">{label}</span><b>{a.code}</b>: {a.message}</div>;})}</section>
+      <section id="counterparty" className="space-y-3"><h2 className="font-serif text-xl">Đối tác</h2>{counterpartyProposals.length===0?<p className="text-sm text-[var(--color-muted-fg)]">Chưa có đề xuất đối tác.</p>:counterpartyProposals.map(p=><div key={p.id} className="rounded border p-3 text-sm"><b>{p.proposedAction}</b><p>{p.rationale}</p></div>)}</section>
+      <section id="handoff" className="space-y-3"><h2 className="font-serif text-xl">Bàn giao</h2><p className="text-xs text-[var(--color-muted-fg)]">Chỉ là gói dữ liệu xuất sau phê duyệt; không tạo bút toán, hóa đơn hay tờ khai.</p>{handoffs.map(h=><div key={h.id} className="rounded border p-3 text-sm">{h.status} · {formatDate(h.createdAt)}</div>)}</section>
+      <section id="history" className="space-y-3"><h2 className="font-serif text-xl">Lịch sử</h2>{history.map(h=><div key={h.id} className="border-l-2 pl-3 text-sm">{h.eventType}: {h.fromState??'—'} → {h.toState??'—'} · {formatDate(h.createdAt)}</div>)}</section>
+
+      <ContractDocuments contractId={contract.id} initialDocuments={documents} editable={(isAdmin||contract.userId===viewerId)&&!['APPROVED','HANDED_OFF','REJECTED'].includes(contract.workflowState)} />
 
       <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
         <ContractChecklist contractId={contract.id} initialItems={checklist} />

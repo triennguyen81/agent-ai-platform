@@ -553,7 +553,11 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         if (row.Provider is not ("ollama" or "claude_sdk" or "anthropic")) errors.Add("unsupported_provider");
         if (string.IsNullOrWhiteSpace(row.Model) || row.Model.Contains("://") || row.Model.Any(char.IsWhiteSpace)) errors.Add("invalid_model");
         if (string.IsNullOrWhiteSpace(row.SystemPrompt)) errors.Add("system_prompt_required");
-        if (row.ToolCount != row.ValidToolCount) errors.Add("inactive_or_unauthorized_tool");
+        if (row.ToolCount != row.ValidToolCount)
+        {
+            errors.Add("inactive_or_unauthorized_tool");
+            errors.AddRange((await GetIneligibleToolCodesAsync(conn, versionId, ct)).Select(c => $"tool_not_eligible:{c}"));
+        }
         if (!row.WorkflowValid) errors.Add("inactive_or_missing_workflow");
         if (row.CapabilityCount != row.ValidCapabilityCount) errors.Add("inactive_capability");
         return new AgentVersionValidation(errors.Count == 0, errors.ToArray());
@@ -1102,7 +1106,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         if (!validAgent) return null;
         await EnsureWorkflowEligibleAsync(conn, tx, tenantId, departmentId, request.WorkflowId, ct);
         await EnsureSkillsEligibleAsync(conn, tx, tenantId, departmentId, request.Skills, ct);
-        await EnsureToolsEligibleAsync(conn, tx, request.ToolIds, ct);
+        await EnsureToolsEligibleAsync(conn, tx, agentId, request.ToolIds, ct);
         var memory = request.MemoryConfig?.GetRawText() ?? "{}";
         var row = await conn.QuerySingleAsync<VersionRow>(new CommandDefinition($"""
             INSERT INTO agent_versions (agent_id, version, status, provider, model, system_prompt,
@@ -1134,7 +1138,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         if (request.ClearWorkflow != true)
             await EnsureWorkflowEligibleAsync(conn, tx, tenantId, departmentId, request.WorkflowId, ct);
         await EnsureSkillsEligibleAsync(conn, tx, tenantId, departmentId, request.Skills, ct);
-        await EnsureToolsEligibleAsync(conn, tx, request.ToolIds, ct);
+        await EnsureToolsEligibleAsync(conn, tx, agentId, request.ToolIds, ct);
         var memory = request.MemoryConfig?.GetRawText();
         var row = await conn.QuerySingleOrDefaultAsync<VersionRow>(new CommandDefinition($"""
             UPDATE agent_versions v SET provider=COALESCE(@Provider,provider), model=COALESCE(@Model,model),
@@ -1179,7 +1183,11 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         if (row.Provider is not ("ollama" or "claude_sdk" or "anthropic")) errors.Add("unsupported_provider");
         if (string.IsNullOrWhiteSpace(row.Model) || row.Model.Contains("://") || row.Model.Any(char.IsWhiteSpace)) errors.Add("invalid_model");
         if (string.IsNullOrWhiteSpace(row.SystemPrompt)) errors.Add("system_prompt_required");
-        if (row.ToolCount != row.ValidToolCount) errors.Add("inactive_or_unauthorized_tool");
+        if (row.ToolCount != row.ValidToolCount)
+        {
+            errors.Add("inactive_or_unauthorized_tool");
+            errors.AddRange((await GetIneligibleToolCodesAsync(conn, versionId, ct)).Select(c => $"tool_not_eligible:{c}"));
+        }
         if (!row.WorkflowValid) errors.Add("inactive_or_missing_workflow");
         if (row.CapabilityCount != row.ValidCapabilityCount) errors.Add("inactive_capability");
         return new AgentVersionValidation(errors.Count == 0, errors.ToArray());
@@ -1861,15 +1869,62 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         if (leaked) throw new InvalidOperationException("skill_not_eligible");
     }
 
-    private static async Task EnsureToolsEligibleAsync(NpgsqlConnection conn, NpgsqlTransaction tx, Guid[]? toolIds, CancellationToken ct)
+    // Shared by ValidateVersionAsync/ValidateDepartmentAgentVersionAsync:
+    // names exactly which attached tool(s) fail the same is_active/
+    // action_tier check "inactive_or_unauthorized_tool" summarizes. Tools
+    // are a global registry any ADMIN can already browse in full (GET
+    // /department/tools, GET /admin/tools), so naming a tool code here
+    // leaks nothing beyond what's already visible — unlike the deliberately
+    // detail-free capability/workflow/skill eligibility errors elsewhere in
+    // this file, which guard against leaking another department's resource ids.
+    private static async Task<string[]> GetIneligibleToolCodesAsync(NpgsqlConnection conn, Guid versionId, CancellationToken ct)
+    {
+        var codes = await conn.QueryAsync<string>(new CommandDefinition("""
+            SELECT COALESCE(t.code, g.tool_id::text)
+            FROM agent_version_tool_grants g
+            JOIN agent_versions v ON v.id=g.agent_version_id
+            JOIN agents a ON a.id=v.agent_id
+            LEFT JOIN tools t ON t.id=g.tool_id
+            WHERE g.agent_version_id=@versionId AND (
+              t.id IS NULL OR NOT t.is_active OR
+              CASE a.action_tier WHEN 'autonomous' THEN 4 WHEN 'execute_with_approval' THEN 3 WHEN 'suggest' THEN 2 ELSE 1 END <
+              CASE t.min_action_tier WHEN 'autonomous' THEN 4 WHEN 'execute_with_approval' THEN 3 WHEN 'suggest' THEN 2 ELSE 1 END
+            )
+            """, new { versionId }, cancellationToken: ct));
+        return codes.ToArray();
+    }
+
+    // Contract Processing gap: this used to only check tools.is_active, so a
+    // tool whose min_action_tier exceeds the agent's own action_tier could
+    // be attached to a draft successfully here and only fail — opaquely, as
+    // a bare "inactive_or_unauthorized_tool" — much later at Validate/
+    // Publish (ValidateDepartmentAgentVersionAsync/PublishDepartmentAgentVersionAsync
+    // enforce the exact same tier comparison). Checking the same rule here
+    // closes that silent attach-then-can-never-publish trap; the tool
+    // registry itself stays global/unedited (mcp__aiq__save_contract's
+    // min_action_tier='execute_with_approval' is correct as seeded — see
+    // infra/postgres/init/13_governance_tools.sql — an agent needs a
+    // matching action_tier to attach it, same as at publish time).
+    private static async Task EnsureToolsEligibleAsync(NpgsqlConnection conn, NpgsqlTransaction tx, Guid agentId, Guid[]? toolIds, CancellationToken ct)
     {
         if (toolIds is null) return;
         var distinctIds = toolIds.Distinct().ToArray();
         if (distinctIds.Length == 0) return;
-        var eligibleCount = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
-            "SELECT COUNT(*)::int FROM tools WHERE id=ANY(@distinctIds) AND is_active",
-            new { distinctIds }, tx, cancellationToken: ct));
-        if (eligibleCount != distinctIds.Length) throw new InvalidOperationException("tool_not_eligible");
+        var ineligibleCodes = (await conn.QueryAsync<string>(new CommandDefinition("""
+            SELECT COALESCE(t.code, req.id::text)
+            FROM unnest(@distinctIds) AS req(id)
+            JOIN agents a ON a.id=@agentId
+            LEFT JOIN tools t ON t.id=req.id
+            WHERE t.id IS NULL OR NOT t.is_active OR
+              CASE a.action_tier WHEN 'autonomous' THEN 4 WHEN 'execute_with_approval' THEN 3 WHEN 'suggest' THEN 2 ELSE 1 END <
+              CASE t.min_action_tier WHEN 'autonomous' THEN 4 WHEN 'execute_with_approval' THEN 3 WHEN 'suggest' THEN 2 ELSE 1 END
+            """, new { agentId, distinctIds }, tx, cancellationToken: ct))).AsList();
+        if (ineligibleCodes.Count > 0)
+        {
+            var ex = new InvalidOperationException("tool_not_eligible");
+            ex.Data["codes"] = ineligibleCodes.ToArray();
+            throw ex;
+        }
     }
 
     private static async Task<IReadOnlyList<AgentVersionRecord>> HydrateVersionsAsync(NpgsqlConnection conn, IReadOnlyList<VersionRow> rows, CancellationToken ct)

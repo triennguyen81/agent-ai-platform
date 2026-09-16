@@ -215,14 +215,22 @@ Nợ 6425 (phí NH)  fee (nếu sender chịu)
       "description": "Vé máy bay SGN-HAN khứ hồi VietJet",
       "amount": 3500000,
       "receipt_attached": true,
-      "receipt_type": "invoice_vat"
+      "receipt_type": "invoice_vat",
+      "vendor_mst": "0100109106",      // optional — MST hoá đơn dòng này (nếu có), dùng để chống trùng + khớp NCC
+      "invoice_no": "0012345",         // optional — số hoá đơn dòng này (nếu có)
+      "document_date": "2026-08-01",   // optional — ngày hoá đơn dòng này (YYYY-MM-DD, nếu có)
+      "vat_amount": 318182             // optional — phần VAT trong amount (nếu hoá đơn có tách VAT); để trống nếu không đọc được, KHÔNG tự suy ra bằng % cố định
     },
     {
       "category": "hotel",
       "description": "Khách sạn Melia 3 đêm",
       "amount": 5400000,
       "receipt_attached": true,
-      "receipt_type": "invoice_vat"
+      "receipt_type": "invoice_vat",
+      "vendor_mst": "0100234567",
+      "invoice_no": "0007788",
+      "document_date": "2026-08-02",
+      "vat_amount": 490909
     }
   ],
   "total_claim": 8900000,

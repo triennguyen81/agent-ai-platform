@@ -36,14 +36,11 @@ public interface IEmployeeRepository
     Task<EmployeeRecord?> FindByIdAsync(Guid tenantId, Guid id, CancellationToken ct);
 
     // Áp dụng hoàn ứng: giảm outstanding_advance (tối đa về 0) + tăng ytd_expense.
-    // Optional side-effect: đánh dấu sim_expense_claims.status='paid' nếu row
-    // đã tồn tại (match by document_number + tenant).
     // Idempotent theo voucherId — chưa có ap_ledger-style guard, dùng flag trên
     // vouchers.status ở caller.
     Task<ExpenseClaimApplyResult> ApplyExpenseClaimAsync(
         Guid tenantId,
         Guid employeeId,
-        string? claimDocumentNumber,
         decimal totalClaim,
         decimal advanceTaken,
         CancellationToken ct);
@@ -87,7 +84,6 @@ public sealed class EmployeeRepository : IEmployeeRepository
     public async Task<ExpenseClaimApplyResult> ApplyExpenseClaimAsync(
         Guid tenantId,
         Guid employeeId,
-        string? claimDocumentNumber,
         decimal totalClaim,
         decimal advanceTaken,
         CancellationToken ct)
@@ -115,22 +111,6 @@ public sealed class EmployeeRepository : IEmployeeRepository
             new { newAdvance, newYtd, tenantId, employeeId },
             transaction: tx,
             cancellationToken: ct));
-
-        // Optional: mark claim as paid nếu document_number khớp row tồn tại.
-        if (!string.IsNullOrWhiteSpace(claimDocumentNumber))
-        {
-            await conn.ExecuteAsync(new CommandDefinition(
-                """
-                UPDATE sim_expense_claims
-                   SET status = 'paid', paid_at = NOW()
-                 WHERE tenant_id = @tenantId
-                   AND document_number = @claimDocumentNumber
-                   AND status <> 'paid'
-                """,
-                new { tenantId, claimDocumentNumber },
-                transaction: tx,
-                cancellationToken: ct));
-        }
 
         await tx.CommitAsync(ct);
 

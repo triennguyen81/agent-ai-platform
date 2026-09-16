@@ -201,7 +201,13 @@ public static class DepartmentAgentEndpoints
         }
         catch (InvalidOperationException ex) when (ex.Message == "tool_not_eligible")
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["toolIds"] = ["tool_not_eligible"] });
+            // Tools are a global/platform-only registry an ADMIN can already
+            // browse in full (GET /department/tools) — unlike cross-tenant/
+            // cross-department ids, naming which tool code is inactive or
+            // requires a higher action_tier leaks nothing they can't already
+            // see, so this is the one eligibility error that names names.
+            var codes = ex.Data["codes"] as string[];
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["toolIds"] = codes is { Length: > 0 } ? codes : ["tool_not_eligible"] });
         }
     }
 
@@ -235,7 +241,13 @@ public static class DepartmentAgentEndpoints
         }
         catch (InvalidOperationException ex) when (ex.Message == "tool_not_eligible")
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["toolIds"] = ["tool_not_eligible"] });
+            // Tools are a global/platform-only registry an ADMIN can already
+            // browse in full (GET /department/tools) — unlike cross-tenant/
+            // cross-department ids, naming which tool code is inactive or
+            // requires a higher action_tier leaks nothing they can't already
+            // see, so this is the one eligibility error that names names.
+            var codes = ex.Data["codes"] as string[];
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["toolIds"] = codes is { Length: > 0 } ? codes : ["tool_not_eligible"] });
         }
     }
 

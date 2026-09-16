@@ -8,6 +8,11 @@ import { AcceptReceiptButton } from "@/components/accept-receipt-button";
 import { AcceptExpenseButton } from "@/components/accept-expense-button";
 import { AcceptInvoiceButton } from "@/components/accept-invoice-button";
 import { UnapplyReceiptButton } from "@/components/unapply-receipt-button";
+import { RejectReceiptMatchButton } from "@/components/reject-receipt-match-button";
+import { RejectExpenseClaimButton } from "@/components/reject-expense-claim-button";
+import { GrantExpenseExceptionButton } from "@/components/grant-expense-exception-button";
+import { DepartmentReviewExpenseButton } from "@/components/department-review-expense-button";
+import { AccountingReviewExpenseButton } from "@/components/accounting-review-expense-button";
 
 interface VoucherRecord {
   id: string;
@@ -157,6 +162,71 @@ interface ReceiptMatchingFound {
 }
 
 type ReceiptMatching = ReceiptMatchingFound;
+
+// Luồng 02 — persisted Customer/AR/Contract-installment match proposal
+// (GET /vouchers/{id}/receipt-match), independent of the extracted_fields
+// snapshot above (that's the raw extraction; this is the reviewed outcome).
+interface ReceiptMatchResult {
+  id: string;
+  voucherId: string;
+  customerId: string | null;
+  customerMatchConfidence: number;
+  customerMatchEvidence: string | null;
+  contractId: string | null;
+  installmentId: string | null;
+  receivableReference: string | null;
+  outcome:
+    | "FULL_MATCH"
+    | "PARTIAL_PAYMENT"
+    | "OVERPAYMENT"
+    | "ADVANCE_PAYMENT"
+    | "UNKNOWN_PAYER"
+    | "CUSTOMER_NO_OPEN_RECEIVABLE"
+    | "REVERSED_TRANSACTION"
+    | "FOREIGN_CURRENCY";
+  receiptAmount: number;
+  matchedAmount: number;
+  unallocatedAmount: number;
+  currency: string;
+  reviewStatus: "proposed" | "confirmed" | "rejected";
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+}
+
+// Luồng 03 — persisted expense-claim outcome classification (GET
+// /vouchers/{id}/expense-claim-result), independent of the extracted_fields
+// expense_claim_matching snapshot below (that's the raw enrichment; this is
+// the reviewed outcome — duplicate/policy/advance reconciliation).
+interface ExpenseClaimResult {
+  id: string;
+  voucherId: string;
+  employeeId: string | null;
+  requestedAmount: number;
+  approvedAmount: number;
+  blockedAmount: number;
+  cappedAmount: number;
+  nonDeductibleAmount: number;
+  vatAmount: number;
+  vatDeductibleAmount: number;
+  advanceAmount: number;
+  payableAmount: number;
+  currency: string;
+  duplicateFlagsJson: string;
+  policyFlagsJson: string;
+  resolvedVendorsJson: string;
+  missingDocuments: string | null;
+  outcome:
+    | "APPROVED"
+    | "PARTIALLY_APPROVED"
+    | "RETURN_FOR_DOCUMENTS"
+    | "WAITING_EXCEPTION_APPROVAL"
+    | "REJECTED";
+  // R14 — 3-stage sequence: proposed -> dept_reviewed -> accounting_reviewed
+  // -> confirmed (or rejected from any of the first three).
+  reviewStatus: "proposed" | "dept_reviewed" | "accounting_reviewed" | "confirmed" | "rejected";
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+}
 
 // UC3 AP-side enrichment: extracted_fields.ap_context / payment_matching /
 // expense_claim_matching populated by VoucherExtractJobRunner.
@@ -1359,6 +1429,20 @@ export default async function VoucherDetailPage({ params }: PageProps) {
   }
   const detail = (await res.json()) as VoucherDetail;
   const v = detail.voucher;
+
+  // Luồng 02 — ADMIN-only confirm/reject actions must not render for a plain
+  // USER (backend still enforces this via department_admin, but the task
+  // explicitly asks the UI not to show ADMIN-only actions to USER here).
+  let isAdmin = false;
+  const meRes = await gateway.me(token);
+  if (meRes.ok) {
+    const me = (await meRes.json()) as { roles?: string[] };
+    isAdmin = (me.roles ?? []).includes("admin");
+  }
+  const receiptMatchRes = v.voucherType === "receipt" ? await gateway.getReceiptMatch(token, id) : null;
+  const receiptMatch = receiptMatchRes?.ok ? ((await receiptMatchRes.json()) as ReceiptMatchResult) : null;
+  const expenseClaimResultRes = v.voucherType === "expense_claim" ? await gateway.getExpenseClaimResult(token, id) : null;
+  const expenseClaimResult = expenseClaimResultRes?.ok ? ((await expenseClaimResultRes.json()) as ExpenseClaimResult) : null;
   const currency = v.currency ?? "VND";
 
   // UC-ACC-001 §5.5-5.7: parse A/R context enriched at upload time.
@@ -1584,6 +1668,143 @@ export default async function VoucherDetailPage({ params }: PageProps) {
         </section>
       )}
 
+      {receiptMatch && (
+        <section className="rounded-[var(--radius)] border p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="font-serif text-lg">Luồng 02 — Kết quả khớp công nợ</h2>
+            <span
+              className={`rounded-full border px-2 py-0.5 text-xs ${
+                receiptMatch.reviewStatus === "confirmed"
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-700"
+                  : receiptMatch.reviewStatus === "rejected"
+                    ? "border-gray-300 bg-gray-50 text-gray-600"
+                    : "border-amber-300 bg-amber-50 text-amber-700"
+              }`}
+            >
+              {receiptMatch.reviewStatus === "confirmed"
+                ? "Đã xác nhận"
+                : receiptMatch.reviewStatus === "rejected"
+                  ? "Đã từ chối"
+                  : "Đang chờ duyệt"}
+            </span>
+          </div>
+          <div className="mb-3 inline-block rounded-full border px-2 py-1 text-xs font-mono">
+            {receiptMatch.outcome}
+          </div>
+          <div className="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+            <div>Khách hàng khớp: <b className="font-mono">{receiptMatch.customerMatchConfidence * 100}%</b></div>
+            <div>Căn cứ: {receiptMatch.customerMatchEvidence ?? "—"}</div>
+            <div>Công nợ/hoá đơn: {receiptMatch.receivableReference ?? "—"}</div>
+            <div>Hợp đồng/đợt thanh toán: {receiptMatch.installmentId ? "Có liên kết" : "—"}</div>
+            <div>Số tiền phiếu thu: <b className="font-mono">{receiptMatch.receiptAmount.toLocaleString("vi-VN")} {receiptMatch.currency}</b></div>
+            <div>Đã khớp: <b className="font-mono">{receiptMatch.matchedAmount.toLocaleString("vi-VN")}</b></div>
+            <div>Chưa phân bổ: <b className="font-mono">{receiptMatch.unallocatedAmount.toLocaleString("vi-VN")}</b></div>
+          </div>
+          {isAdmin && receiptMatch.reviewStatus === "proposed" && (
+            <div className="mt-3">
+              <RejectReceiptMatchButton voucherId={v.id} />
+            </div>
+          )}
+        </section>
+      )}
+
+      {expenseClaimResult && (
+        <section className="rounded-[var(--radius)] border p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="font-serif text-lg">Luồng 03 — Kết quả xử lý đề nghị hoàn ứng</h2>
+            <span
+              className={`rounded-full border px-2 py-0.5 text-xs ${
+                expenseClaimResult.reviewStatus === "confirmed"
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-700"
+                  : expenseClaimResult.reviewStatus === "rejected"
+                    ? "border-gray-300 bg-gray-50 text-gray-600"
+                    : "border-amber-300 bg-amber-50 text-amber-700"
+              }`}
+            >
+              {expenseClaimResult.reviewStatus === "confirmed"
+                ? "Đã xác nhận"
+                : expenseClaimResult.reviewStatus === "rejected"
+                  ? "Đã từ chối"
+                  : expenseClaimResult.reviewStatus === "dept_reviewed"
+                    ? "Đã duyệt bộ phận — chờ kế toán"
+                    : expenseClaimResult.reviewStatus === "accounting_reviewed"
+                      ? "Đã duyệt kế toán — chờ duyệt chi"
+                      : "Chờ duyệt bộ phận"}
+            </span>
+          </div>
+          <div className="mb-3 inline-block rounded-full border px-2 py-1 text-xs font-mono">
+            {expenseClaimResult.outcome}
+          </div>
+          <div className="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+            <div>Số tiền đề nghị: <b className="font-mono">{expenseClaimResult.requestedAmount.toLocaleString("vi-VN")} {expenseClaimResult.currency}</b></div>
+            <div>Số tiền được duyệt: <b className="font-mono">{expenseClaimResult.approvedAmount.toLocaleString("vi-VN")}</b></div>
+            <div>Bị chặn (trùng): <b className="font-mono">{expenseClaimResult.blockedAmount.toLocaleString("vi-VN")}</b></div>
+            <div>Bị cắt (vượt định mức): <b className="font-mono">{expenseClaimResult.cappedAmount.toLocaleString("vi-VN")}</b></div>
+            <div>Chi phí không được trừ (TNDN): <b className="font-mono">{expenseClaimResult.nonDeductibleAmount.toLocaleString("vi-VN")}</b></div>
+            <div>Thuế GTGT được khấu trừ: <b className="font-mono">{expenseClaimResult.vatDeductibleAmount.toLocaleString("vi-VN")}</b> / {expenseClaimResult.vatAmount.toLocaleString("vi-VN")}</div>
+            <div>Tạm ứng đối trừ: <b className="font-mono">{expenseClaimResult.advanceAmount.toLocaleString("vi-VN")}</b></div>
+            <div>
+              {expenseClaimResult.payableAmount >= 0 ? "Còn phải trả nhân viên" : "Nhân viên phải hoàn lại"}:{" "}
+              <b className="font-mono">{Math.abs(expenseClaimResult.payableAmount).toLocaleString("vi-VN")}</b>
+            </div>
+          </div>
+          {expenseClaimResult.missingDocuments && (
+            <p className="mt-2 text-xs text-amber-700">{expenseClaimResult.missingDocuments}</p>
+          )}
+          {(() => {
+            // U2 audit fix — per-line Đạt/Cắt/Chặn breakdown. Parsed straight
+            // from the same duplicate/policy flag data the backend already
+            // computes and stores; nothing here is fabricated — a line with
+            // no flag at all is simply not listed (it was "Đạt").
+            let duplicateFlags: Array<{ seq: number; reason: string; vendorMst?: string; invoiceNo?: string }> = [];
+            let policyFlags: Array<{ seq: number | null; category: string; rule: string; limitAmount: number; limitUnit: string; claimedAmount: number }> = [];
+            try { duplicateFlags = JSON.parse(expenseClaimResult.duplicateFlagsJson || "[]"); } catch { /* leave empty */ }
+            try { policyFlags = JSON.parse(expenseClaimResult.policyFlagsJson || "[]"); } catch { /* leave empty */ }
+            if (duplicateFlags.length === 0 && policyFlags.length === 0) return null;
+            return (
+              <div className="mt-3 space-y-1 border-t pt-2 text-xs">
+                {policyFlags.map((f, i) => (
+                  <div key={`policy-${i}`} className="text-amber-700">
+                    {f.seq != null ? `Dòng ${f.seq}` : "Toàn bộ đề nghị"} ({f.category}): Cắt về {f.limitAmount.toLocaleString("vi-VN")} {f.limitUnit === "per_item" ? "/dòng" : ""} — đề nghị {f.claimedAmount.toLocaleString("vi-VN")}
+                  </div>
+                ))}
+                {duplicateFlags.map((f, i) => (
+                  <div key={`dup-${i}`} className="text-red-700">
+                    Dòng {f.seq}: Chặn — {f.reason === "duplicate_within_claim" ? "trùng trong cùng đề nghị" : "đã ghi sổ/claim trước đó"}
+                    {f.invoiceNo ? ` (${f.invoiceNo})` : ""}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+          {isAdmin && expenseClaimResult.reviewStatus === "proposed" && (
+            <div className="mt-3 flex items-center gap-2">
+              {expenseClaimResult.outcome === "WAITING_EXCEPTION_APPROVAL" && (
+                <GrantExpenseExceptionButton voucherId={v.id} />
+              )}
+              {(expenseClaimResult.outcome === "APPROVED" || expenseClaimResult.outcome === "PARTIALLY_APPROVED") && (
+                <DepartmentReviewExpenseButton voucherId={v.id} />
+              )}
+              {expenseClaimResult.outcome !== "RETURN_FOR_DOCUMENTS" && expenseClaimResult.outcome !== "REJECTED" && (
+                <RejectExpenseClaimButton voucherId={v.id} />
+              )}
+            </div>
+          )}
+          {isAdmin && expenseClaimResult.reviewStatus === "dept_reviewed" && (
+            <div className="mt-3 flex items-center gap-2">
+              <AccountingReviewExpenseButton voucherId={v.id} />
+              <RejectExpenseClaimButton voucherId={v.id} />
+            </div>
+          )}
+          {isAdmin && expenseClaimResult.reviewStatus === "accounting_reviewed" && (
+            <div className="mt-3 flex items-center gap-2">
+              <AcceptExpenseButton voucherId={v.id} voucherType={v.voucherType} />
+              <RejectExpenseClaimButton voucherId={v.id} />
+            </div>
+          )}
+        </section>
+      )}
+
       {receiptMatching && (
         <>
           <ReceiptMatchingPanel
@@ -1785,9 +2006,40 @@ export default async function VoucherDetailPage({ params }: PageProps) {
       <section className="space-y-3 rounded-[var(--radius)] border p-5">
         <h2 className="font-serif text-lg">Bút toán đề xuất (TT200)</h2>
         {detail.journalSuggestions.length === 0 ? (
-          <p className="text-sm text-[var(--color-muted-fg)]">
-            Chưa có bút toán. AI sẽ suggest khi bạn quay lại trang sau vài giây, hoặc chạy lại từ trang upload.
-          </p>
+          (() => {
+            // BR09 audit fix — the generic "AI will suggest soon" message is
+            // actively misleading for outcomes that will NEVER auto-populate
+            // a journal entry (no rate source, no payment method, or an
+            // outcome the business process document says needs a human
+            // decision, never an invented entry). Say so plainly instead of
+            // implying a transient wait.
+            if (receiptMatch?.outcome === "FOREIGN_CURRENCY") {
+              return (
+                <p className="text-sm text-amber-700">
+                  Giao dịch ngoại tệ — hệ thống chưa có nguồn tỷ giá cấu hình nên không thể tự đề xuất bút toán chênh lệch tỷ giá (515/635). Vui lòng nhập bút toán thủ công.
+                </p>
+              );
+            }
+            if (receiptMatch && ["UNKNOWN_PAYER", "CUSTOMER_NO_OPEN_RECEIVABLE", "REVERSED_TRANSACTION"].includes(receiptMatch.outcome)) {
+              return (
+                <p className="text-sm text-[var(--color-muted-fg)]">
+                  Tình huống này không có bút toán mặc định — cần kế toán công nợ xử lý tra soát trước.
+                </p>
+              );
+            }
+            if (receiptMatch && !v.paymentMethod) {
+              return (
+                <p className="text-sm text-amber-700">
+                  Chưa xác định hình thức thanh toán (tiền mặt/chuyển khoản) trên chứng từ — hệ thống không tự đoán, cần nhập bút toán thủ công.
+                </p>
+              );
+            }
+            return (
+              <p className="text-sm text-[var(--color-muted-fg)]">
+                Chưa có bút toán. AI sẽ suggest khi bạn quay lại trang sau vài giây, hoặc chạy lại từ trang upload.
+              </p>
+            );
+          })()
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

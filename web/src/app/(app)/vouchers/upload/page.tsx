@@ -30,6 +30,7 @@ const VOUCHER_TYPES: { value: string; label: string }[] = [
   { value: "payment", label: "Phiếu chi" },
   { value: "bank_transfer", label: "Uỷ nhiệm chi" },
   { value: "bank_statement", label: "Sao kê ngân hàng" },
+  { value: "expense_claim", label: "Đề nghị hoàn ứng" },
 ];
 
 const ACCEPTED = "image/jpeg,image/png,image/webp,image/bmp,application/pdf";

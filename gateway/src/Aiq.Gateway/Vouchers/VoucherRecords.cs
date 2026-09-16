@@ -10,6 +10,7 @@ public sealed class VoucherRecord
     public Guid Id { get; init; }
     public Guid UserId { get; init; }
     public Guid? TenantId { get; init; }
+    public Guid? DepartmentId { get; init; }
     public string VoucherType { get; init; } = "";
     public string Status { get; init; } = "processing";
     public string? DocumentNumber { get; init; }
@@ -31,6 +32,18 @@ public sealed class VoucherRecord
     public string? PaymentMethod { get; init; }
     public bool TctVerified { get; init; }
     public DateTime? TctVerifiedAt { get; init; }
+    // P1 audit fix — tri-state ('verified'/'invalid'/'unavailable'/null) so
+    // the Luồng 03 approval gate (and the UI) can tell "checked and bad"
+    // and "never checked" apart, which TctVerified alone cannot express.
+    public string? TaxVerificationStatus { get; init; }
+    public string? TaxVerificationReason { get; init; }
+    public DateTime? TaxVerificationCheckedAt { get; init; }
+    // R06 — optional, explicitly-set link to the contract/installment this
+    // invoice or receipt fulfills. Never auto-inferred (that's the existing
+    // tax-code heuristic in ReceiptMatchRepository) — this is a real,
+    // persistent relationship once someone actually knows it.
+    public Guid? ContractId { get; init; }
+    public Guid? ContractInstallmentId { get; init; }
     public string? SourceFilePath { get; init; }
     public string? SourceFileName { get; init; }
     public string? SourceMimeType { get; init; }

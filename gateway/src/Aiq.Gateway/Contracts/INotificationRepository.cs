@@ -43,6 +43,17 @@ public interface INotificationRepository
     /// retry. Returns number of new rows actually inserted.
     /// </summary>
     Task<int> InsertManyAsync(IReadOnlyList<InsertNotificationDto> rows, CancellationToken ct);
+
+    /// <summary>
+    /// R18 — event-driven notification fan-out to every department_admin in
+    /// one tenant+department (the closest existing-RBAC analog to "Kế toán
+    /// trưởng"). Same dedup key as InsertManyAsync (tenant_id, user_id,
+    /// kind, ref_id), so calling this twice for the same event is always
+    /// safe. Returns number of admins actually notified (new rows only).
+    /// </summary>
+    Task<int> NotifyDepartmentAdminsAsync(
+        Guid tenantId, Guid departmentId, string kind, string? refType, Guid? refId,
+        string title, string? body, CancellationToken ct);
 }
 
 public sealed class NotificationRepository : INotificationRepository
@@ -138,5 +149,26 @@ public sealed class NotificationRepository : INotificationRepository
         await using var conn = await _factory.OpenAsync(ct);
         return await conn.ExecuteAsync(
             new CommandDefinition(sql, rows, cancellationToken: ct));
+    }
+
+    public async Task<int> NotifyDepartmentAdminsAsync(
+        Guid tenantId, Guid departmentId, string kind, string? refType, Guid? refId,
+        string title, string? body, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        var adminIds = (await conn.QueryAsync<Guid>(new CommandDefinition("""
+            SELECT u.id
+            FROM users u
+            JOIN user_roles ur ON ur.user_id = u.id
+            JOIN roles r ON r.id = ur.role_id AND r.name = 'admin'
+            WHERE u.tenant_id = @tenantId AND u.department_id = @departmentId
+            """, new { tenantId, departmentId }, cancellationToken: ct))).AsList();
+
+        if (adminIds.Count == 0) return 0;
+
+        var rows = adminIds.Select(adminId => new InsertNotificationDto(
+            TenantId: tenantId, UserId: adminId, Kind: kind, RefType: refType, RefId: refId,
+            Title: title, Body: body)).ToList();
+        return await InsertManyAsync(rows, ct);
     }
 }

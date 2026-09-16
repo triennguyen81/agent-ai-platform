@@ -108,6 +108,11 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  listContractDocuments(token: string,id: string){return call(GATEWAY_BASE,`/contracts/${id}/documents`,{headers:{Authorization:`Bearer ${token}`}});},
+  uploadContractDocument(token:string,id:string,formData:FormData,documentType:string,referencedCode?:string){const q=new URLSearchParams({documentType});if(referencedCode)q.set("referencedCode",referencedCode);return fetch(`${GATEWAY_BASE}/contracts/${id}/documents?${q}`,{method:"POST",headers:{Authorization:`Bearer ${token}`},body:formData,cache:"no-store"});},
+  deleteContractDocument(token:string,id:string,documentId:string){return call(GATEWAY_BASE,`/contracts/${id}/documents/${documentId}`,{method:"DELETE",headers:{Authorization:`Bearer ${token}`}});},
+  reviewContract(token:string,id:string,payload:{approve:boolean;comment?:string}){return call(GATEWAY_BASE,`/contracts/${id}/review`,{method:"POST",headers:{Authorization:`Bearer ${token}`},body:JSON.stringify(payload)});},
+  handoffContract(token:string,id:string){return call(GATEWAY_BASE,`/contracts/${id}/handoff`,{method:"POST",headers:{Authorization:`Bearer ${token}`}});},
   listChecklist(token: string, contractId: string) {
     return call(GATEWAY_BASE, `/contracts/${contractId}/checklist`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -1244,6 +1249,34 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  getReceiptMatch(token: string, id: string) {
+    return call(GATEWAY_BASE, `/vouchers/${id}/receipt-match`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  rejectReceiptMatch(token: string, id: string) {
+    return call(GATEWAY_BASE, `/vouchers/${id}/reject-receipt-match`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  getExpenseClaimResult(token: string, id: string) {
+    return call(GATEWAY_BASE, `/vouchers/${id}/expense-claim-result`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  rejectExpenseClaim(token: string, id: string) {
+    return call(GATEWAY_BASE, `/vouchers/${id}/reject-expense-claim`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  grantExpenseException(token: string, id: string) {
+    return call(GATEWAY_BASE, `/vouchers/${id}/grant-expense-exception`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
   createVoucher(token: string, payload: Record<string, unknown>) {
     return call(GATEWAY_BASE, "/vouchers", {
       method: "POST",
@@ -1319,24 +1352,88 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
-  listCustomers(token: string, params?: { category?: string; q?: string }) {
+  listCustomers(token: string, params?: { category?: string; q?: string; includeInactive?: boolean }) {
     const qs = new URLSearchParams();
     if (params?.category) qs.set("category", params.category);
     if (params?.q) qs.set("q", params.q);
+    if (params?.includeInactive) qs.set("includeInactive", "true");
     const url = qs.toString() ? `/customers/?${qs}` : "/customers/";
     return call(GATEWAY_BASE, url, {
       method: "GET",
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  getCustomer(token: string, id: string) {
+    return call(GATEWAY_BASE, `/customers/${id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createCustomer(token: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, "/customers", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateCustomer(token: string, id: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/customers/${id}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  deactivateCustomer(token: string, id: string) {
+    return call(GATEWAY_BASE, `/customers/${id}/deactivate`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  reactivateCustomer(token: string, id: string) {
+    return call(GATEWAY_BASE, `/customers/${id}/reactivate`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
   // ---------- Suppliers (UC3 AP side) ----------
-  listSuppliers(token: string, params?: { country?: string; q?: string }) {
+  listSuppliers(token: string, params?: { country?: string; q?: string; includeInactive?: boolean }) {
     const qs = new URLSearchParams();
     if (params?.country) qs.set("country", params.country);
     if (params?.q) qs.set("q", params.q);
+    if (params?.includeInactive) qs.set("includeInactive", "true");
     const url = qs.toString() ? `/suppliers/?${qs}` : "/suppliers/";
     return call(GATEWAY_BASE, url, {
       method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  getSupplier(token: string, id: string) {
+    return call(GATEWAY_BASE, `/suppliers/${id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  createSupplier(token: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, "/suppliers", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateSupplier(token: string, id: string, payload: Record<string, unknown>) {
+    return call(GATEWAY_BASE, `/suppliers/${id}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
+  deactivateSupplier(token: string, id: string) {
+    return call(GATEWAY_BASE, `/suppliers/${id}/deactivate`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  reactivateSupplier(token: string, id: string) {
+    return call(GATEWAY_BASE, `/suppliers/${id}/reactivate`, {
+      method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     });
   },
@@ -1348,6 +1445,12 @@ export const gateway = {
   },
   supplierPayables(token: string, supplierId: string) {
     return call(GATEWAY_BASE, `/suppliers/${supplierId}/payables`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  apSummary(token: string) {
+    return call(GATEWAY_BASE, "/suppliers/ap-summary", {
       method: "GET",
       headers: { Authorization: `Bearer ${token}` },
     });

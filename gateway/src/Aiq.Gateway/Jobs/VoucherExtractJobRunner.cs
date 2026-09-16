@@ -25,6 +25,8 @@ public sealed class VoucherExtractJobRunner
     private readonly ISupplierRepository _suppliers;
     private readonly IEmployeeRepository _employees;
     private readonly IApprovalRepository _approvals;
+    private readonly Aiq.Gateway.Receipts.IReceiptMatchRepository _receiptMatches;
+    private readonly IExpenseClaimRepository _expenseClaims;
     private readonly ExpenseRiskOptions _riskOptions;
     private readonly ILogger<VoucherExtractJobRunner> _logger;
 
@@ -35,6 +37,8 @@ public sealed class VoucherExtractJobRunner
         ISupplierRepository suppliers,
         IEmployeeRepository employees,
         IApprovalRepository approvals,
+        Aiq.Gateway.Receipts.IReceiptMatchRepository receiptMatches,
+        IExpenseClaimRepository expenseClaims,
         IOptions<ExpenseRiskOptions> riskOptions,
         ILogger<VoucherExtractJobRunner> logger)
     {
@@ -44,6 +48,8 @@ public sealed class VoucherExtractJobRunner
         _suppliers = suppliers;
         _employees = employees;
         _approvals = approvals;
+        _receiptMatches = receiptMatches;
+        _expenseClaims = expenseClaims;
         _riskOptions = riskOptions.Value;
         _logger = logger;
     }
@@ -139,23 +145,40 @@ public sealed class VoucherExtractJobRunner
 
         if (tenantId is Guid t)
         {
+            var d = stub.Voucher.DepartmentId ?? Guid.Empty;
             switch (vt)
             {
                 case "receipt":
                 {
                     var payerMst = ReadStringAny(fields, "payer_mst", "buyer_mst", "customer_mst");
                     var receiptAmount = ReadDecimalAny(fields, "amount", "total_amount", "so_tien") ?? 0m;
+                    var currency = ReadString(fields, "currency") ?? "VND";
                     object? arContext = null;
                     if (!string.IsNullOrWhiteSpace(payerMst))
                     {
                         // Receipt không tăng AR — pass 0m làm projected delta.
-                        arContext = await BuildArContextAsync(t, payerMst, 0m, ct);
+                        arContext = await BuildArContextAsync(t, d, payerMst, 0m, ct);
                         if (arContext is not null) fields["ar_context"] = arContext;
                     }
                     if (arContext is not null && receiptAmount > 0m)
                     {
                         var matching = BuildReceiptMatching(arContext, receiptAmount);
                         if (matching is not null) fields["receipt_matching"] = matching;
+                    }
+
+                    // Luồng 02 — persist the deterministic outcome
+                    // classification (Customer match + AR + Contract
+                    // installment linkage). Read-only proposal: never posts
+                    // to sim_ar_ledger or contract_payment_schedules.
+                    try
+                    {
+                        var receiptMatch = await _receiptMatches.ProposeMatchAsync(
+                            t, d, voucherId, payerMst, receiptAmount, currency, ct);
+                        fields["receipt_match_outcome"] = receiptMatch.Outcome;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Receipt/AR match proposal failed for voucher {VoucherId}", voucherId);
                     }
                     break;
                 }
@@ -167,12 +190,12 @@ public sealed class VoucherExtractJobRunner
                     var invoiceTotal = ReadDecimal(fields, "total_amount") ?? 0m;
                     if (!string.IsNullOrWhiteSpace(buyerMst))
                     {
-                        var arContext = await BuildArContextAsync(t, buyerMst, invoiceTotal, ct);
+                        var arContext = await BuildArContextAsync(t, d, buyerMst, invoiceTotal, ct);
                         if (arContext is not null) fields["ar_context"] = arContext;
                     }
                     if (!string.IsNullOrWhiteSpace(documentNumber))
                     {
-                        var matchContext = await BuildMatchContextAsync(t, documentNumber, ct);
+                        var matchContext = await BuildMatchContextAsync(t, d, documentNumber, ct);
                         if (matchContext is not null) fields["match_context"] = matchContext;
                     }
                     break;
@@ -185,14 +208,14 @@ public sealed class VoucherExtractJobRunner
                     var paymentMethod = ReadString(fields, "payment_method");
                     if (!string.IsNullOrWhiteSpace(sellerMst))
                     {
-                        var apContext = await BuildApContextAsync(t, sellerMst, invoiceTotal, paymentMethod, ct);
+                        var apContext = await BuildApContextAsync(t, d, sellerMst, invoiceTotal, paymentMethod, ct);
                         if (apContext is not null) fields["ap_context"] = apContext;
                     }
                     // PO 3-way match: invoice → PO → GRN (+ purchase_contract Sprint 5).
                     object? poMatch = null;
                     if (!string.IsNullOrWhiteSpace(documentNumber))
                     {
-                        poMatch = await BuildPoMatchContextAsync(t, documentNumber, ct);
+                        poMatch = await BuildPoMatchContextAsync(t, d, documentNumber, ct);
                         if (poMatch is not null) fields["po_match_context"] = poMatch;
                     }
                     // no_matching_po flag: invoice > threshold nhưng không match PO nào.
@@ -245,7 +268,7 @@ public sealed class VoucherExtractJobRunner
                     if (!string.IsNullOrWhiteSpace(payeeMst))
                     {
                         // Payment không tăng AP — pass 0m làm projected delta.
-                        apContext = await BuildApContextAsync(t, payeeMst, 0m, paymentMethod, ct);
+                        apContext = await BuildApContextAsync(t, d, payeeMst, 0m, paymentMethod, ct);
                         if (apContext is not null) fields["ap_context"] = apContext;
                     }
                     if (apContext is not null && paymentAmount > 0m)
@@ -278,6 +301,45 @@ public sealed class VoucherExtractJobRunner
                     {
                         var claim = await BuildExpenseClaimMatchingAsync(t, employeeCode, totalClaim, advanceTaken, items, ct);
                         if (claim is not null) fields["expense_claim_matching"] = claim;
+                    }
+
+                    // Luồng 03 — persist the deterministic outcome
+                    // classification (duplicate detection, policy limits,
+                    // advance reconciliation, Supplier resolution). Read-only
+                    // proposal: never posts to sim_employees/sim_ap_ledger.
+                    try
+                    {
+                        var currency = ReadString(fields, "currency") ?? "VND";
+                        var claimItems = new List<Aiq.Gateway.Employees.ExpenseClaimItemInput>();
+                        if (items is not null)
+                        {
+                            for (var idx = 0; idx < items.Count; idx++)
+                            {
+                                var it = items[idx];
+                                var amount = ReadDecimalAny(it, "amount", "so_tien", "total_amount") ?? 0m;
+                                claimItems.Add(new Aiq.Gateway.Employees.ExpenseClaimItemInput(
+                                    Seq: idx + 1,
+                                    Category: ReadStringAny(it, "category", "loai", "loai_chi_phi") ?? "khác",
+                                    Description: ReadStringAny(it, "description", "noi_dung", "dien_giai"),
+                                    Amount: amount,
+                                    ReceiptAttached: ReadBoolAny(it, "receipt_attached", "co_chung_tu"),
+                                    VendorMst: ReadStringAny(it, "vendor_mst", "supplier_mst"),
+                                    InvoiceNo: ReadStringAny(it, "invoice_no", "document_number"),
+                                    DocumentDate: ReadDate(it, "document_date"),
+                                    VatAmount: ReadDecimalAny(it, "vat_amount")));
+                            }
+                        }
+
+                        var expenseClaim = await _expenseClaims.ProposeAsync(
+                            t, d, voucherId,
+                            new Aiq.Gateway.Employees.ExpenseClaimProposalInput(
+                                employeeCode, totalClaim > 0m ? totalClaim : null, advanceTaken, currency, claimItems),
+                            ct);
+                        fields["expense_claim_outcome"] = expenseClaim.Outcome;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Expense claim outcome proposal failed for voucher {VoucherId}", voucherId);
                     }
                     break;
                 }
@@ -320,7 +382,7 @@ public sealed class VoucherExtractJobRunner
             {
                 await _vouchers.SaveJournalSuggestionsAsync(
                     tenantIdValue,
-                    userId,
+                    stub.Voucher.DepartmentId ?? Guid.Empty,
                     voucherId,
                     new SaveJournalSuggestionsRequest(normalized, ReplaceExisting: true),
                     ct);
@@ -402,6 +464,19 @@ public sealed class VoucherExtractJobRunner
         }
     }
 
+    // R17/R20 fix — route by voucherType instead of unconditionally telling
+    // the model "1 hoá đơn GTGT" (a VAT invoice) and to apply the
+    // invoice-only `voucher-invoice-vat` skill for every type. The
+    // comprehensive `voucher-universal-extractor` skill documents the
+    // correct field schema for all 8 real voucher_type values (including
+    // invoice_vat_out/in, receipt, payment, bank_transfer, bank_statement,
+    // expense_claim, contract) — that is the skill every non-legacy type
+    // must use. `voucher-invoice-vat` is kept only for the bare legacy
+    // "invoice_vat" discriminator (see the "legacy tenants pre-universal-
+    // extractor" comment on the case-switch above), for backward
+    // compatibility with pre-migration tenants only.
+    private static readonly HashSet<string> LegacyInvoiceOnlyTypes = new(StringComparer.OrdinalIgnoreCase) { "invoice_vat" };
+
     // ------------------------------------------------------------------
     // Prompt construction (mirror of web-tier prompt so extraction behaves
     // identically whether it runs in web or gateway job).
@@ -409,15 +484,20 @@ public sealed class VoucherExtractJobRunner
     private static string BuildExtractionPrompt(string voucherType, string rawText)
     {
         var truncated = rawText.Length > 20_000 ? rawText[..20_000] : rawText;
+        var skillName = LegacyInvoiceOnlyTypes.Contains(voucherType) ? "voucher-invoice-vat" : "voucher-universal-extractor";
         return $$"""
-Bạn là chuyên viên kế toán VN. Xử lý raw OCR text của 1 hoá đơn GTGT bên dưới.
+Bạn là chuyên viên kế toán VN. Xử lý raw OCR text của 1 chứng từ loại "{{voucherType}}" bên dưới.
 
-**BLOCK 1** — Áp dụng skill `voucher-invoice-vat` để trích xuất fields.
-Trả về JSON object có voucher_type="{{voucherType}}", document_number, document_series, document_date (YYYY-MM-DD), seller_name, seller_mst, seller_address, buyer_name, buyer_mst, buyer_address, payment_method (CK/TM/MIXED), subtotal, vat_rate, vat_amount, discount_amount, total_amount, currency, amount_in_words, line_items[] (mỗi item: ordinal, description, unit, quantity, unit_price, subtotal, vat_rate, vat_amount, total_amount), tags[].
+**BLOCK 1** — Áp dụng skill `{{skillName}}`, đúng phần mô tả cho voucher_type="{{voucherType}}", để trích xuất fields.
+Trả về JSON object đúng theo schema của skill cho loại chứng từ này — bắt buộc có voucher_type="{{voucherType}}"
+và document_number, document_date (YYYY-MM-DD) nếu chứng từ có các trường đó. KHÔNG áp dụng schema hoá đơn GTGT
+cho một loại chứng từ khác (ví dụ: không suy diễn seller/buyer/line_items cho phiếu thu, đề nghị hoàn ứng, hay
+sao kê ngân hàng — dùng đúng field name của loại đó: employee_code/items[] cho expense_claim, payer/payer_mst
+cho receipt, v.v. theo đúng skill).
 
-**BLOCK 2** — Áp dụng skill `journal-entry-formatter` + `accounting-vietnam` để đề xuất bút toán N/C theo TT200.
+**BLOCK 2** — Áp dụng skill `journal-entry-formatter` + `accounting-vietnam` để đề xuất bút toán N/C theo TT200
+phù hợp với voucher_type="{{voucherType}}" (không mặc định là hoá đơn mua/bán nếu chứng từ không phải hoá đơn).
 Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credit_account, amount, description, confidence}.
-Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331 / Có 331 (công nợ) hoặc 111/112 (trả ngay). Hoá đơn đầu ra (bán) → Nợ 131/111/112 / Có 511 + Có 3331.
 
 **QUAN TRỌNG**: chỉ trả 2 code block JSON, KHÔNG kèm markdown khác:
 ```json
@@ -651,6 +731,26 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
         return null;
     }
 
+    // bool? so callers can distinguish "field absent/unparseable" (null —
+    // benefit of the doubt) from an explicit false (the model actually said
+    // no receipt attached). Handles a real JSON boolean (the extractor
+    // skill's documented shape) and common string fallbacks.
+    private static bool? ReadBoolAny(Dictionary<string, object?> obj, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (!obj.TryGetValue(key, out var v) || v is null) continue;
+            if (v is bool b) return b;
+            if (v is string s)
+            {
+                var norm = s.Trim().ToLowerInvariant();
+                if (norm is "true" or "yes" or "có" or "co" or "1") return true;
+                if (norm is "false" or "no" or "không" or "khong" or "0") return false;
+            }
+        }
+        return null;
+    }
+
     private static DateOnly? ReadDate(Dictionary<string, object?> obj, string key)
     {
         var s = ReadString(obj, key);
@@ -750,16 +850,16 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
     // ------------------------------------------------------------------
     // AR + 3-way match enrichment
     // ------------------------------------------------------------------
-    private async Task<object?> BuildArContextAsync(Guid tenantId, string buyerMst, decimal invoiceTotal, CancellationToken ct)
+    private async Task<object?> BuildArContextAsync(Guid tenantId, Guid departmentId, string buyerMst, decimal invoiceTotal, CancellationToken ct)
     {
         try
         {
-            var customer = await _customers.FindByMstAsync(tenantId, buyerMst, ct);
+            var customer = await _customers.FindByMstAsync(tenantId, departmentId, buyerMst, ct);
             if (customer is null)
             {
                 return new { status = "customer_not_found", buyer_mst = buyerMst };
             }
-            var report = await _customers.GetReceivablesAsync(tenantId, customer.Id, ct);
+            var report = await _customers.GetReceivablesAsync(tenantId, departmentId, customer.Id, ct);
             if (report is null) return new { status = "ar_lookup_failed", customer };
 
             var projectedBalance = report.CurrentBalance131 + invoiceTotal;
@@ -944,11 +1044,11 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
         };
     }
 
-    private async Task<object?> BuildMatchContextAsync(Guid tenantId, string documentNumber, CancellationToken ct)
+    private async Task<object?> BuildMatchContextAsync(Guid tenantId, Guid departmentId, string documentNumber, CancellationToken ct)
     {
         try
         {
-            var match = await _customers.MatchInvoiceToSalesOrderAsync(tenantId, documentNumber, ct);
+            var match = await _customers.MatchInvoiceToSalesOrderAsync(tenantId, departmentId, documentNumber, ct);
             if (match is null)
             {
                 return new { status = "no_match", document_number = documentNumber };
@@ -970,11 +1070,11 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
     }
 
     // AP 3-way match: invoice_vat_in → PO → GRN. Purchase contract sẽ thêm Sprint 5.
-    private async Task<object?> BuildPoMatchContextAsync(Guid tenantId, string documentNumber, CancellationToken ct)
+    private async Task<object?> BuildPoMatchContextAsync(Guid tenantId, Guid departmentId, string documentNumber, CancellationToken ct)
     {
         try
         {
-            var match = await _suppliers.MatchInvoiceToPurchaseOrderAsync(tenantId, documentNumber, ct);
+            var match = await _suppliers.MatchInvoiceToPurchaseOrderAsync(tenantId, departmentId, documentNumber, ct);
             if (match is null)
             {
                 return new { status = "no_match", document_number = documentNumber };
@@ -1004,16 +1104,16 @@ Quy tắc: Hoá đơn VAT đầu vào (mua) → Nợ 156/152/641/642 + Nợ 1331
     // toán TM (không có chứng từ NH → không được khấu trừ VAT).
     // ------------------------------------------------------------------
     private async Task<object?> BuildApContextAsync(
-        Guid tenantId, string supplierMst, decimal invoiceTotal, string? paymentMethod, CancellationToken ct)
+        Guid tenantId, Guid departmentId, string supplierMst, decimal invoiceTotal, string? paymentMethod, CancellationToken ct)
     {
         try
         {
-            var supplier = await _suppliers.FindByMstAsync(tenantId, supplierMst, ct);
+            var supplier = await _suppliers.FindByMstAsync(tenantId, departmentId, supplierMst, ct);
             if (supplier is null)
             {
                 return new { status = "supplier_not_found", supplier_mst = supplierMst };
             }
-            var report = await _suppliers.GetPayablesAsync(tenantId, supplier.Id, ct);
+            var report = await _suppliers.GetPayablesAsync(tenantId, departmentId, supplier.Id, ct);
             if (report is null) return new { status = "ap_lookup_failed", supplier };
 
             var projectedBalance = report.CurrentBalance331 + invoiceTotal;

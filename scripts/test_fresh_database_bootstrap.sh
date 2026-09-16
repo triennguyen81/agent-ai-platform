@@ -89,7 +89,7 @@ BEGIN
     SELECT count(*) INTO missing_tables
     FROM unnest(ARRAY[
         'departments', 'sim_customers', 'sim_suppliers', 'sim_employees',
-        'sim_expense_claims', 'sim_ar_ledger', 'sim_sales_orders',
+        'expense_claim_results', 'sim_ar_ledger', 'sim_sales_orders',
         'sim_delivery_notes', 'sim_contracts', 'sim_contract_milestones',
         'sim_purchase_orders', 'sim_ap_ledger', 'sim_goods_received_notes'
     ]) table_name
