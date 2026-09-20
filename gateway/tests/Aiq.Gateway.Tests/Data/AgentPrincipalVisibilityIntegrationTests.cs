@@ -199,6 +199,43 @@ public sealed class AgentPrincipalVisibilityIntegrationTests : IAsyncLifetime
         Assert.Empty(items);
     }
 
+    // ---------------------------------------------------------------------
+    // ACL V2 review: ListForDepartmentManagerAsync (the ADMIN branch of
+    // GET /me/agents — sidebar + My Agents) only ever checked chain 1
+    // (agent_department_assignments, the legacy scope='system' entitlement
+    // table). A Department Agent (v2_scope='department') can structurally
+    // never have a row there — see CreateDepartmentAgentAsync — so an
+    // ADMIN who creates and publishes their OWN Department Agent never saw
+    // it in their own sidebar/My Agents, even though it was fully
+    // executable via GetDepartmentAgentManifestAsync(isAdmin: true). This
+    // is the exact "production agent but page shows nothing" class of bug
+    // reported for the legacy tenant-agent screen, just on a different
+    // surface. Fixed by UNIONing in v2_scope='department' agents owned by
+    // the caller's own tenant+department, mirroring ListForPrincipalAsync's
+    // existing chain-2 branch for USER.
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task AdminAccounting_SeesOwnDepartmentOwnedAgent_NoEntitlementRowNeeded()
+    {
+        if (_scopedConnectionString is null) return;
+        // No agent_tenant_assignments/agent_department_assignments row for
+        // _deptAgentId exists anywhere — structurally impossible for a
+        // Department Agent, and no agent_assignments row either (an ADMIN
+        // never needs one — see ListForPrincipalAsync's own comment on the
+        // isAdmin execution bypass).
+        var items = await Repo().ListForDepartmentManagerAsync(_tenantA, _accounting, default);
+        Assert.Single(items, i => i.AgentId == _deptAgentId && i.AccessLevel == "department");
+    }
+
+    [Fact]
+    public async Task AdminSales_DoesNotSeeAccountingsDepartmentOwnedAgent()
+    {
+        if (_scopedConnectionString is null) return;
+        var items = await Repo().ListForDepartmentManagerAsync(_tenantA, _sales, default);
+        Assert.DoesNotContain(items, i => i.AgentId == _deptAgentId);
+    }
+
     [Fact]
     public async Task UserAccounting_DirectAssignmentPlusDepartmentEntitlement_IsVisible()
     {

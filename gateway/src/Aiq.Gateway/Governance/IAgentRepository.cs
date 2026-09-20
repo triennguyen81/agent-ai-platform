@@ -626,6 +626,17 @@ public sealed class AgentRepository : IAgentRepository
     public async Task<IReadOnlyList<PrincipalAgentRecord>> ListForDepartmentManagerAsync(
         Guid tenantId, Guid departmentId, CancellationToken ct)
     {
+        // ACL V2 review: this used to be chain 1 only (legacy scope='system'
+        // platform agent entitled to the department via
+        // agent_department_assignments) — an ADMIN who creates and publishes
+        // their OWN Department Agent (v2_scope='department', ownership
+        // structural on the agent row, never an agent_department_assignments
+        // row — see ListForPrincipalAsync's chain 2 comment above) never got
+        // an entitlement row here, so it silently never appeared in that
+        // ADMIN's own My Agents/sidebar even while production+enabled and
+        // fully executable via GetDepartmentAgentManifestAsync(isAdmin:
+        // true). Same UNION shape as ListForPrincipalAsync's two chains, so
+        // sidebar visibility and runtime authorization agree for ADMIN too.
         const string sql = """
             SELECT
                 a.id              AS AgentId,
@@ -648,7 +659,27 @@ public sealed class AgentRepository : IAgentRepository
             WHERE department_assignment.tenant_id = @tenantId
               AND department_assignment.department_id = @departmentId
               AND department_assignment.status = 'active'
-            ORDER BY a.name
+
+            UNION
+
+            SELECT
+                a.id              AS AgentId,
+                a.code            AS AgentCode,
+                a.name            AS AgentName,
+                a.description     AS Description,
+                a.type            AS AgentType,
+                a.lifecycle_state AS LifecycleState,
+                version.version        AS PublishedVersion,
+                a.action_tier     AS ActionTier,
+                (a.disabled_at IS NOT NULL) AS AgentDisabled,
+                'department'      AS AccessLevel
+            FROM agents a
+            LEFT JOIN agent_versions version ON version.id = a.published_version_id
+            WHERE a.v2_scope = 'department'
+              AND a.owning_tenant_id = @tenantId
+              AND a.department_id = @departmentId
+
+            ORDER BY AgentName
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<PrincipalAgentRecord>(

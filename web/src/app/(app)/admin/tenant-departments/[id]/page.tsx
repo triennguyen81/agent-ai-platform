@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { ArrowLeft, Bot, Building2, Link2, Power, Puzzle, ShieldCheck, Users } from "lucide-react";
+import { ArrowLeft, Building2, Link2, Power, Puzzle, ShieldCheck, Users } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
 import { requireViewer } from "@/lib/authorization";
@@ -11,8 +11,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface DepartmentRecord { id: string; code: string; name: string; status: "active" | "inactive"; isDefault: boolean }
 interface TenantAccount { id: string; email: string; displayName: string | null; isActive: boolean; departmentId?: string | null }
-interface AssignedAgentRecord { agentId: string; slug: string; name: string; description: string | null; lifecycleState: string; enabled: boolean; assignedAt: string }
-interface DepartmentAgentEntitlementRecord { agentId: string; assigned: boolean }
 interface EligibleAgentRecord { agentId: string; slug: string; name: string }
 interface DepartmentCapabilityRecord {
   capabilityId: string; code: string; name: string; category: string | null;
@@ -68,31 +66,6 @@ async function moveOutAction(formData: FormData): Promise<void> {
   redirect(`/admin/tenant-departments/${currentId}?ok=moved&tab=members`);
 }
 
-async function assignAgentAction(formData: FormData): Promise<void> {
-  "use server";
-  await requireViewer(["tenant_owner"]);
-  const departmentId = String(formData.get("departmentId") ?? "");
-  const agentId = String(formData.get("agentId") ?? "");
-  if (!agentId) errorRedirect(departmentId, "chon-agent");
-  const token = await requireSession();
-  const res = await gateway.assignDepartmentAgent(token, departmentId, agentId);
-  if (!res.ok) errorRedirect(departmentId, await res.text());
-  revalidatePath(`/admin/tenant-departments/${departmentId}`);
-  redirect(`/admin/tenant-departments/${departmentId}?ok=agent-assigned&tab=agents`);
-}
-
-async function revokeAgentAction(formData: FormData): Promise<void> {
-  "use server";
-  await requireViewer(["tenant_owner"]);
-  const departmentId = String(formData.get("departmentId") ?? "");
-  const agentId = String(formData.get("agentId") ?? "");
-  const token = await requireSession();
-  const res = await gateway.revokeDepartmentAgent(token, departmentId, agentId);
-  if (!res.ok) errorRedirect(departmentId, "revoke-that-bai");
-  revalidatePath(`/admin/tenant-departments/${departmentId}`);
-  redirect(`/admin/tenant-departments/${departmentId}?ok=agent-revoked&tab=agents`);
-}
-
 export default async function TenantDepartmentDetailPage({
   params,
   searchParams,
@@ -105,13 +78,11 @@ export default async function TenantDepartmentDetailPage({
   const { ok, error, tab } = await searchParams;
   const token = await requireSession();
 
-  const [deptRes, allDeptsRes, usersRes, adminsRes, agentsRes, allAgentsRes, capabilitiesRes] = await Promise.all([
+  const [deptRes, allDeptsRes, usersRes, adminsRes, capabilitiesRes] = await Promise.all([
     gateway.getTenantDepartment(token, id),
     gateway.listTenantDepartments(token),
     gateway.listTenantUsers(token),
     gateway.listOwnTenantAdmins(token),
-    gateway.listDepartmentAgents(token, id),
-    gateway.listTenantAgents(token),
     gateway.listDepartmentCapabilities(token, id),
   ]);
 
@@ -127,16 +98,6 @@ export default async function TenantDepartmentDetailPage({
   const allAdmins: TenantAccount[] = adminsRes.ok ? ((await adminsRes.json()) as { items: TenantAccount[] }).items : [];
   const admins = allAdmins.filter((a) => a.departmentId === id);
 
-  const agents: DepartmentAgentEntitlementRecord[] = agentsRes.ok
-    ? ((await agentsRes.json()) as { items: DepartmentAgentEntitlementRecord[] }).items
-    : [];
-  const tenantAgents: AssignedAgentRecord[] = allAgentsRes.ok
-    ? ((await allAgentsRes.json()) as { items: AssignedAgentRecord[] }).items
-    : [];
-  const agentsById = new Map(tenantAgents.map((a) => [a.agentId, a]));
-  const assignedAgents = agents.filter((a) => a.assigned).map((a) => agentsById.get(a.agentId)).filter((a): a is AssignedAgentRecord => Boolean(a));
-  const assignableAgents = tenantAgents.filter((a) => !agents.find((x) => x.agentId === a.agentId && x.assigned));
-
   const capabilities: DepartmentCapabilityRecord[] = capabilitiesRes.ok
     ? ((await capabilitiesRes.json()) as { items: DepartmentCapabilityRecord[] }).items
     : [];
@@ -145,7 +106,6 @@ export default async function TenantDepartmentDetailPage({
     { value: "overview", label: "Overview" },
     { value: "members", label: `Members (${members.length})` },
     { value: "admins", label: `Admins (${admins.length})` },
-    { value: "agents", label: `Agents (${assignedAgents.length})` },
     { value: "capabilities", label: `Nghiệp vụ (${capabilities.length})` },
   ] as const;
   const defaultTab = TABS.some((t) => t.value === tab) ? (tab as string) : "overview";
@@ -224,54 +184,6 @@ export default async function TenantDepartmentDetailPage({
 
         <TabsContent value="admins" className="space-y-3">
           <MemberTable title="Admins" icon={<ShieldCheck className="mr-2 inline size-4" />} accounts={admins} departmentId={id} otherDepartments={otherDepartments} />
-        </TabsContent>
-
-        <TabsContent value="agents" className="space-y-3">
-          <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
-            <h2 className="font-serif text-lg"><Bot className="mr-2 inline size-4" /> Agents được gán ({assignedAgents.length})</h2>
-            <p className="text-xs text-[var(--color-muted-fg)]">
-              ADMIN của department này thực thi các agent dưới đây mà không cần gán trực tiếp cho từng user (D3).
-            </p>
-            <div className="overflow-hidden rounded border">
-              <table className="w-full text-sm">
-                <thead className="bg-[var(--color-muted)] text-xs uppercase text-[var(--color-muted-fg)]">
-                  <tr><th className="px-3 py-2 text-left">Agent</th><th className="px-3 py-2 text-right">—</th></tr>
-                </thead>
-                <tbody>
-                  {assignedAgents.length === 0 ? (
-                    <tr><td colSpan={2} className="px-3 py-4 text-center text-[var(--color-muted-fg)]">Chưa gán agent nào.</td></tr>
-                  ) : assignedAgents.map((a) => (
-                    <tr key={a.agentId} className="border-t">
-                      <td className="px-3 py-2">
-                        <div className="font-medium">{a.name}</div>
-                        <div className="font-mono text-[10px] text-[var(--color-muted-fg)]">{a.slug}</div>
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <form action={revokeAgentAction}>
-                          <input type="hidden" name="departmentId" value={id} />
-                          <input type="hidden" name="agentId" value={a.agentId} />
-                          <Button type="submit" size="sm" variant="ghost">Revoke</Button>
-                        </form>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {assignableAgents.length > 0 && (
-              <form action={assignAgentAction} className="flex flex-wrap items-end gap-2 border-t pt-3">
-                <input type="hidden" name="departmentId" value={id} />
-                <div className="flex-1 space-y-1.5">
-                  <Label htmlFor="agent-sel">Gán agent cho department</Label>
-                  <select id="agent-sel" name="agentId" required className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm">
-                    <option value="">— Chọn agent —</option>
-                    {assignableAgents.map((a) => <option key={a.agentId} value={a.agentId}>{a.name}</option>)}
-                  </select>
-                </div>
-                <Button type="submit" size="sm">Gán</Button>
-              </form>
-            )}
-          </section>
         </TabsContent>
 
         <TabsContent value="capabilities" className="space-y-3">

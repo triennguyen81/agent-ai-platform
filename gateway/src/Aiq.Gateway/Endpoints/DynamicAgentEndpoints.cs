@@ -37,8 +37,23 @@ public static class DynamicAgentEndpoints
         system.MapGet("/quarantine", ListQuarantinedAsync);
         system.MapPost("/{agentId:guid}/clone-to-department", CloneToDepartmentAsync);
 
+        // ACL V2 final rule: TENANT/TENANT_OWNER does not manage agents at
+        // all — not tenant entitlement, not department entitlement, not
+        // user assignment. This whole legacy scope='system' entitlement
+        // surface (tenant -> department -> user) predates Department Agent
+        // ownership (migration 024) and has no remaining caller in the
+        // product (every UI that used it — /admin/tenant-agents,
+        // /admin/tenant-users/{id}/agents, the Agents tab on
+        // /admin/tenant-departments/{id} — has been removed). Narrowed from
+        // "admin" (super_admin+tenant_owner+admin) to platform_admin
+        // (super_admin only) rather than deleted: the schema/data
+        // (agent_tenant_assignments etc.) stays fully intact for any
+        // still-existing platform-agent-to-tenant grant made via
+        // /system/agents/{id}/tenants, and a future SUPER_ADMIN-only
+        // internal tool could still reach these routes — TENANT_OWNER and
+        // ADMIN can no longer reach them by any means, UI or direct API.
         var tenant = app.MapGroup("/tenant/agents")
-            .RequireAuthorization("admin").RequireRateLimiting("default");
+            .RequireAuthorization("platform_admin").RequireRateLimiting("default");
         tenant.MapGet("/", ListTenantAgentsAsync);
         tenant.MapGet("/{agentId:guid}/users", ListUsersAsync);
         tenant.MapPut("/{agentId:guid}/users/{userId:guid}", AssignUserAsync);
@@ -48,13 +63,17 @@ public static class DynamicAgentEndpoints
         tenant.MapPut("/{agentId:guid}/knowledge/{noteId:guid}", AttachTenantKnowledgeAsync);
         tenant.MapDelete("/{agentId:guid}/knowledge/{noteId:guid}", DetachTenantKnowledgeAsync);
 
-        // D3: TENANT_OWNER-only department-agent entitlement management.
-        // ADMIN may NOT assign/revoke here (that would let a department
-        // manager grant itself agents its tenant owner never approved for
-        // that department) — mapped standalone with the literal
-        // tenant_owner policy, exactly like D2's /tenant/users/{id}/role.
+        // ACL V2 final rule (same as above): department-agent ENTITLEMENT
+        // (the legacy scope='system' agent -> department grant) is also no
+        // longer a TENANT_OWNER responsibility — "TENANT_OWNER must NOT...
+        // assign agents to departments." Its only UI caller (the Agents tab
+        // on /admin/tenant-departments/{id}) has been removed. Department
+        // Agent ownership (v2_scope='department', migration 024) was never
+        // gated by this group and is completely unaffected — ADMIN still
+        // creates/publishes/assigns their own Department Agents entirely
+        // through /department/agents, with no TENANT_OWNER step at all.
         var departmentAgents = app.MapGroup("/tenant/departments/{departmentId:guid}/agents")
-            .RequireAuthorization("tenant_governance").RequireRateLimiting("default");
+            .RequireAuthorization("platform_admin").RequireRateLimiting("default");
         departmentAgents.MapGet("/", ListDepartmentAgentsAsync);
         departmentAgents.MapPut("/{agentId:guid}", AssignDepartmentAgentAsync);
         departmentAgents.MapDelete("/{agentId:guid}", RevokeDepartmentAgentAsync);

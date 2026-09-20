@@ -9,13 +9,14 @@ public static class ExecutionAuthorizationRules
         bool isSuperAdmin,
         bool isTenantAdmin,
         bool sameTenant,
+        bool sameDepartment,
         bool tenantActive,
         bool userActive,
         bool agentPublished,
         bool agentEnabled,
         bool activeAssignment) =>
         userActive && tenantActive && agentPublished && agentEnabled
-        && (isSuperAdmin || (sameTenant && (isTenantAdmin || activeAssignment)));
+        && (isSuperAdmin || (sameTenant && sameDepartment && (isTenantAdmin || activeAssignment)));
 }
 
 public sealed record AgentExecutionAuthorization(
@@ -31,7 +32,7 @@ public sealed record AgentExecutionAuthorization(
 public interface IAgentAssignmentRepository
 {
     Task<AgentExecutionAuthorization?> AuthorizeExecutionAsync(
-        Guid userId, Guid? currentTenantId, bool isSuperAdmin, bool isTenantAdmin,
+        Guid userId, Guid? currentTenantId, Guid? currentDepartmentId, bool isSuperAdmin, bool isTenantAdmin,
         Guid agentId, CancellationToken ct);
 }
 
@@ -42,12 +43,27 @@ public sealed class AgentAssignmentRepository : IAgentAssignmentRepository
     public AgentAssignmentRepository(NpgsqlConnectionFactory factory) => _factory = factory;
 
     public async Task<AgentExecutionAuthorization?> AuthorizeExecutionAsync(
-        Guid userId, Guid? currentTenantId, bool isSuperAdmin, bool isTenantAdmin,
+        Guid userId, Guid? currentTenantId, Guid? currentDepartmentId, bool isSuperAdmin, bool isTenantAdmin,
         Guid agentId, CancellationToken ct)
     {
+        // ACL V2 review: this legacy pre-department authorization surface
+        // (also used directly by GET /runtime/agents/{id}/authorization and
+        // by AgentKnowledgeEndpoints.ContextAsync for RAG-context reads) used
+        // to check tenant match only — a Department Agent (v2_scope=
+        // 'department') has its tenant_id equal to its owning tenant (see
+        // agents_scope_ownership_valid), so an ADMIN of a DIFFERENT
+        // department in the SAME tenant previously satisfied
+        // `isTenantAdmin && sameTenant` and could read another department's
+        // agent config/knowledge — a cross-department leak. For a
+        // department-scoped agent, "same department" is now required in
+        // addition to "same tenant"; a legacy scope='system' agent
+        // (v2_scope IS NULL) keeps its exact prior behavior (department
+        // isolation for those is enforced further up the D3 entitlement
+        // chain, not here).
         const string sql = """
             SELECT a.id AS AgentId, a.tenant_id AS TenantId, a.code AS AgentCode,
                    a.lifecycle_state AS LifecycleState, a.config::text AS ConfigJson,
+                   a.v2_scope AS V2Scope, a.department_id AS AgentDepartmentId,
                    u.is_active AS UserActive, t.status = 'active' AS TenantActive,
                    a.lifecycle_state = 'production' AS AgentPublished,
                    a.disabled_at IS NULL AS AgentEnabled,
@@ -67,8 +83,9 @@ public sealed class AgentAssignmentRepository : IAgentAssignmentRepository
         if (row is null) return null;
 
         var sameTenant = currentTenantId == row.TenantId;
+        var sameDepartment = row.V2Scope != "department" || currentDepartmentId == row.AgentDepartmentId;
         var allowed = ExecutionAuthorizationRules.CanExecute(
-            isSuperAdmin, isTenantAdmin, sameTenant, row.TenantActive, row.UserActive,
+            isSuperAdmin, isTenantAdmin, sameTenant, sameDepartment, row.TenantActive, row.UserActive,
             row.AgentPublished, row.AgentEnabled, row.ActiveAssignment);
         var denial = allowed ? null
             : !row.UserActive ? "user_disabled"
@@ -76,6 +93,7 @@ public sealed class AgentAssignmentRepository : IAgentAssignmentRepository
             : !row.AgentPublished ? "agent_not_published"
             : !row.AgentEnabled ? "agent_disabled"
             : !sameTenant ? "cross_tenant"
+            : !sameDepartment ? "cross_department"
             : "agent_not_assigned";
 
         var codes = allowed
@@ -101,6 +119,6 @@ public sealed class AgentAssignmentRepository : IAgentAssignmentRepository
 
     private sealed record ExecutionRow(
         Guid AgentId, Guid TenantId, string AgentCode, string LifecycleState,
-        string ConfigJson, bool UserActive, bool TenantActive, bool AgentPublished,
-        bool AgentEnabled, bool ActiveAssignment);
+        string ConfigJson, string? V2Scope, Guid? AgentDepartmentId, bool UserActive, bool TenantActive,
+        bool AgentPublished, bool AgentEnabled, bool ActiveAssignment);
 }

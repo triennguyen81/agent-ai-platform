@@ -50,8 +50,9 @@ public static class AgentEndpoints
         var isSuperAdmin = ctx.User.IsInRole("super_admin");
         var isTenantAdmin = ctx.User.IsInRole("admin") || ctx.User.IsInRole("tenant_owner");
         Guid? tenantId = TenantContext.TryGet(ctx, out var tid) ? tid : null;
+        Guid? departmentId = AuthenticatedPrincipalContext.TryGet(ctx, out var principal) ? principal.DepartmentId : null;
         var result = await assignments.AuthorizeExecutionAsync(
-            userId, tenantId, isSuperAdmin, isTenantAdmin, id, ct);
+            userId, tenantId, departmentId, isSuperAdmin, isTenantAdmin, id, ct);
         if (result is null) return Results.NotFound();
         return result.Allowed ? Results.Ok(result) : Results.Json(
             new { error = result.DenialReason }, statusCode: StatusCodes.Status403Forbidden);

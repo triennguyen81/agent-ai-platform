@@ -369,9 +369,16 @@ export default async function TenantUsersPage({
                         <span className="text-xs text-[var(--color-muted-fg)]">Chủ sở hữu tenant — chỉ xem</span>
                       ) : (
                         <div className="flex flex-wrap items-center justify-end gap-3">
-                          <Link href={`/admin/tenant-users/${account.id}/agents`} className="text-[var(--color-primary)] hover:underline">
-                            Agent assignments
-                          </Link>
+                          {/*
+                            ACL V2 final rule: TENANT_OWNER/ADMIN do not
+                            manage Agent assignment at all — the "Agent
+                            assignments" link here used to open the legacy
+                            per-user tenant-agent entitlement screen
+                            (removed). Agent assignment for a USER now only
+                            ever happens on the owning Department Agent's own
+                            page (/department/agents/[id] → tab Nhân sự), by
+                            that department's ADMIN.
+                          */}
                           <details className="text-left">
                             <summary className="cursor-pointer text-[var(--color-primary)]">Sửa</summary>
                             <form action={editAccountAction} className="mt-2 flex gap-2">

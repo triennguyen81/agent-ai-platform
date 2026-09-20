@@ -95,8 +95,9 @@ public static class AgentKnowledgeEndpoints
         var isSuperAdmin = ctx.User.IsInRole("super_admin");
         var isTenantAdmin = ctx.User.IsInRole("admin") || ctx.User.IsInRole("tenant_owner");
         Guid? tenantId = TenantContext.TryGet(ctx, out var tid) ? tid : null;
+        Guid? departmentId = AuthenticatedPrincipalContext.TryGet(ctx, out var principal) ? principal.DepartmentId : null;
         var authorization = await assignments.AuthorizeExecutionAsync(
-            userId, tenantId, isSuperAdmin, isTenantAdmin, agentId, ct);
+            userId, tenantId, departmentId, isSuperAdmin, isTenantAdmin, agentId, ct);
         if (authorization is null) return Results.NotFound();
         if (!authorization.Allowed) return Results.Forbid();
         var items = await repo.ListForAgentAsync(authorization.TenantId, agentId, ct);

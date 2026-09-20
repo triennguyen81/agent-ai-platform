@@ -19,6 +19,16 @@ public sealed class PrincipalAuthorizationPolicyTests
         Assert.True(PrincipalAuthorizationPolicy.IsPlatformAdmin(platform));
         Assert.False(PrincipalAuthorizationPolicy.IsTenantGovernor(platform));
         Assert.True(PrincipalAuthorizationPolicy.IsTenantGovernor(owner));
+        // ACL V2 review: PATCH /tenant/users/{id}/department (the
+        // TENANT_OWNER-only "Chuyển phòng ban" move) is gated by this exact
+        // policy — an ADMIN must never pass it (an ADMIN could otherwise
+        // move a USER into their own department to gain new agent access,
+        // or out of it to dodge oversight — see UserEndpoints.cs's own
+        // comment on this route). IsTenantGovernor requires Role==
+        // "tenant_owner" exactly, so this was already true by construction;
+        // asserting it explicitly closes the gap that no test named this
+        // scenario.
+        Assert.False(PrincipalAuthorizationPolicy.IsTenantGovernor(admin));
         Assert.False(PrincipalAuthorizationPolicy.IsDepartmentAdmin(owner));
         Assert.True(PrincipalAuthorizationPolicy.IsDepartmentAdmin(admin));
         Assert.True(PrincipalAuthorizationPolicy.IsDepartmentMember(admin));
