@@ -86,6 +86,7 @@ public static class UserEndpoints
         tenantAdmins.MapPost("/", CreateTenantAdminAsync);
         tenantAdmins.MapPost("/{id:guid}/disable", DisableTenantAdminAsync);
         tenantAdmins.MapPost("/{id:guid}/enable", EnableTenantAdminAsync);
+        tenantAdmins.MapPost("/{id:guid}/reset-password", ResetTenantAdminPasswordAsync);
 
         // The sole TENANT_OWNER manages plain ADMIN accounts in their own
         // authenticated tenant. Neither tenant nor role is accepted from the
@@ -99,6 +100,7 @@ public static class UserEndpoints
         ownTenantAdmins.MapPatch("/{id:guid}", UpdateOwnTenantAdminAsync);
         ownTenantAdmins.MapPost("/{id:guid}/disable", DisableOwnTenantAdminAsync);
         ownTenantAdmins.MapPost("/{id:guid}/enable", EnableOwnTenantAdminAsync);
+        ownTenantAdmins.MapPost("/{id:guid}/reset-password", ResetOwnTenantAdminPasswordAsync);
 
         app.MapGet("/tenant/departments", ListDepartmentsAsync)
             .RequireAuthorization("tenant_governance")
@@ -132,6 +134,7 @@ public static class UserEndpoints
         tenantUsers.MapPatch("/{id:guid}", UpdateTenantUserAsync);
         tenantUsers.MapPost("/{id:guid}/disable", DisableTenantUserAsync);
         tenantUsers.MapPost("/{id:guid}/enable", EnableTenantUserAsync);
+        tenantUsers.MapPost("/{id:guid}/reset-password", ResetTenantUserPasswordAsync);
 
         // TENANT_OWNER-only USER<->ADMIN role flip for the unified tenant
         // accounts screen. Mapped standalone (not inside the "admin"-policy
@@ -285,6 +288,59 @@ public static class UserEndpoints
     private static async Task<IResult> EnableTenantAdminAsync(
         Guid tenantId, Guid id, IUserRepository users, CancellationToken ct) =>
         await SetTenantAdminActiveAsync(tenantId, id, isActive: true, users, ct);
+
+    private static async Task<IResult> ResetTenantAdminPasswordAsync(
+        Guid tenantId, Guid id, ResetPasswordRequest request,
+        IUserRepository users, IPasswordHasher hasher, IAuditLogger audit, HttpContext ctx, CancellationToken ct) =>
+        await ResetTenantAdminPasswordCoreAsync(tenantId, id, request, users, hasher, audit, ctx, ct);
+
+    private static async Task<IResult> ResetOwnTenantAdminPasswordAsync(
+        Guid id, ResetPasswordRequest request,
+        IUserRepository users, IPasswordHasher hasher, IAuditLogger audit, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TenantContext.TryGet(ctx, out var tenantId))
+            return Results.BadRequest(new { error = "tenant_context_missing" });
+        return await ResetTenantAdminPasswordCoreAsync(tenantId, id, request, users, hasher, audit, ctx, ct);
+    }
+
+    /// <summary>
+    /// Shared by the SUPER_ADMIN route (tenantId from the URL) and the
+    /// TENANT_OWNER route (tenantId from TenantContext) — same sharing
+    /// pattern as SetTenantAdminActiveAsync below. Scoped strictly to plain
+    /// admins of the given tenant, exactly like that method: never touches
+    /// a super_admin/tenant_owner account even if ids were guessed or
+    /// mismatched, and self-targeting is structurally impossible here since
+    /// neither a SUPER_ADMIN nor a TENANT_OWNER caller ever holds role
+    /// 'admin' themselves.
+    /// </summary>
+    private static async Task<IResult> ResetTenantAdminPasswordCoreAsync(
+        Guid tenantId, Guid id, ResetPasswordRequest request,
+        IUserRepository users, IPasswordHasher hasher, IAuditLogger audit, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
+        if (request.NewPassword != request.ConfirmPassword)
+            return Results.BadRequest(new { error = "password_confirmation_mismatch" });
+
+        var target = await users.FindByIdAsync(id, ct);
+        if (target is null || target.TenantId != tenantId) return Results.NotFound();
+
+        var targetRoles = await users.GetRolesAsync(id, ct);
+        if (!targetRoles.Contains("admin") || targetRoles.Contains("super_admin"))
+            return Results.NotFound();
+
+        var actorRaw = ctx.User.FindFirst("sub")?.Value;
+        Guid.TryParse(actorRaw, out var actorId);
+
+        var hash = hasher.Hash(request.NewPassword);
+        var ok = await users.SetPasswordHashAsync(id, hash, mustChangePassword: true, ct);
+        if (!ok) return Results.NotFound();
+
+        await audit.WriteAsync(new AuditEntry(
+            actorId, "PASSWORD_RESET", "user", id.ToString(),
+            new { targetUserId = id }, ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
+
+        return Results.Ok(new { userId = id, mustChangePassword = true });
+    }
 
     private static async Task<IResult> UpdateOwnTenantAdminAsync(
         Guid id,
@@ -692,6 +748,50 @@ public static class UserEndpoints
 
         var ok = await users.SetActiveAsync(id, isActive, ct);
         return ok ? Results.Ok(new { userId = id, isActive }) : Results.NotFound();
+    }
+
+    /// <summary>
+    /// ADMIN/TENANT_OWNER resetting a role='user' account's password.
+    /// Exact same scope/shape as SetTenantUserActiveAsync above: plain
+    /// ADMIN is department-scoped (SetDepartmentUserPasswordAsync's SQL
+    /// requires role='user', which structurally excludes the caller's own
+    /// account too — an ADMIN's own role is never 'user'), TENANT_OWNER is
+    /// tenant-scoped. Never resettable here: admin, tenant_owner,
+    /// super_admin — those go through the /tenant/admins* or
+    /// /system/tenants/*/admins* routes instead.
+    /// </summary>
+    private static async Task<IResult> ResetTenantUserPasswordAsync(
+        Guid id, ResetPasswordRequest request,
+        IUserRepository users, IPasswordHasher hasher, IAuditLogger audit, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId)
+            return Results.BadRequest(new { error = "tenant_context_missing" });
+        if (request.NewPassword != request.ConfirmPassword)
+            return Results.BadRequest(new { error = "password_confirmation_mismatch" });
+
+        var target = await users.FindByIdAsync(id, ct);
+        // 404 (not 403) for cross-tenant/non-existent targets alike, same
+        // convention as SetTenantUserActiveAsync.
+        if (target is null || target.TenantId != tenantId) return Results.NotFound();
+
+        var targetRoles = await users.GetRolesAsync(id, ct);
+        if (!targetRoles.Contains("user") || targetRoles.Contains("admin")
+            || targetRoles.Contains("tenant_owner") || targetRoles.Contains("super_admin"))
+            return Results.NotFound();
+
+        var hash = hasher.Hash(request.NewPassword);
+        var ok = principal.IsInRole("tenant_owner")
+            ? await users.SetPasswordHashAsync(id, hash, mustChangePassword: true, ct)
+            : await users.SetDepartmentUserPasswordAsync(
+                tenantId, principal.DepartmentId!.Value, id, hash, mustChangePassword: true, ct);
+        if (!ok) return Results.NotFound();
+
+        await audit.WriteAsync(new AuditEntry(
+            principal.UserId, "PASSWORD_RESET", "user", id.ToString(),
+            new { targetUserId = id }, ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
+
+        return Results.Ok(new { userId = id, mustChangePassword = true });
     }
 
     private static bool TryValidate(object instance, out Dictionary<string, string[]> errors)

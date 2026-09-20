@@ -1,0 +1,252 @@
+{
+  "_note": "Luồng 03 — Hoá đơn thanh toán / đề nghị hoàn ứng. Each case gives: POST /vouchers (voucherType=expense_claim), then PATCH /vouchers/{{voucherId}}/apply-extraction with an extractedFields body (snake_case keys — this blob follows the extraction-skill schema, agent/skills/voucher-universal-extractor/SKILL.md, not the C# camelCase API DTOs), then POST /vouchers/{{voucherId}}/expense-claim-result/propose. Approval-chain calls (department-review/accounting-review/apply-expense) use the exact routes added for R14 (gateway/src/Aiq.Gateway/Endpoints/VoucherEndpoints.cs). All category names below must exist in the expense_policies loaded from master_data.json for the case to behave as documented. VERIFIED LIVE (2026-09-15) against a freshly-bootstrapped isolated instance: EXP-001's full propose -> tax-verification-gate -> 3-stage-approval -> journal-proposal chain reproduced every expected number exactly. IMPORTANT (found during that verification): the 3-stage chain requires 4 DISTINCT people in total — whoever creates/proposes the voucher can NEVER perform department-review, accounting-review, OR apply-expense on it (self-approval is blocked with 403 at every one of those 3 calls, not just the final one) — always use an admin account that did not create the voucher for all 3 stages, and a different admin for each of the 3 stages.",
+
+  "cases": [
+    {
+      "caseId": "EXP-001",
+      "label": "Normal claim with advance — approved amount exceeds the advance, company owes the employee the difference",
+      "employeeRef": "NV-001",
+      "create": { "method": "POST", "path": "/vouchers", "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1001" } },
+      "applyExtraction": {
+        "method": "PATCH", "path": "/vouchers/{{voucherId}}/apply-extraction",
+        "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1001", "extractedFields": {
+          "employee_code": "NV-001", "total_claim": 3500000, "advance_taken": 3000000, "currency": "VND",
+          "items": [{ "category": "airfare", "description": "Vé máy bay SGN-HAN — PRJ-014", "amount": 3500000, "receipt_attached": true, "vendor_mst": "0100107638", "invoice_no": "HD0012345", "vat_amount": 318182 }]
+        } }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/expense-claim-result/propose" },
+      "approvalChain": ["department-review (Admin A)", "accounting-review (Admin B, distinct from A)", "apply-expense (Admin C, distinct from A and B)"],
+      "expected": {
+        "outcome": "APPROVED",
+        "approvedAmount": 3500000, "blockedAmount": 0, "cappedAmount": 0, "nonDeductibleAmount": 0,
+        "vatAmount": 318182, "vatDeductibleAmount": 318182,
+        "advanceAmount": 3000000, "payableAmount": 500000,
+        "requiresTaxVerification": true,
+        "journalProposal_afterFullApproval": [
+          { "debitAccount": "641", "creditAccount": "141", "amount": 3000000, "description": "Chi phí — airfare" },
+          { "debitAccount": "641", "creditAccount": "334", "amount": 500000, "description": "Chi phí — airfare" },
+          { "debitAccount": "1331", "creditAccount": "334", "amount": 318182, "description": "Thuế GTGT được khấu trừ" }
+        ],
+        "gateBeforeFinalApproval": "apply-expense returns 409 tax_verification_required until POST /vouchers/{{voucherId}}/tax-verification/confirm is called (a real invoice_no is present)."
+      }
+    },
+    {
+      "caseId": "EXP-002",
+      "label": "Claim without advance",
+      "employeeRef": "NV-003",
+      "create": { "method": "POST", "path": "/vouchers", "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1002" } },
+      "applyExtraction": {
+        "method": "PATCH", "path": "/vouchers/{{voucherId}}/apply-extraction",
+        "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1002", "extractedFields": {
+          "employee_code": "NV-003", "total_claim": 300000, "advance_taken": 0, "currency": "VND",
+          "items": [{ "category": "meal", "description": "Ăn trưa công tác", "amount": 300000, "receipt_attached": true }]
+        } }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/expense-claim-result/propose" },
+      "expected": {
+        "outcome": "APPROVED", "approvedAmount": 300000, "advanceAmount": 0, "payableAmount": 300000,
+        "requiresTaxVerification": false,
+        "note": "meal category has no vendor_mst/invoice_no in this line — CIT non-deductible would apply if requiresTaxVerification mattered here, but the policy for 'meal' does not require a receipt either way; approvedAmount is fully reimbursable."
+      }
+    },
+    {
+      "caseId": "EXP-003",
+      "label": "Hotel over policy",
+      "employeeRef": "NV-001",
+      "create": { "method": "POST", "path": "/vouchers", "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1003" } },
+      "applyExtraction": {
+        "method": "PATCH", "path": "/vouchers/{{voucherId}}/apply-extraction",
+        "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1003", "extractedFields": {
+          "employee_code": "NV-001", "total_claim": 3000000, "advance_taken": 0, "currency": "VND",
+          "items": [{ "category": "hotel", "description": "KS Melia Hà Nội 2 đêm", "amount": 3000000, "receipt_attached": true, "vendor_mst": "0200000008", "invoice_no": "HD0007788" }]
+        } }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/expense-claim-result/propose" },
+      "expected": {
+        "outcome": "PARTIALLY_APPROVED",
+        "approvedAmount": 1500000, "cappedAmount": 1500000,
+        "note": "The current policy engine applies a FLAT per_item cap (department_expense_policies.limit_amount) regardless of the limit_unit label ('per_night' is descriptive only — there is no night-count/quantity field on an expense item to multiply by). With NV-001's rank (Chuyên viên) capped at 1,500,000 per item, a 3,000,000 claim is cut to exactly 1,500,000, not the business document's illustrative 2,400,000 (which implies a 2-night multiplier the code does not currently implement) — see BUSINESS_SAMPLE_TEST_MATRIX.md for this discrepancy note.",
+        "rankComparison": "The SAME line submitted for NV-002 (Trưởng phòng, limit 2,500,000) would cap to 2,500,000 instead — see master_data.json expense_policies."
+      }
+    },
+    {
+      "caseId": "EXP-004",
+      "label": "No valid invoice (missing required receipt — blocks the whole claim, not just one line)",
+      "employeeRef": "NV-003",
+      "create": { "method": "POST", "path": "/vouchers", "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1004" } },
+      "applyExtraction": {
+        "method": "PATCH", "path": "/vouchers/{{voucherId}}/apply-extraction",
+        "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1004", "extractedFields": {
+          "employee_code": "NV-003", "total_claim": 2000000, "advance_taken": 0, "currency": "VND",
+          "items": [{ "category": "conference", "description": "Hội thảo ngành — chưa có hoá đơn", "amount": 2000000, "receipt_attached": false }]
+        } }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/expense-claim-result/propose" },
+      "expected": {
+        "outcome": "RETURN_FOR_DOCUMENTS",
+        "missingDocuments": "Thiếu chứng từ cho: conference: Hội thảo ngành — chưa có hoá đơn",
+        "journalProposal": "NONE — RETURN_FOR_DOCUMENTS can never reach apply-expense (explicit 400 guard)",
+        "reviewStatus": "proposed — claim stays open for the employee to attach the missing receipt and re-propose"
+      }
+    },
+    {
+      "caseId": "EXP-005",
+      "label": "Cancelled invoice — passes duplicate/policy checks at propose time, then BLOCKED at final approval by the tax-verification gate",
+      "employeeRef": "NV-004",
+      "create": { "method": "POST", "path": "/vouchers", "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1005" } },
+      "applyExtraction": {
+        "method": "PATCH", "path": "/vouchers/{{voucherId}}/apply-extraction",
+        "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1005", "extractedFields": {
+          "employee_code": "NV-004", "total_claim": 2000000, "advance_taken": 0, "currency": "VND",
+          "items": [{ "category": "meal", "description": "Tiếp khách — NH Ngon", "amount": 2000000, "receipt_attached": true, "vendor_mst": "0200000004", "invoice_no": "HD0009900" }]
+        } }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/expense-claim-result/propose" },
+      "rejectTaxVerification": { "method": "POST", "path": "/vouchers/{{voucherId}}/tax-verification/reject", "body": { "reason": "Hoá đơn HD0009900 đã bị huỷ trên cổng thuế ngày 25/08/2026", "providerUnavailable": false } },
+      "expected": {
+        "outcomeAtPropose": "APPROVED (propose does NOT check tax-portal status — that's a separate, later gate; the business document's own worked example shows this line blocked immediately, but the current implementation checks it only at final payment approval)",
+        "approvedAmountAtPropose": 2000000,
+        "afterRejectTaxVerification": { "taxVerificationStatus": "invalid" },
+        "applyExpenseResult": "409 { error: 'tax_verification_required', taxVerificationStatus: 'invalid', reason: 'Hoá đơn HD0009900 đã bị huỷ trên cổng thuế ngày 25/08/2026' } — final payment approval is blocked",
+        "discrepancyNote": "See BUSINESS_SAMPLE_TEST_MATRIX.md — this is an honest gap between the business document (blocks immediately at propose) and the current implementation (blocks at final approval only), not something this fixture pack papers over."
+      }
+    },
+    {
+      "caseId": "EXP-006",
+      "label": "Duplicate invoice — same vendor_mst+invoice_no claimed on a SECOND, separate voucher after the first is already confirmed",
+      "employeeRef": "NV-003",
+      "steps": [
+        { "step": "EC-2026-1006A: create + apply-extraction + propose + full 3-stage approval chain (this is the ORIGINAL, legitimate claim)",
+          "extractedFields": { "employee_code": "NV-003", "total_claim": 880000, "advance_taken": 0, "currency": "VND",
+            "items": [{ "category": "meal", "description": "Ăn uống — NH Sen Tây Hồ", "amount": 880000, "receipt_attached": true, "vendor_mst": "0200000006", "invoice_no": "HD0004411" }] } },
+        { "step": "EC-2026-1006B: create + apply-extraction + propose, citing the SAME vendor_mst+invoice_no as 1006A",
+          "extractedFields": { "employee_code": "NV-003", "total_claim": 880000, "advance_taken": 0, "currency": "VND",
+            "items": [{ "category": "meal", "description": "Ăn uống — NH Sen Tây Hồ (đã ghi sổ ở EC-2026-1006A)", "amount": 880000, "receipt_attached": true, "vendor_mst": "0200000006", "invoice_no": "HD0004411" }] } }
+      ],
+      "expected": {
+        "1006A_outcome": "APPROVED, approvedAmount 880000",
+        "1006B_outcome": "REJECTED (allBlocked — the claim's only line is entirely duplicate)",
+        "1006B_duplicateFlags": [{ "seq": 1, "reason": "duplicate_of_existing_voucher", "vendorMst": "0200000006", "invoiceNo": "HD0004411" }],
+        "1006B_blockedAmount": 880000
+      }
+    },
+    {
+      "caseId": "EXP-007",
+      "label": "Exception approval — claim exceeds the policy cap but has a legitimate reason; ADMIN grants an exception",
+      "employeeRef": "NV-001",
+      "create": { "method": "POST", "path": "/vouchers", "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1007" } },
+      "applyExtraction": {
+        "method": "PATCH", "path": "/vouchers/{{voucherId}}/apply-extraction",
+        "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1007", "extractedFields": {
+          "employee_code": "NV-001", "total_claim": 3000000, "advance_taken": 0, "currency": "VND",
+          "items": [{ "category": "conference", "description": "Hội thảo ngành — vượt định mức, có lý do chính đáng", "amount": 3000000, "receipt_attached": true, "vendor_mst": "0200000001", "invoice_no": "HD0088001" }]
+        } }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/expense-claim-result/propose" },
+      "grantException": { "method": "POST", "path": "/vouchers/{{voucherId}}/grant-expense-exception", "note": "department_admin, not the claim's own creator" },
+      "expected": {
+        "outcomeAtPropose": "WAITING_EXCEPTION_APPROVAL", "approvedAmountAtPropose": 2000000, "cappedAmountAtPropose": 1000000,
+        "notification": "expense_claim_exception_pending fan-out to all Accounting-dept admins",
+        "outcomeAfterGrant": "APPROVED", "approvedAmountAfterGrant": 3000000,
+        "reviewStatusAfterGrant": "proposed — granting an exception never settles the ledger by itself; it re-enters the full 3-stage chain (per the business document: 'sau đó quay lại nhánh duyệt')"
+      }
+    },
+    {
+      "caseId": "EXP-008",
+      "label": "Blocked line — two lines in the SAME claim cite the same invoice",
+      "employeeRef": "NV-004",
+      "create": { "method": "POST", "path": "/vouchers", "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1008" } },
+      "applyExtraction": {
+        "method": "PATCH", "path": "/vouchers/{{voucherId}}/apply-extraction",
+        "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1008", "extractedFields": {
+          "employee_code": "NV-004", "total_claim": 700000, "advance_taken": 0, "currency": "VND",
+          "items": [
+            { "category": "meal", "description": "Ăn trưa", "amount": 200000, "receipt_attached": true },
+            { "category": "airfare", "description": "Vé máy bay (đã ghi trùng số hoá đơn ở dòng khác trong cùng đề nghị)", "amount": 500000, "receipt_attached": true, "vendor_mst": "0100107638", "invoice_no": "HD-DUP-01" },
+            { "category": "airfare", "description": "Vé máy bay (trùng)", "amount": 500000, "receipt_attached": true, "vendor_mst": "0100107638", "invoice_no": "HD-DUP-01" }
+          ]
+        } }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/expense-claim-result/propose" },
+      "expected": {
+        "outcome": "PARTIALLY_APPROVED",
+        "approvedAmount": 700000,
+        "blockedAmount": 500000,
+        "duplicateFlags": [{ "seq": 3, "reason": "duplicate_within_claim", "vendorMst": "0100107638", "invoiceNo": "HD-DUP-01" }],
+        "note": "The SECOND occurrence (seq 3) is the one blocked — the first (seq 2) is treated as the legitimate original."
+      }
+    },
+    {
+      "caseId": "EXP-009",
+      "label": "VAT non-deductible",
+      "employeeRef": "NV-003",
+      "create": { "method": "POST", "path": "/vouchers", "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1009" } },
+      "applyExtraction": {
+        "method": "PATCH", "path": "/vouchers/{{voucherId}}/apply-extraction",
+        "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1009", "extractedFields": {
+          "employee_code": "NV-003", "total_claim": 450000, "advance_taken": 0, "currency": "VND",
+          "items": [{ "category": "taxi", "description": "Biên lai taxi, không hoá đơn GTGT", "amount": 450000, "receipt_attached": true }]
+        } }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/expense-claim-result/propose" },
+      "expected": {
+        "outcome": "APPROVED", "approvedAmount": 450000, "vatAmount": 0, "vatDeductibleAmount": 0,
+        "note": "No invoice_no on this line -> vatDeductibleAmount contribution is 0 (never fabricated as a % guess of amount). IMPORTANT: in the current expense_claim implementation, VAT-non-deductible and CIT-non-deductible are driven by the SAME single condition (missing invoice_no) — see EXP-010 and BUSINESS_SAMPLE_TEST_MATRIX.md; an item cannot currently be VAT-non-deductible while remaining CIT-deductible in this flow, even though the two amounts are tracked as independent numbers for exactly that future-need reason."
+      }
+    },
+    {
+      "caseId": "EXP-010",
+      "label": "CIT non-deductible (same underlying mechanic as EXP-009 — see note there)",
+      "employeeRef": "NV-004",
+      "create": { "method": "POST", "path": "/vouchers", "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1010" } },
+      "applyExtraction": {
+        "method": "PATCH", "path": "/vouchers/{{voucherId}}/apply-extraction",
+        "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1010", "extractedFields": {
+          "employee_code": "NV-004", "total_claim": 350000, "advance_taken": 0, "currency": "VND",
+          "items": [{ "category": "meal", "description": "Ăn uống — Nhà hàng Sen Tây Hồ, hộ kinh doanh không xuất được hoá đơn GTGT", "amount": 350000, "receipt_attached": true, "vendor_mst": null }]
+        } }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/expense-claim-result/propose" },
+      "expected": {
+        "outcome": "APPROVED", "approvedAmount": 350000, "nonDeductibleAmount": 350000,
+        "note": "Reimbursed to the employee in full (approvedAmount includes it), but flagged non_deductible_amount for CIT settlement — 'chi phí không hoá đơn vẫn được ghi nhận nhưng đánh dấu để loại khi quyết toán', per the business document."
+      }
+    },
+    {
+      "caseId": "EXP-011",
+      "label": "Self-approval attempt (must be blocked)",
+      "employeeRef": "N/A — the voucher creator must be a department_admin account (see curl_examples.sh bootstrap)",
+      "steps": [
+        "1. Admin A creates an expense_claim voucher and proposes it (allowed — proposing is not a ledger consequence).",
+        "2. Admin A attempts POST /vouchers/{{voucherId}}/expense-claim/department-review -> expect 403.",
+        "3. Admin A attempts POST /vouchers/{{voucherId}}/apply-expense -> expect 403.",
+        "4. Admin A attempts POST /vouchers/{{voucherId}}/reject-expense-claim -> expect 403."
+      ],
+      "expected": { "allThreeCalls": "403 Forbidden — BusinessModuleAuthorization.IsSelfApproval blocks every ledger-consequence action for the claim's own creator, at every stage" }
+    },
+    {
+      "caseId": "EXP-012",
+      "label": "Wrong approval-stage attempt (skip / repeat-actor, must be blocked)",
+      "employeeRef": "NV-002",
+      "create": { "method": "POST", "path": "/vouchers", "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1012" } },
+      "applyExtraction": {
+        "method": "PATCH", "path": "/vouchers/{{voucherId}}/apply-extraction",
+        "body": { "voucherType": "expense_claim", "documentNumber": "EC-2026-1012", "extractedFields": {
+          "employee_code": "NV-002", "total_claim": 100000, "advance_taken": 0, "currency": "VND",
+          "items": [{ "category": "meal", "description": "Ăn trưa", "amount": 100000, "receipt_attached": true }]
+        } }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/expense-claim-result/propose" },
+      "steps": [
+        "1. Admin B (not the creator) calls POST /accounting-review directly, skipping department-review -> expect 409 (still review_status='proposed').",
+        "2. Admin B calls POST /apply-expense directly -> expect 409 (still 'proposed', needs 'accounting_reviewed').",
+        "3. Admin B calls POST /department-review -> expect 200, review_status becomes 'dept_reviewed'.",
+        "4. Admin B (SAME actor as step 3) calls POST /accounting-review -> expect 409 (separation of duties: must be a different admin).",
+        "5. Admin C calls POST /accounting-review -> expect 200, review_status becomes 'accounting_reviewed'.",
+        "6. Admin B or Admin C calls POST /apply-expense -> expect 409 (must be a THIRD distinct admin).",
+        "7. Admin D calls POST /apply-expense -> expect 200, review_status becomes 'confirmed'."
+      ],
+      "expected": { "sequenceEnforced": "Exactly as in gateway/tests-adjacent E2E test_expense_payment_e2e.sh §15 — 3 distinct actors required, never the creator, no skipping, no repeat-actor." }
+    }
+  ]
+}

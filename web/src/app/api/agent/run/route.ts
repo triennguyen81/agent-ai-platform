@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { agent, gateway } from "@/lib/api";
-import { getSession, getActiveAgent } from "@/lib/auth";
+import { getSession, getActiveAgent, namespacedThreadId } from "@/lib/auth";
 
 interface AgentRunBody {
   task?: string;
@@ -8,6 +8,7 @@ interface AgentRunBody {
   max_turns?: number;
   agent_id?: string;
   capability?: string;
+  thread_id?: string;
 }
 
 interface MyAgent {
@@ -68,6 +69,7 @@ export async function POST(request: NextRequest) {
     capability: body.capability,
     skills: body.skills,
     max_turns: body.max_turns ?? 8,
+    thread_id: namespacedThreadId(token, body.thread_id),
   });
 
   const text = await res.text();

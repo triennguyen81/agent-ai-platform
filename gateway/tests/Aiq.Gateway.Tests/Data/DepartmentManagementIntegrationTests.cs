@@ -86,6 +86,7 @@ public sealed class DepartmentManagementIntegrationTests : IAsyncLifetime
             );
             CREATE TABLE users (
                 id UUID PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
+                must_change_password BOOLEAN NOT NULL DEFAULT false,
                 display_name TEXT, is_active BOOLEAN NOT NULL DEFAULT true,
                 tenant_id UUID REFERENCES tenants(id) ON DELETE RESTRICT,
                 external_provider TEXT, external_id TEXT,

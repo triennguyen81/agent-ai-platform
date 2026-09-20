@@ -108,6 +108,15 @@ public interface ITenantRepository
     /// </summary>
     Task<TenantRecord> TransferOwnershipAsync(
         Guid tenantId, Guid actorUserId, Guid successorUserId, string predecessorAction, CancellationToken ct);
+
+    // The ONE trusted "who are we" identity for deterministic Sales/Purchase
+    // direction resolution (Accounting/InvoiceDirectionResolver.cs) — never
+    // set from an LLM, document text, or a client-supplied value at apply
+    // time; only ever changed here, by a tenant_governance-scoped actor.
+    // Null until a TENANT_OWNER explicitly configures it, in which case
+    // direction resolution safely returns NeedsReview rather than guessing.
+    Task<string?> GetCompanyTaxIdAsync(Guid tenantId, CancellationToken ct);
+    Task SetCompanyTaxIdAsync(Guid tenantId, string? companyTaxId, CancellationToken ct);
 }
 
 public sealed class TenantOwnershipTransferException : InvalidOperationException
@@ -520,5 +529,20 @@ public sealed class TenantRepository : ITenantRepository
         // (23505/23514 -> 409).
         await tx.CommitAsync(ct);
         return updatedTenant;
+    }
+
+    public async Task<string?> GetCompanyTaxIdAsync(Guid tenantId, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.ExecuteScalarAsync<string?>(new CommandDefinition(
+            "SELECT company_tax_id FROM tenants WHERE id=@tenantId", new { tenantId }, cancellationToken: ct));
+    }
+
+    public async Task SetCompanyTaxIdAsync(Guid tenantId, string? companyTaxId, CancellationToken ct)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            "UPDATE tenants SET company_tax_id=@companyTaxId, updated_at=NOW() WHERE id=@tenantId",
+            new { tenantId, companyTaxId }, cancellationToken: ct));
     }
 }

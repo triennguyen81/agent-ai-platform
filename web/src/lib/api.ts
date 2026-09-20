@@ -43,6 +43,13 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  changePassword(token: string, payload: { currentPassword: string; newPassword: string; confirmPassword: string }) {
+    return call(GATEWAY_BASE, "/me/change-password", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
   listNotes(token: string) {
     return call(GATEWAY_BASE, "/notes", {
       headers: { Authorization: `Bearer ${token}` },
@@ -247,6 +254,16 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  // SUPER_ADMIN resetting a tenant ADMIN's password. Not yet wired to a UI
+  // screen (same as disable/enable above — this whole route family has no
+  // frontend caller today); kept for API parity and future use.
+  resetTenantAdminPassword(token: string, tenantId: string, userId: string, payload: { newPassword: string; confirmPassword: string }) {
+    return call(GATEWAY_BASE, `/system/tenants/${tenantId}/admins/${userId}/reset-password`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
   // TENANT_OWNER: manage plain administrators in the authenticated tenant.
   // There is intentionally no tenantId or role argument.
   listOwnTenantAdmins(token: string) {
@@ -265,6 +282,14 @@ export const gateway = {
     return call(GATEWAY_BASE, `/tenant/admins/${userId}/${isActive ? "enable" : "disable"}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // TENANT_OWNER resetting a plain ADMIN's password in their own tenant.
+  resetOwnTenantAdminPassword(token: string, userId: string, payload: { newPassword: string; confirmPassword: string }) {
+    return call(GATEWAY_BASE, `/tenant/admins/${userId}/reset-password`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
     });
   },
   updateOwnTenantAdmin(token: string, userId: string, payload: { displayName?: string }) {
@@ -309,6 +334,21 @@ export const gateway = {
   getMyTenantQuota(token: string) {
     return call(GATEWAY_BASE, "/tenant/quota", {
       headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // The authoritative "who are we" tax ID InvoiceDirectionResolver uses to
+  // classify Sales vs Purchase. TENANT_OWNER-only (tenant_governance).
+  // Tenant is always derived server-side from the JWT.
+  getCompanyProfile(token: string) {
+    return call(GATEWAY_BASE, "/tenant/company-profile", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  updateCompanyProfile(token: string, payload: { companyTaxId: string | null }) {
+    return call(GATEWAY_BASE, "/tenant/company-profile", {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
   },
   listTenantMembers(token: string, tenantId: string) {
@@ -1099,6 +1139,16 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  // ADMIN (own department) / TENANT_OWNER (own tenant) resetting a
+  // role='user' account's password. Never touches admin/tenant_owner rows
+  // — see resetOwnTenantAdminPassword / resetTenantAdminPassword below.
+  resetTenantUserPassword(token: string, userId: string, payload: { newPassword: string; confirmPassword: string }) {
+    return call(GATEWAY_BASE, `/tenant/users/${userId}/reset-password`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
   listTenantAgentUsers(token: string, agentId: string) {
     return call(GATEWAY_BASE, `/tenant/agents/${agentId}/users`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -1334,6 +1384,28 @@ export const gateway = {
       cache: "no-store",
     });
   },
+  // Contract Upload page: upload a PDF/DOCX/PNG/JPG, get extracted text
+  // back — never creates a contract by itself.
+  extractContractText(token: string, formData: FormData) {
+    // multipart — do not set Content-Type manually.
+    return fetch(`${GATEWAY_BASE}/contracts/extract-text`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+      cache: "no-store",
+    });
+  },
+  // Accounting Invoice page: upload a PDF/DOCX/PNG/JPG/XML, get extracted
+  // text back — never creates/applies any accounting mutation.
+  extractInvoiceText(token: string, formData: FormData) {
+    // multipart — do not set Content-Type manually.
+    return fetch(`${GATEWAY_BASE}/accounting/invoice/extract-text`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+      cache: "no-store",
+    });
+  },
   customerByMst(token: string, mst: string) {
     return call(GATEWAY_BASE, `/customers/by-mst/${encodeURIComponent(mst)}`, {
       method: "GET",
@@ -1502,8 +1574,16 @@ export const agent = {
       body: JSON.stringify(payload),
     });
   },
-  listThreads(token: string, prefix: string, limit = 50) {
+  listThreads(
+    token: string,
+    prefix: string,
+    limit = 50,
+    mode?: "chat" | "agentic",
+    agentId?: string | null,
+  ) {
     const params = new URLSearchParams({ prefix, limit: String(limit) });
+    if (mode) params.set("mode", mode);
+    if (agentId) params.set("agent_id", agentId);
     return call(AGENT_BASE, `/chat/threads?${params.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -1514,6 +1594,7 @@ export const agent = {
     capability?: string;
     skills?: string[];
     max_turns?: number;
+    thread_id?: string;
   }) {
     return call(AGENT_BASE, "/agent/run", {
       method: "POST",
@@ -1543,10 +1624,15 @@ export const agent = {
       body: JSON.stringify(payload),
     });
   },
-  getThread(token: string, threadId: string) {
-    return call(AGENT_BASE, `/chat/threads/${encodeURIComponent(threadId)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+  getThread(token: string, threadId: string, agentId?: string | null) {
+    const params = new URLSearchParams();
+    if (agentId) params.set("agent_id", agentId);
+    const qs = params.toString();
+    return call(
+      AGENT_BASE,
+      `/chat/threads/${encodeURIComponent(threadId)}${qs ? `?${qs}` : ""}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
   },
   clearThread(token: string, threadId: string) {
     return call(AGENT_BASE, `/chat/threads/${encodeURIComponent(threadId)}`, {

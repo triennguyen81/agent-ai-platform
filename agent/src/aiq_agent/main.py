@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import os
+import asyncio
+from contextlib import suppress
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 
+from aiq_agent.api.document_routes import router as document_router
 from aiq_agent.api.ocr_routes import router as ocr_router
 from aiq_agent.api.routes import router
+from aiq_agent.api.knowledge_routes import router as knowledge_router
 from aiq_agent.audit import build_audit_store
 from aiq_agent.config import get_settings
 from aiq_agent.embeddings import build_embedding_service
@@ -69,8 +73,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Embedding service is lazy: fastembed model is downloaded the first
     # time anyone calls .sync_notes() or .search(), not at startup. That
-    # keeps container startup fast and lets the system fall back to
-    # full-context RAG silently if fastembed init fails later.
+    # keeps container startup fast. KB retrieval fails closed if the index is unavailable.
     embeddings = None
     if settings.embedding_enabled:
         embeddings = build_embedding_service(
@@ -85,13 +88,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.tools = default_registry
     app.state.memory = memory
     app.state.ocr_pipeline = pipeline
+    app.state.ocr_extractor = extractor
     app.state.skills = skill_registry
     app.state.audit = audit_store
     app.state.embeddings = embeddings
 
+    from aiq_agent.knowledge.service import KnowledgeService, set_service
+    kb_pool = None
+    kb_worker = None
+    kb_dsn = settings.knowledge_postgres_dsn or settings.memory_postgres_dsn
+    if kb_dsn and embeddings:
+        import asyncpg
+        kb_pool = await asyncpg.create_pool(kb_dsn, min_size=1, max_size=5)
+        knowledge = KnowledgeService(kb_pool, embeddings, settings)
+        set_service(knowledge)
+        kb_worker = asyncio.create_task(knowledge.run())
     try:
         yield
     finally:
+        set_service(None)
+        if kb_worker:
+            kb_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await kb_worker
+        if kb_pool:
+            await kb_pool.close()
         await memory.aclose()
         await validator.aclose()
         await llm.aclose()
@@ -106,6 +127,8 @@ app = FastAPI(
 
 app.include_router(router)
 app.include_router(ocr_router)
+app.include_router(knowledge_router)
+app.include_router(document_router)
 
 
 # ------------------------------------------------------------------

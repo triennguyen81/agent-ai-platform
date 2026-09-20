@@ -55,7 +55,42 @@ public static class TenantEndpoints
             .RequireAuthorization("admin")
             .RequireRateLimiting("default");
 
+        // The authoritative "who are we" tax ID InvoiceDirectionResolver
+        // uses to classify Sales vs Purchase — tenant_governance-scoped
+        // (TENANT_OWNER only) since every future invoice's AR/AP
+        // classification depends on this being set correctly, not something
+        // a department admin should be able to change in passing.
+        app.MapGet("/tenant/company-profile", GetCompanyProfileAsync)
+            .RequireAuthorization("tenant_governance")
+            .RequireRateLimiting("default");
+        app.MapPatch("/tenant/company-profile", UpdateCompanyProfileAsync)
+            .RequireAuthorization("tenant_governance")
+            .RequireRateLimiting("default");
+
         return app;
+    }
+
+    public sealed record UpdateCompanyProfileRequest(string? CompanyTaxId);
+
+    private static async Task<IResult> GetCompanyProfileAsync(
+        ITenantRepository repo, HttpContext ctx, CancellationToken ct)
+    {
+        if (!Aiq.Gateway.Middleware.TenantContext.TryGet(ctx, out var tenantId))
+            return Results.BadRequest(new { error = "tenant_context_missing" });
+        var companyTaxId = await repo.GetCompanyTaxIdAsync(tenantId, ct);
+        return Results.Ok(new { companyTaxId });
+    }
+
+    private static async Task<IResult> UpdateCompanyProfileAsync(
+        UpdateCompanyProfileRequest request, ITenantRepository repo, HttpContext ctx, CancellationToken ct)
+    {
+        if (!Aiq.Gateway.Middleware.TenantContext.TryGet(ctx, out var tenantId))
+            return Results.BadRequest(new { error = "tenant_context_missing" });
+        var normalized = string.IsNullOrWhiteSpace(request.CompanyTaxId) ? null : request.CompanyTaxId.Trim();
+        if (normalized is not null && !System.Text.RegularExpressions.Regex.IsMatch(normalized, @"^\d{10}(-\d{3})?$"))
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["companyTaxId"] = ["Mã số thuế không đúng định dạng (10 số, có thể kèm -NNN chi nhánh)"] });
+        await repo.SetCompanyTaxIdAsync(tenantId, normalized, ct);
+        return Results.Ok(new { companyTaxId = normalized });
     }
 
     private static async Task<IResult> ListAsync(ITenantRepository repo, CancellationToken ct)

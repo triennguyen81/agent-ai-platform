@@ -1,0 +1,47 @@
+{
+  "_note": "Consolidated index of every case's expected outcome, for quick automated assertions or manual sanity-checking. Full detail (exact request/response bodies, journal entries, notes on implementation discrepancies) lives in the per-flow files this indexes. Run luong03 cases EXP-001 before EXP-003/EXP-007 if reusing NV-001/NV-002 — outstanding_advance is mutated by a completed approval chain, so case order affects later payableAmount figures for the same employee.",
+
+  "luong01": [
+    { "caseId": "HD-001", "expectedWorkflowState": "SCHEDULE_GENERATED", "expectedAlertCodes": [], "expectedJournalEntries": 0 },
+    { "caseId": "HD-002", "expectedWorkflowState": "SCHEDULE_GENERATED", "expectedAlertCodes": ["MISSING_APPENDIX"], "expectedJournalEntries": 0 },
+    { "caseId": "HD-003", "expectedWorkflowState": "SCHEDULE_GENERATED", "expectedAlertCodes": ["PENALTY_DEVIATION"], "expectedJournalEntries": 0 },
+    { "caseId": "HD-004", "expectedWorkflowState": "SCHEDULE_GENERATED", "expectedAlertCodes": ["RETENTION_DEVIATION"], "expectedJournalEntries": 0 },
+    { "caseId": "HD-005", "expectedWorkflowState": "SCHEDULE_GENERATED", "expectedAlertCodes": [], "expectedJournalEntries": 0, "precondition": "appendix document uploaded before /process" }
+  ],
+
+  "luong02": [
+    { "caseId": "AR-001", "expectedOutcome": "FULL_MATCH", "expectedJournalRouting": "PROPOSED", "expectedEntryCount": 1 },
+    { "caseId": "AR-002", "expectedOutcome": "PARTIAL_PAYMENT", "expectedJournalRouting": "PROPOSED", "expectedEntryCount": 1 },
+    { "caseId": "AR-003", "expectedOutcome": "OVERPAYMENT", "expectedJournalRouting": "PROPOSED", "expectedEntryCount": 2 },
+    { "caseId": "AR-004", "expectedOutcome": "ADVANCE_PAYMENT", "expectedJournalRouting": "PROPOSED", "expectedEntryCount": 1 },
+    { "caseId": "AR-005", "expectedOutcome": "UNKNOWN_PAYER", "expectedJournalRouting": "NEEDS_REVIEW_NO_ENTRY", "expectedEntryCount": 0 },
+    { "caseId": "AR-006", "expectedOutcome": "CUSTOMER_NO_OPEN_RECEIVABLE", "expectedJournalRouting": "NEEDS_REVIEW_NO_ENTRY", "expectedEntryCount": 0 },
+    { "caseId": "AR-007", "expectedOutcome": "REVERSED_TRANSACTION", "expectedJournalRouting": "NEEDS_REVIEW_NO_ENTRY", "expectedEntryCount": 0 },
+    { "caseId": "AR-008", "expectedOutcome": "N/A (scheduled-job case, no direct HTTP trigger)", "expectedJournalRouting": "N/A", "expectedEntryCount": 0 },
+    { "caseId": "AR-009", "expectedOutcome": "FOREIGN_CURRENCY", "expectedJournalRouting": "BLOCKED_NO_FX_SOURCE", "expectedEntryCount": 0 }
+  ],
+
+  "luong03": [
+    { "caseId": "EXP-001", "expectedOutcome": "APPROVED", "expectedApprovedAmount": 3500000, "expectedPayableAmount": 500000, "expectedJournalRouting": "PROPOSED_AFTER_TAX_VERIFICATION" },
+    { "caseId": "EXP-002", "expectedOutcome": "APPROVED", "expectedApprovedAmount": 300000, "expectedPayableAmount": 300000, "expectedJournalRouting": "PROPOSED (no tax-verification gate — no invoice_no on this line)" },
+    { "caseId": "EXP-003", "expectedOutcome": "PARTIALLY_APPROVED", "expectedApprovedAmount": 1500000, "expectedCappedAmount": 1500000, "expectedJournalRouting": "PROPOSED_AFTER_TAX_VERIFICATION" },
+    { "caseId": "EXP-004", "expectedOutcome": "RETURN_FOR_DOCUMENTS", "expectedJournalRouting": "NONE — cannot reach apply-expense" },
+    { "caseId": "EXP-005", "expectedOutcome": "APPROVED (at propose)", "expectedFinalApproval": "BLOCKED (409 tax_verification_required, status=invalid)" },
+    { "caseId": "EXP-006", "expectedOutcome": "1006A=APPROVED, 1006B=REJECTED", "expectedBlockedAmount_1006B": 880000 },
+    { "caseId": "EXP-007", "expectedOutcome": "WAITING_EXCEPTION_APPROVAL then APPROVED after grant", "expectedApprovedAmount_afterGrant": 3000000 },
+    { "caseId": "EXP-008", "expectedOutcome": "PARTIALLY_APPROVED", "expectedApprovedAmount": 700000, "expectedBlockedAmount": 500000 },
+    { "caseId": "EXP-009", "expectedOutcome": "APPROVED", "expectedVatAmount": 0, "expectedVatDeductibleAmount": 0 },
+    { "caseId": "EXP-010", "expectedOutcome": "APPROVED", "expectedNonDeductibleAmount": 350000 },
+    { "caseId": "EXP-011", "expectedResult": "403 on department-review / apply-expense / reject-expense-claim, all as the creator" },
+    { "caseId": "EXP-012", "expectedResult": "409 on skip-stage and repeat-actor attempts; 200 only for the correct next actor at the correct stage" }
+  ],
+
+  "blockedCapabilities": {
+    "_note": "These must never be silently guessed or fabricated by any fixture or test built on this pack.",
+    "items": [
+      { "id": "FX_RATE", "affects": "AR-009", "behavior": "JournalRoutingRules returns Blocked/no_fx_rate_source_configured — zero entries, no invented rate." },
+      { "id": "TAX_PORTAL_COMPANY_STATUS", "affects": "Luồng 01 counterparty validation", "behavior": "Format-regex check only; no live verification is attempted or claimed." },
+      { "id": "TAX_PORTAL_INVOICE_STATUS", "affects": "EXP-005 and any invoice-bearing claim", "behavior": "Never defaults to verified=true. Status is one of null (never checked) / verified / invalid / unavailable — this pack always uses reject (invalid/unavailable) or leaves it unchecked, never fabricates 'verified'." }
+    ]
+  }
+}

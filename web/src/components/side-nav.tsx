@@ -117,10 +117,15 @@ export function SideNav({
 
   // Fetch recent chat threads (client-side, không blocking layout).
   // Skipped entirely for roles without Chat (SUPER_ADMIN/TENANT_OWNER).
+  // Scoped to Chat mode + the currently active agent — this list must never
+  // mix in another agent's (or Agentic mode's) threads, same rule as the
+  // /chat page's own sidebar.
   useEffect(() => {
     if (!chatEnabled) return;
     let cancelled = false;
-    fetch("/api/chat/threads")
+    const params = new URLSearchParams({ mode: "chat" });
+    if (activeAgentId) params.set("agent_id", activeAgentId);
+    fetch(`/api/chat/threads?${params.toString()}`)
       .then((r) => (r.ok ? r.json() : { items: [] }))
       .then((body: { items?: RecentThread[] }) => {
         if (!cancelled) {
@@ -136,7 +141,7 @@ export function SideNav({
     return () => {
       cancelled = true;
     };
-  }, [chatEnabled]);
+  }, [chatEnabled, activeAgentId]);
 
   const usableAgents = agents.filter(
     (a) => a.lifecycleState === "production" && !a.agentDisabled,
@@ -146,6 +151,12 @@ export function SideNav({
   );
 
   const activeAgent = agents.find((a) => a.agentId === activeAgentId) ?? usableAgents[0];
+  // Plain "/chat" would drop whichever agent is currently selected (the
+  // cookie), forcing department-member roles through an unnecessary
+  // /my-agents redirect (ChatPage requires ?agent= for them) and, for
+  // super_admin/tenant_owner, silently losing the selection instead of
+  // carrying it over. Carry the active agent explicitly whenever we know one.
+  const chatHref = activeAgent ? `/chat?agent=${encodeURIComponent(activeAgent.agentId)}` : "/chat";
 
   const switchAgent = async (agentId: string) => {
     if (switching || agentId === activeAgentId) return;
@@ -157,7 +168,17 @@ export function SideNav({
         body: JSON.stringify({ agentId }),
       });
       if (res.ok) {
-        router.refresh();
+        // On /chat, the URL's ?agent= param is authoritative (it's what
+        // ChatRoom actually sends to /api/chat — see requirement "selecting
+        // agent X must send X's exact agent_id to /api/chat"), so a plain
+        // router.refresh() here would update the cookie but leave the page
+        // silently talking to whichever agent was in the URL. Navigate so
+        // the URL and the cookie never disagree.
+        if (pathname.startsWith("/chat")) {
+          router.push(`/chat?agent=${encodeURIComponent(agentId)}`);
+        } else {
+          router.refresh();
+        }
       }
     } finally {
       setSwitching(null);
@@ -227,7 +248,7 @@ export function SideNav({
         <div className="flex-1 overflow-y-auto p-3">
           {/* Quick action — no Chat at all for SUPER_ADMIN/TENANT_OWNER */}
           {chatEnabled && (
-            <SidebarLink href="/chat" icon={Plus} label="New chat" active={pathname === "/chat"} />
+            <SidebarLink href={chatHref} icon={Plus} label="New chat" active={pathname === "/chat"} />
           )}
 
           {/* Primary nav */}
@@ -238,7 +259,7 @@ export function SideNav({
             {chatEnabled && (
               <>
                 <SidebarLink href="/my-agents" icon={Bot} label="Trợ lý AI" active={pathname.startsWith("/my-agents")} />
-                <SidebarLink href="/chat" icon={MessageSquare} label="Chat" active={pathname.startsWith("/chat")} />
+                <SidebarLink href={chatHref} icon={MessageSquare} label="Chat" active={pathname.startsWith("/chat")} />
               </>
             )}
           </div>
@@ -305,7 +326,11 @@ export function SideNav({
               {recentThreads.map((t) => (
                 <Link
                   key={t.thread_id}
-                  href={`/chat?thread=${encodeURIComponent(t.thread_id)}`}
+                  href={
+                    activeAgent
+                      ? `/chat?agent=${encodeURIComponent(activeAgent.agentId)}&thread=${encodeURIComponent(t.thread_id)}`
+                      : `/chat?thread=${encodeURIComponent(t.thread_id)}`
+                  }
                   className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-[var(--color-fg)] transition hover:bg-[var(--color-muted)]"
                   title={t.title}
                 >
@@ -384,18 +409,20 @@ export function SideNav({
           ))}
         </div>
 
-        {/* Footer: user info + logout */}
+        {/* Footer: user info (links to Profile/Security) + logout */}
         <div className="border-t border-[var(--color-border)] p-3">
           <div className="flex items-center gap-2">
-            <span className="flex size-8 items-center justify-center rounded-full bg-[var(--color-primary)] text-sm font-medium text-white">
-              {email.charAt(0).toUpperCase()}
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-xs font-medium">{email}</div>
-              <div className="text-[10px] text-[var(--color-muted-fg)]">
-                {isSuperAdmin ? "super_admin" : isTenantOwner ? "tenant_owner" : isTenantAdmin ? "admin" : "user"}
+            <Link href="/profile" className="flex min-w-0 flex-1 items-center gap-2" title="Hồ sơ / Bảo mật">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)] text-sm font-medium text-white">
+                {email.charAt(0).toUpperCase()}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium">{email}</div>
+                <div className="text-[10px] text-[var(--color-muted-fg)]">
+                  {isSuperAdmin ? "super_admin" : isTenantOwner ? "tenant_owner" : isTenantAdmin ? "admin" : "user"}
+                </div>
               </div>
-            </div>
+            </Link>
             <form action={signOutAction}>
               <button
                 type="submit"

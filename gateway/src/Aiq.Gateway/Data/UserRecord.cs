@@ -10,4 +10,5 @@ public sealed record UserRecord(
     Guid? TenantId = null,
     Guid? DepartmentId = null,
     string? ExternalProvider = null,
-    string? ExternalId = null);
+    string? ExternalId = null,
+    bool MustChangePassword = false);

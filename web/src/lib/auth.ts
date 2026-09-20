@@ -63,6 +63,17 @@ export function decodeUserId(token: string): string | null {
   return decodeClaim(token, "sub");
 }
 
+// Shared by /api/chat and /api/agent/run so both Chat and Agentic threads
+// use the exact same per-user namespacing convention (thread_id itself
+// never encodes mode — that's carried by the agent service's persisted
+// `mode` field instead, see agent/src/aiq_agent/memory/base.py).
+export function namespacedThreadId(token: string, raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const userId = decodeUserId(token);
+  if (!userId) return raw;
+  return raw.startsWith(`${userId}:`) ? raw : `${userId}:${raw}`;
+}
+
 export function decodeTenantId(token: string): string | null {
   return decodeClaim(token, "tenant_id");
 }

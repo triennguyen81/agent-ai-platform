@@ -37,6 +37,10 @@ dependencies = [
   # Postgres async driver — required by PostgresMemoryStore (chat history
   # persistence) and by the OCR validator's pgvector integration.
   "asyncpg>=0.30",
+  # Contract Upload DOCX extraction (api/document_routes.py). Pure-Python,
+  # no native/ML deps — kept in base deps (not the [ocr] extra) so it's
+  # always available, unlike the heavy PaddleOCR/pypdfium2 stack.
+  "python-docx>=1.1",
 ]
 
 [project.optional-dependencies]

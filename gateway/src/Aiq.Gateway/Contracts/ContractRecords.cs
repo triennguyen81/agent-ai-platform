@@ -29,6 +29,7 @@ public sealed record ContractRecord(
     decimal? RetentionPercent,
     decimal? PenaltyPercent,
     decimal ProgressPercent,
+    string? Direction,
     string[] Tags,
     DateTime CreatedAt,
     DateTime UpdatedAt);

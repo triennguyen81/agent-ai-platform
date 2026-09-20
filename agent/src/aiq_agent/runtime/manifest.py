@@ -75,6 +75,7 @@ class ExecutionManifest(BaseModel):
     tools: list[ManifestTool]
     skills: list[str]
     knowledge: list[ManifestKnowledge]
+    knowledgeBaseIds: list[UUID] = Field(default_factory=list)
     # None means "run as a single prompt/tool-use turn" (unchanged behavior).
     workflow: ManifestWorkflow | None = None
     # Specialist agents this agent (acting as a router) may delegate to.

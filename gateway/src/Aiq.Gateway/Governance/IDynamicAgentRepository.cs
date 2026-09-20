@@ -106,7 +106,8 @@ public sealed record AgentExecutionManifest(
     // authorization input on the Agent side — Gateway has already made the
     // department-entitlement decision by the time this manifest is issued.
     // Null for the departmentless SUPER_ADMIN test path.
-    Guid? DepartmentId = null);
+    Guid? DepartmentId = null,
+    IReadOnlyList<Guid>? KnowledgeBaseIds = null);
 public sealed record ManifestResult(AgentExecutionManifest? Manifest, string? DenialReason);
 
 /// <summary>
@@ -1333,7 +1334,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
             "SELECT skill_name FROM agent_version_skill_assignments WHERE agent_version_id=@versionId ORDER BY skill_name",
             new { versionId=row.VersionId }, cancellationToken: ct))).AsList();
         var knowledge = (await conn.QueryAsync<ManifestKnowledge>(new CommandDefinition("""
-            SELECT n.id AS NoteId,n.title AS Title,n.content AS Content,n.tags AS Tags
+            SELECT n.id AS NoteId,n.title AS Title,'' AS Content,n.tags AS Tags
             FROM agent_knowledge ak JOIN notes n ON n.id=ak.note_id
             WHERE ak.agent_id=@agentId
               AND (n.scope='platform' OR (n.scope='department' AND n.tenant_id=@tenantId AND n.department_id=@departmentId))
@@ -1380,7 +1381,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
             "SELECT skill_name FROM agent_version_skill_assignments WHERE agent_version_id=@versionId ORDER BY skill_name",
             new { versionId = version.VersionId }, cancellationToken: ct))).AsList();
         var knowledge = (await conn.QueryAsync<ManifestKnowledge>(new CommandDefinition("""
-            SELECT n.id AS NoteId,n.title AS Title,n.content AS Content,n.tags AS Tags
+            SELECT n.id AS NoteId,n.title AS Title,'' AS Content,n.tags AS Tags
             FROM agent_knowledge ak JOIN notes n ON n.id=ak.note_id
             WHERE ak.agent_id=@agentId
               AND (n.scope='platform' OR (n.scope='department' AND n.tenant_id=@tenantId AND n.department_id=@departmentId))
@@ -1522,7 +1523,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
             "SELECT skill_name FROM agent_version_skill_assignments WHERE agent_version_id=@versionId ORDER BY skill_name",
             new { versionId=row.VersionId }, cancellationToken: ct))).AsList();
         var knowledge = (await conn.QueryAsync<ManifestKnowledge>(new CommandDefinition("""
-            SELECT n.id AS NoteId,n.title AS Title,n.content AS Content,n.tags AS Tags
+            SELECT n.id AS NoteId,n.title AS Title,'' AS Content,n.tags AS Tags
             FROM agent_knowledge ak JOIN notes n ON n.id=ak.note_id AND n.tenant_id=@tenantId
             WHERE ak.agent_id=@agentId ORDER BY ak.attached_at
             """, new { tenantId, agentId }, cancellationToken: ct))).AsList();
@@ -1583,7 +1584,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
             "SELECT skill_name FROM agent_version_skill_assignments WHERE agent_version_id=@versionId ORDER BY skill_name",
             new { versionId=row.VersionId }, cancellationToken: ct))).AsList();
         var knowledge = (await conn.QueryAsync<ManifestKnowledge>(new CommandDefinition("""
-            SELECT n.id AS NoteId,n.title AS Title,n.content AS Content,n.tags AS Tags
+            SELECT n.id AS NoteId,n.title AS Title,'' AS Content,n.tags AS Tags
             FROM agent_knowledge ak JOIN notes n ON n.id=ak.note_id AND n.tenant_id=@tenantId
             WHERE ak.agent_id=@agentId ORDER BY ak.attached_at
             """, new { tenantId, agentId }, cancellationToken: ct))).AsList();
@@ -1726,7 +1727,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
             "SELECT skill_name FROM agent_version_skill_assignments WHERE agent_version_id=@versionId ORDER BY skill_name",
             new { versionId = row.VersionId }, cancellationToken: ct))).AsList();
         var knowledge = (await conn.QueryAsync<ManifestKnowledge>(new CommandDefinition("""
-            SELECT n.id AS NoteId,n.title AS Title,n.content AS Content,n.tags AS Tags
+            SELECT n.id AS NoteId,n.title AS Title,'' AS Content,n.tags AS Tags
             FROM agent_knowledge ak JOIN notes n ON n.id=ak.note_id AND n.tenant_id=@tenantId
             WHERE ak.agent_id=@agentId ORDER BY ak.attached_at
             """, new { tenantId, agentId = specialistAgentId }, cancellationToken: ct))).AsList();

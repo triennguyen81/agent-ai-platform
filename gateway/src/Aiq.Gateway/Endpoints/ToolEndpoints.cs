@@ -90,6 +90,22 @@ public static class ToolEndpoints
         return Results.Ok(new { items, total = items.Count });
     }
 
+    // IMPORTANT — this grants into agent_tool_grants (agent-level, mutable
+    // anytime), which is what GET /runtime/agents/{id}/authorization and
+    // GET /agents/{id}/tools/allowed both read. It is NOT what the real
+    // Claude SDK execution path reads: ClaudeSdkAgentExecutor resolves its
+    // tools from GET /runtime/agents/{id}/manifest, which sources
+    // agent_version_tool_grants — a version-locked table, immutable once
+    // that version is published (see the protect_published_agent_capability
+    // trigger). Granting a tool here has ZERO effect on what a published
+    // agent actually executes; the only way to change that is to create a
+    // new agent version (POST /department/agents/{id}/versions) with the
+    // desired toolIds and publish it. Found and worked around the hard way
+    // while wiring the Accounting Agent's report tools — documenting here
+    // so the next person doesn't lose the same time to it. A real fix would
+    // mean unifying two independent authorization surfaces (one mutable/
+    // agent-scoped, one immutable/version-scoped by design for audit
+    // reasons) — out of scope for a minimal, safe change.
     private static async Task<IResult> GrantToolAsync(
         Guid agentId, GrantToolRequest request, IToolRepository repo, HttpContext ctx, CancellationToken ct)
     {

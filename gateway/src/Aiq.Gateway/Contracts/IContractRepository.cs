@@ -74,6 +74,7 @@ public sealed class ContractRepository : IContractRepository
             retention_percent AS RetentionPercent,
             penalty_percent AS PenaltyPercent,
             progress_percent AS ProgressPercent,
+            direction       AS Direction,
             tags            AS Tags,
             created_at      AS CreatedAt,
             updated_at      AS UpdatedAt
@@ -354,7 +355,18 @@ public sealed class ContractRepository : IContractRepository
         var duplicate = request.ContractNumber is not null && await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
             "SELECT EXISTS(SELECT 1 FROM contracts WHERE tenant_id=@tenantId AND department_id=@departmentId AND contract_number=@number AND id<>@id)",
             new { tenantId, departmentId, number=request.ContractNumber, id }, tx, cancellationToken: ct));
-        if (duplicate) alerts.Add(("DUPLICATE_CONTRACT", "error", "Số hợp đồng đã tồn tại trong phòng ban.", "contractNumber"));
+        if (duplicate) alerts.Add(("DUPLICATE_CONTRACT", "error", $"Số hợp đồng '{request.ContractNumber}' đã tồn tại trong phòng ban — hợp đồng này được lưu không kèm số hợp đồng, cần bổ sung/sửa thủ công.", "contractNumber"));
+        // Bug fix: `duplicate` was computed above and turned into an alert,
+        // but the final UPDATE below used to write request.ContractNumber
+        // unconditionally regardless — reproducing the exact collision this
+        // check just detected, so uq_contract_number_department (partial
+        // unique index, migration 027, excludes NULL) threw an unhandled
+        // 23505 and crashed the whole /process call instead of landing the
+        // contract in NEEDS_REVIEW the way every other "error" alert here
+        // does. Persist NULL instead of the colliding value — the DUPLICATE_
+        // CONTRACT alert above (now written to contract_alerts a few lines
+        // down) is the record of what was actually extracted.
+        var contractNumberToPersist = duplicate ? null : request.ContractNumber;
         // CT.REF: a clause references an appendix ("phụ lục") but no clause
         // carries that appendix's own content (heading mentions it too) —
         // deterministic proxy using only this contract's own clauses, no
@@ -450,7 +462,26 @@ public sealed class ContractRepository : IContractRepository
               FROM contract_alerts WHERE contract_id=@id AND severity IN ('error','warning') AND resolved_at IS NULL;
             """,new{id,tenantId,departmentId},tx,cancellationToken:ct));
         var state = request.Parties is null || request.Parties.Count < 2 || missingRequiredDocument ? "NEEDS_DOCUMENT" : alerts.Any(a=>a.Severity=="error") ? "NEEDS_REVIEW" : "WAITING_REVIEW";
-        await conn.ExecuteAsync(new CommandDefinition("UPDATE contracts SET document_type=COALESCE(@DocumentType,document_type),contract_number=@ContractNumber,contract_code=COALESCE(contract_code,'HD-'||upper(substr(replace(id::text,'-',''),1,12))),subtotal=@subtotal,vat_rate=@vatRate,vat_amount=@vat,total_value=@total,retention_percent=@RetentionPercent,penalty_percent=@PenaltyPercent,warranty_months=@WarrantyMonths,workflow_state=@state WHERE id=@id AND tenant_id=@tenantId AND department_id=@departmentId; INSERT INTO contract_history(contract_id,tenant_id,department_id,actor_id,event_type,from_state,to_state,details) SELECT @id,@tenantId,@departmentId,@actorId,'workflow_transition',s.previous,s.next,jsonb_build_object('deterministic',s.deterministic,'alertCount',@alertCount) FROM (VALUES (@oldState,'CLASSIFIED',false),('CLASSIFIED','EXTRACTED',false),('EXTRACTED','VALIDATED',true),('VALIDATED','SCHEDULE_GENERATED',true),('SCHEDULE_GENERATED',@state,true)) s(previous,next,deterministic);",new{id,tenantId,departmentId,actorId,request.DocumentType,request.ContractNumber,subtotal,vatRate,vat,total,request.RetentionPercent,request.PenaltyPercent,request.WarrantyMonths,state,oldState=current.State,alertCount=alerts.Count},tx,cancellationToken:ct));
+
+        // Deterministic Sales/Purchase direction — resolved server-side from
+        // contract_parties' own tax codes (this contract's seller/buyer, as
+        // just recorded above) against the tenant's registered company_tax_id
+        // (migration 045). Never inferred from document text/LLM output —
+        // same rule and the same root-cause fix as the invoice-side bug in
+        // VoucherEndpoints.ApplyInvoiceAsync/ApplyExpenseAsync.
+        var companyTaxId = await conn.ExecuteScalarAsync<string?>(new CommandDefinition(
+            "SELECT company_tax_id FROM tenants WHERE id=@tenantId", new { tenantId }, tx, cancellationToken: ct));
+        var sellerTaxCode = request.Parties?.FirstOrDefault(p => p.PartyRole == "seller")?.TaxCode;
+        var buyerTaxCode = request.Parties?.FirstOrDefault(p => p.PartyRole == "buyer")?.TaxCode;
+        var directionResolution = Aiq.Gateway.Accounting.InvoiceDirectionResolver.Resolve(sellerTaxCode, buyerTaxCode, companyTaxId);
+        var direction = directionResolution.Direction switch
+        {
+            Aiq.Gateway.Accounting.InvoiceDirection.Sales => "sales",
+            Aiq.Gateway.Accounting.InvoiceDirection.Purchase => "purchase",
+            _ => "needs_review",
+        };
+
+        await conn.ExecuteAsync(new CommandDefinition("UPDATE contracts SET document_type=COALESCE(@DocumentType,document_type),contract_number=@ContractNumber,contract_code=COALESCE(contract_code,'HD-'||upper(substr(replace(id::text,'-',''),1,12))),subtotal=@subtotal,vat_rate=@vatRate,vat_amount=@vat,total_value=@total,retention_percent=@RetentionPercent,penalty_percent=@PenaltyPercent,warranty_months=@WarrantyMonths,workflow_state=@state,direction=@direction WHERE id=@id AND tenant_id=@tenantId AND department_id=@departmentId; INSERT INTO contract_history(contract_id,tenant_id,department_id,actor_id,event_type,from_state,to_state,details) SELECT @id,@tenantId,@departmentId,@actorId,'workflow_transition',s.previous,s.next,jsonb_build_object('deterministic',s.deterministic,'alertCount',@alertCount) FROM (VALUES (@oldState,'CLASSIFIED',false),('CLASSIFIED','EXTRACTED',false),('EXTRACTED','VALIDATED',true),('VALIDATED','SCHEDULE_GENERATED',true),('SCHEDULE_GENERATED',@state,true)) s(previous,next,deterministic);",new{id,tenantId,departmentId,actorId,request.DocumentType,ContractNumber=contractNumberToPersist,subtotal,vatRate,vat,total,request.RetentionPercent,request.PenaltyPercent,request.WarrantyMonths,state,direction,oldState=current.State,alertCount=alerts.Count},tx,cancellationToken:ct));
         await tx.CommitAsync(ct);
         return new(state, alerts.Count, request.PaymentTerms?.Count ?? 0, request.Milestones?.Count ?? 0);
     }

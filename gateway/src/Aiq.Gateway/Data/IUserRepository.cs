@@ -12,6 +12,26 @@ public interface IUserRepository
     Task              SetTenantAsync(Guid userId, Guid? tenantId, CancellationToken ct);
     Task              SetDepartmentAsync(Guid userId, Guid? departmentId, CancellationToken ct);
     Task<bool>        SetActiveAsync(Guid userId, bool isActive, CancellationToken ct);
+
+    /// <summary>
+    /// Unscoped password-hash write — safe only because every caller has
+    /// already authorized the target through its own tenant/department/self
+    /// checks before reaching here (same convention as the equally-unscoped
+    /// SetActiveAsync above, used the same way by SetTenantAdminActiveAsync
+    /// after ITS OWN tenant check). Used by: self-service change-password
+    /// (target is always the caller's own id), TENANT_OWNER resetting a
+    /// user/admin in their own tenant, and SUPER_ADMIN resetting a tenant
+    /// admin. Never called with a caller-supplied target id that hasn't
+    /// already been validated.
+    /// </summary>
+    Task<bool>        SetPasswordHashAsync(Guid userId, string passwordHash, bool mustChangePassword, CancellationToken ct);
+
+    /// <summary>
+    /// Department-scoped password-hash write for a plain ADMIN resetting a
+    /// role='user' account in their own department — same shape/semantics
+    /// as SetDepartmentUserActiveAsync below.
+    /// </summary>
+    Task<bool>        SetDepartmentUserPasswordAsync(Guid tenantId, Guid departmentId, Guid userId, string passwordHash, bool mustChangePassword, CancellationToken ct);
     Task<bool>        UpdateTenantUserAsync(Guid tenantId, Guid userId, string? displayName, CancellationToken ct);
     Task<bool>        UpdateDepartmentUserAsync(Guid tenantId, Guid departmentId, Guid userId, string? displayName, CancellationToken ct);
     Task<bool>        SetDepartmentUserActiveAsync(Guid tenantId, Guid departmentId, Guid userId, bool isActive, CancellationToken ct);
@@ -141,7 +161,8 @@ public sealed class UserRepository : IUserRepository
             tenant_id          AS TenantId,
             department_id      AS DepartmentId,
             external_provider  AS ExternalProvider,
-            external_id        AS ExternalId
+            external_id        AS ExternalId,
+            must_change_password AS MustChangePassword
         """;
 
     public async Task<UserRecord?> FindByIdAsync(Guid id, CancellationToken ct)
@@ -324,6 +345,35 @@ public sealed class UserRepository : IUserRepository
         await using var conn = await _factory.OpenAsync(ct);
         var n = await conn.ExecuteAsync(new CommandDefinition(sql, new { userId, isActive }, cancellationToken: ct));
         return n > 0;
+    }
+
+    public async Task<bool> SetPasswordHashAsync(
+        Guid userId, string passwordHash, bool mustChangePassword, CancellationToken ct)
+    {
+        const string sql = """
+            UPDATE users
+            SET password_hash = @passwordHash, must_change_password = @mustChangePassword, updated_at = NOW()
+            WHERE id = @userId
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        var n = await conn.ExecuteAsync(new CommandDefinition(
+            sql, new { userId, passwordHash, mustChangePassword }, cancellationToken: ct));
+        return n > 0;
+    }
+
+    public async Task<bool> SetDepartmentUserPasswordAsync(
+        Guid tenantId, Guid departmentId, Guid userId, string passwordHash, bool mustChangePassword, CancellationToken ct)
+    {
+        const string sql = """
+            UPDATE users u
+            SET password_hash = @passwordHash, must_change_password = @mustChangePassword, updated_at = NOW()
+            WHERE u.id = @userId AND u.tenant_id = @tenantId AND u.department_id = @departmentId
+              AND EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+                          WHERE ur.user_id = u.id AND r.name = 'user');
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.ExecuteAsync(new CommandDefinition(sql,
+            new { tenantId, departmentId, userId, passwordHash, mustChangePassword }, cancellationToken: ct)) == 1;
     }
 
     public async Task<bool> UpdateTenantUserAsync(

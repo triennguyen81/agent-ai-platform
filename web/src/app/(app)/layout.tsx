@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { gateway } from "@/lib/api";
 import { clearSession, getSession, getActiveAgent } from "@/lib/auth";
@@ -11,6 +12,7 @@ interface MeResponse {
   sub?: string | null;
   email?: string | null;
   roles?: string[];
+  mustChangePassword?: boolean;
 }
 
 interface MyAgent {
@@ -100,6 +102,14 @@ export default async function AppLayout({
         <header className="sticky top-0 z-10 flex items-center justify-end gap-2 border-b border-[var(--color-border)] bg-[var(--color-bg)]/95 pl-14 pr-6 py-2 backdrop-blur md:pl-6">
           {!isSuperAdmin && <NotificationBell />}
         </header>
+        {me.mustChangePassword && (
+          <Link
+            href="/profile"
+            className="block bg-amber-50 px-6 py-2 text-center text-sm text-amber-800 hover:bg-amber-100"
+          >
+            Mật khẩu của bạn vừa được đặt lại — bấm để đổi sang mật khẩu mới của riêng bạn.
+          </Link>
+        )}
         <main className="flex-1 px-6 py-6">
           <div className="mx-auto max-w-6xl">{children}</div>
         </main>

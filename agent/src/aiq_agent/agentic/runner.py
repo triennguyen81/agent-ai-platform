@@ -20,8 +20,12 @@ from claude_agent_sdk import (
     create_sdk_mcp_server,
 )
 
+from aiq_agent.agentic.accounting_tools import build_accounting_tools
+from aiq_agent.agentic.contract_tools import build_contract_tools
 from aiq_agent.agentic.registry import fetch_agent_model, fetch_allowed_tool_codes
+from aiq_agent.agentic.report_tools import build_report_tools
 from aiq_agent.agentic.tools import build_tools
+from aiq_agent.agentic.voucher_tools import build_voucher_tools
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +58,15 @@ DEFAULT_ALLOWED_TOOLS = [
     "mcp__aiq__verify_einvoice_tct",
     "mcp__aiq__suggest_journal_entry",
     "mcp__aiq__save_journal_suggestions",
+    # Report/query tools — customer/supplier/AR/AP/voucher-list read access
+    # for natural-language accounting questions (never mutates anything).
+    "mcp__aiq__list_customers",
+    "mcp__aiq__get_customer_receivables",
+    "mcp__aiq__list_suppliers",
+    "mcp__aiq__get_supplier_payables",
+    "mcp__aiq__get_ap_summary",
+    "mcp__aiq__list_vouchers",
+    "mcp__aiq__get_weekly_summary_report",
 ]
 
 
@@ -95,7 +108,17 @@ async def run_task(
     Returns the assistant's final text + a list of intermediate text
     blocks (so the UI can render a step-by-step trace).
     """
-    tools = build_tools(token=user_token, gateway_base=gateway_base)
+    # Same fix as runtime/executors.py's _installed_tools: this only ever
+    # built the generic notes/URL tools, so calculate_vat/save_contract/
+    # suggest_journal_entry/etc. — all listed in DEFAULT_ALLOWED_TOOLS below
+    # as if usable — were never actually registered on the MCP server.
+    tools = [
+        *build_tools(token=user_token, gateway_base=gateway_base),
+        *build_contract_tools(token=user_token, gateway_base=gateway_base),
+        *build_voucher_tools(token=user_token, gateway_base=gateway_base),
+        *build_accounting_tools(token=user_token, gateway_base=gateway_base),
+        *build_report_tools(token=user_token, gateway_base=gateway_base),
+    ]
     mcp_server = create_sdk_mcp_server(
         name="aiq",
         version="0.1.0",

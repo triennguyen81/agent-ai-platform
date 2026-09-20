@@ -18,6 +18,19 @@ public interface IAgentClient
         CancellationToken ct);
 
     /// <summary>
+    /// POST /documents/extract — the Contract Upload text-extraction path.
+    /// PDF (embedded text layer, falling back to the OCR pipeline for
+    /// scanned pages), DOCX, or a single image. No new OCR engine — this
+    /// reuses the exact same OcrPipeline as RunOcrPipelineAsync/
+    /// RunOcrImageAsync for anything that still needs OCR.
+    /// </summary>
+    Task<AgentDocumentExtractResponse> ExtractDocumentTextAsync(
+        Stream fileStream,
+        string filename,
+        string contentType,
+        CancellationToken ct);
+
+    /// <summary>
     /// D6: /agent/run passthrough routed through the capability resolver —
     /// returns the final_answer string. `capability` must be a stable
     /// catalog code (e.g. "voucher.processing"); the caller never picks or
@@ -107,6 +120,37 @@ public sealed class AgentClient : IAgentClient
         return payload;
     }
 
+    public async Task<AgentDocumentExtractResponse> ExtractDocumentTextAsync(
+        Stream fileStream,
+        string filename,
+        string contentType,
+        CancellationToken ct)
+    {
+        using var content = new MultipartFormDataContent();
+        using var fileContent = new StreamContent(fileStream);
+        var mediaType = string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType;
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
+        content.Add(fileContent, "file", filename);
+
+        using var response = await _http.PostAsync("/documents/extract", content, ct);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogWarning(
+                "Agent document extraction rejected request: status={Status} body={Body}",
+                (int)response.StatusCode, body);
+            throw new AgentRequestException(
+                $"Agent returned HTTP {(int)response.StatusCode}: {body}",
+                (int)response.StatusCode);
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<AgentDocumentExtractResponse>(cancellationToken: ct)
+            ?? throw new AgentRequestException("Agent returned an empty body.", 502);
+
+        return payload;
+    }
+
     public async Task<string> RunAgentTaskAsync(
         string task,
         string userToken,
@@ -163,6 +207,59 @@ public sealed class AgentRequestException : Exception
     public int UpstreamStatus { get; }
 }
 
+/// <summary>
+/// Shared by every endpoint that calls IAgentClient directly from an HTTP
+/// handler (ContractEndpoints.ExtractText, AccountingEndpoints.
+/// ExtractInvoiceText) — turns an agent call failure into a structured
+/// JSON error instead of an unhandled-exception 500.
+///
+/// Root cause this fixes: both call sites previously caught only
+/// AgentRequestException (the agent responding with an HTTP error status).
+/// When the agent service itself is unreachable — down, still starting,
+/// or a transient network blip — HttpClient throws HttpRequestException
+/// instead, which was never caught and surfaced as a raw ASP.NET
+/// exception-page 500 (confirmed in gateway logs: "System.Net.Http.
+/// HttpRequestException: Resource temporarily unavailable (agent:8000)"
+/// from AccountingEndpoints.ExtractInvoiceText). Never creates or mutates
+/// any domain state itself — purely a result-mapping helper.
+/// </summary>
+public static class AgentCallResult
+{
+    public static async Task<IResult> RunAsync<T>(
+        Func<Task<T>> call,
+        Func<T, IResult> onSuccess,
+        CancellationToken ct)
+    {
+        try
+        {
+            return onSuccess(await call());
+        }
+        catch (AgentRequestException exc)
+        {
+            var status = exc.UpstreamStatus is >= 400 and < 500 ? exc.UpstreamStatus : StatusCodes.Status502BadGateway;
+            return Results.Json(new { error = "extraction_failed", detail = exc.Message }, statusCode: status);
+        }
+        catch (HttpRequestException)
+        {
+            // Agent unreachable (connection refused/reset, DNS failure,
+            // still starting up). Never leak the raw socket exception to
+            // the browser — a clear, retryable, structured error instead.
+            return Results.Json(
+                new { error = "agent_unavailable", detail = "Dịch vụ xử lý tài liệu tạm thời không khả dụng. Vui lòng thử lại sau ít phút." },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // The HttpClient's own request timeout fired — distinct from
+            // the caller's ct being cancelled (e.g. browser navigated
+            // away), which should propagate normally.
+            return Results.Json(
+                new { error = "agent_timeout", detail = "Dịch vụ xử lý tài liệu phản hồi quá chậm. Vui lòng thử lại." },
+                statusCode: StatusCodes.Status504GatewayTimeout);
+        }
+    }
+}
+
 // Mirrors the agent's PipelineResponse shape (api/ocr_routes.py).
 // Python returns snake_case field names — annotate PascalCase params
 // so System.Text.Json binds them (default policy is camelCase, which
@@ -173,6 +270,13 @@ public sealed record AgentOcrResponse(
     [property: JsonPropertyName("stage_durations_ms")] Dictionary<string, int> StageDurationsMs,
     [property: JsonPropertyName("pages")] IReadOnlyList<AgentPageReport> Pages,
     [property: JsonPropertyName("joined_text")] string JoinedText);
+
+// Mirrors the agent's DocumentExtractResponse shape (api/document_routes.py).
+public sealed record AgentDocumentExtractResponse(
+    [property: JsonPropertyName("text")] string Text,
+    [property: JsonPropertyName("char_count")] int CharCount,
+    [property: JsonPropertyName("mime_type")] string MimeType,
+    [property: JsonPropertyName("extraction_method")] string ExtractionMethod);
 
 public sealed record AgentPageReport(
     [property: JsonPropertyName("page_number")] int PageNumber,

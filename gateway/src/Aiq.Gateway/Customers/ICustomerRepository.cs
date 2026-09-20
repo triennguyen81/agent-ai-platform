@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.RegularExpressions;
 using Aiq.Gateway.Data;
 using Dapper;
@@ -85,7 +86,11 @@ public sealed record ArLedgerRow(
     decimal? BalanceAfter,
     DateOnly? DueDate,
     int DaysOverdue,
-    string? ReferenceNote);
+    string? ReferenceNote,
+    decimal PaidAmount,
+    string Status,
+    Guid? ContractId,
+    Guid? ContractPaymentScheduleId);
 
 // UC-ACC-001 §9.2: fields the agent must see to score credit risk.
 public sealed record CustomerReceivablesReport(
@@ -213,8 +218,15 @@ public interface ICustomerRepository
         CancellationToken ct);
 
     // Book a sales invoice (invoice_vat_out) into sim_ar_ledger — inserts a
-    // single debit row (increases AR: Nợ 131 tăng) + updates
-    // sim_customers.current_ar += invoiceTotal. Idempotent by voucherId.
+    // single debit row (increases AR: Nợ 131 tăng), status='open',
+    // paid_amount=0, then recomputes sim_customers.current_ar from every
+    // open/partial AR row (never an increment — idempotent under retry,
+    // same "pure recompute" pattern contracts.progress_percent already
+    // uses). Idempotent by (tenant_id, voucher_id) — a real unique
+    // constraint (migration 045), not the old reference_note text-match
+    // heuristic. contractId/contractPaymentScheduleId are optional,
+    // application-set links (never auto-inferred) — pass the voucher's own
+    // ContractId/ContractInstallmentId when the caller already has them.
     Task<InvoiceBookResult> BookInvoiceAsync(
         Guid tenantId,
         Guid customerId,
@@ -223,6 +235,8 @@ public interface ICustomerRepository
         DateOnly invoiceDate,
         DateOnly? dueDate,
         decimal invoiceTotal,
+        Guid? contractId,
+        Guid? contractPaymentScheduleId,
         CancellationToken ct);
 
     // Rollback a previously-applied receipt: DELETE rows tagged
@@ -430,8 +444,11 @@ public sealed class CustomerRepository : ICustomerRepository
 
         await using var conn = await _factory.OpenAsync(ct);
 
-        // Only open invoices (unpaid, credit = 0). Ordered by due date so agent
-        // sees the most urgent lines first.
+        // Open invoices — status-driven (open/partial), not the old
+        // "credit=0 on this row" heuristic, which never reflected settlement
+        // once a receipt was applied (settlement was recorded as a separate,
+        // unlinked ledger row — see migration 045). Ordered by due date so
+        // agent sees the most urgent lines first.
         var ledgerSql = """
             SELECT id             AS Id,
                    document_date  AS DocumentDate,
@@ -441,29 +458,37 @@ public sealed class CustomerRepository : ICustomerRepository
                    credit         AS Credit,
                    balance_after  AS BalanceAfter,
                    due_date       AS DueDate,
-                   CASE WHEN CURRENT_DATE > due_date AND credit = 0
+                   CASE WHEN CURRENT_DATE > due_date AND status <> 'paid'
                         THEN (CURRENT_DATE - due_date)
                         ELSE 0
                    END AS DaysOverdue,
-                   reference_note AS ReferenceNote
+                   reference_note AS ReferenceNote,
+                   paid_amount    AS PaidAmount,
+                   status         AS Status,
+                   contract_id    AS ContractId,
+                   contract_payment_schedule_id AS ContractPaymentScheduleId
             FROM sim_ar_ledger
             WHERE customer_id = @customerId
-              AND (document_type = 'invoice' AND credit = 0)
+              AND document_type = 'invoice' AND status IN ('open','partial')
             ORDER BY due_date NULLS LAST, document_date
             """;
         var rowsEnum = await conn.QueryAsync<ArLedgerRow>(
             new CommandDefinition(ledgerSql, new { customerId }, cancellationToken: ct));
         var rows = new List<ArLedgerRow>(rowsEnum);
 
+        // Aging buckets use the REMAINING balance (debit - paid_amount), not
+        // the original invoice amount — a partially-paid invoice's overdue
+        // exposure is only what's left outstanding.
         decimal bucketCurrent = 0, b30 = 0, b60 = 0, b90 = 0, over90 = 0;
         decimal overdue = 0;
         foreach (var row in rows)
         {
-            if (row.DaysOverdue == 0) bucketCurrent += row.Debit;
-            else if (row.DaysOverdue <= 30) { b30 += row.Debit; overdue += row.Debit; }
-            else if (row.DaysOverdue <= 60) { b60 += row.Debit; overdue += row.Debit; }
-            else if (row.DaysOverdue <= 90) { b90 += row.Debit; overdue += row.Debit; }
-            else { over90 += row.Debit; overdue += row.Debit; }
+            var remaining = row.Debit - row.PaidAmount;
+            if (row.DaysOverdue == 0) bucketCurrent += remaining;
+            else if (row.DaysOverdue <= 30) { b30 += remaining; overdue += remaining; }
+            else if (row.DaysOverdue <= 60) { b60 += remaining; overdue += remaining; }
+            else if (row.DaysOverdue <= 90) { b90 += remaining; overdue += remaining; }
+            else { over90 += remaining; overdue += remaining; }
         }
 
         var lastPaymentSql = """
@@ -574,7 +599,11 @@ public sealed class CustomerRepository : ICustomerRepository
         await using var tx = await conn.BeginTransactionAsync(ct);
 
         // Idempotency guard: if a credit row already tags this voucher, we
-        // already applied it. Detected via reference_note = "voucher:{id}".
+        // already applied it. Detected via reference_note = "voucher:{id}"
+        // (kept as a text tag, not the new voucher_id unique constraint,
+        // because a single receipt legitimately inserts MULTIPLE rows here
+        // — one per application plus an optional discount row — unlike
+        // BookInvoiceAsync's always-exactly-one-row invoice insert).
         const string dupSql = "SELECT COUNT(*) FROM sim_ar_ledger WHERE customer_id = @customerId AND reference_note LIKE @tag";
         var existing = await conn.ExecuteScalarAsync<int>(
             new CommandDefinition(dupSql,
@@ -603,21 +632,52 @@ public sealed class CustomerRepository : ICustomerRepository
 
         decimal totalApplied = 0m;
         int rowsInserted = 0;
-
-        // Snapshot rolling balance so we can compute balance_after per row.
-        var runningBalance = prevBalance;
+        Guid? soleInvoiceId = null;
+        var distinctInvoiceIds = 0;
 
         foreach (var app in applications)
         {
             if (app.AppliedAmount <= 0m) continue;
-            runningBalance -= app.AppliedAmount;
+
+            // Lock and settle the SPECIFIC open/partial invoice row this
+            // application targets — this is the fix for the old model,
+            // where the invoice's own row never learned it had been paid.
+            // Amount-clamped (LEAST) so an over-application on one specific
+            // document (distinct from a whole-receipt OVERPAYMENT, already
+            // classified upstream by ReceiptMatchRepository) can never push
+            // paid_amount above the invoice's own amount.
+            var invoiceRow = await conn.QuerySingleOrDefaultAsync<(Guid Id, decimal Debit, decimal PaidAmount)?>(
+                new CommandDefinition("""
+                    SELECT id, debit, paid_amount FROM sim_ar_ledger
+                    WHERE tenant_id=@tenantId AND customer_id=@customerId AND document_number=@docNumber
+                      AND document_type='invoice' AND status IN ('open','partial')
+                    FOR UPDATE
+                    """, new { tenantId, customerId, docNumber = app.DocumentNumber }, tx, cancellationToken: ct));
+
+            Guid? allocatedInvoiceId = null;
+            if (invoiceRow is { } inv)
+            {
+                var newPaid = Math.Min(inv.PaidAmount + app.AppliedAmount, inv.Debit);
+                var newStatus = newPaid >= inv.Debit ? "paid" : "partial";
+                await conn.ExecuteAsync(new CommandDefinition(
+                    "UPDATE sim_ar_ledger SET paid_amount=@newPaid, status=@newStatus WHERE id=@id",
+                    new { newPaid, newStatus, id = inv.Id }, tx, cancellationToken: ct));
+                allocatedInvoiceId = inv.Id;
+                if (soleInvoiceId != inv.Id) distinctInvoiceIds++;
+                soleInvoiceId = inv.Id;
+            }
+            // else: no matching open invoice for this document number — the
+            // amount is still recorded on the audit trail row below (never
+            // silently dropped) but allocated_invoice_id stays NULL, so it
+            // never contributes to any invoice's paid_amount/status.
+
             const string insertSql = """
                 INSERT INTO sim_ar_ledger
                     (tenant_id, customer_id, document_date, document_number, document_type,
-                     debit, credit, balance_after, due_date, reference_note)
+                     debit, credit, balance_after, due_date, reference_note, allocated_invoice_id)
                 VALUES
                     (@tenantId, @customerId, @receiptDate, @receiptDocumentNumber, 'receipt',
-                     0, @credit, @balanceAfter, NULL, @refNote)
+                     0, @credit, NULL, NULL, @refNote, @allocatedInvoiceId)
                 """;
             await conn.ExecuteAsync(new CommandDefinition(
                 insertSql,
@@ -628,8 +688,8 @@ public sealed class CustomerRepository : ICustomerRepository
                     receiptDate,
                     receiptDocumentNumber,
                     credit = app.AppliedAmount,
-                    balanceAfter = runningBalance,
                     refNote = $"voucher:{voucherId:N}|apply:{app.DocumentNumber}",
+                    allocatedInvoiceId = (object?)allocatedInvoiceId ?? DBNull.Value,
                 },
                 transaction: tx,
                 cancellationToken: ct));
@@ -637,18 +697,40 @@ public sealed class CustomerRepository : ICustomerRepository
             rowsInserted++;
         }
 
-        // Discount line reduces A/R further and books to 5211 in the journal
-        // (already suggested to the user via ReceiptMatchingPanel).
+        // Discount (chiết khấu thanh toán) reduces the same invoice's
+        // paid_amount too, when unambiguous (exactly one invoice touched by
+        // this receipt) — the common real case (early-payment discount on
+        // the invoice being paid). With zero or multiple invoices touched,
+        // there is no single unambiguous target: the discount is still
+        // recorded on the audit trail for traceability, but is not applied
+        // to any invoice's paid_amount (documented limitation, not silently
+        // wrong — see README/gaps).
         if (discountAmount > 0m)
         {
-            runningBalance -= discountAmount;
+            Guid? discountAllocatedInvoiceId = null;
+            if (soleInvoiceId is { } onlyInvoiceId && distinctInvoiceIds == 1)
+            {
+                var inv = await conn.QuerySingleOrDefaultAsync<(decimal Debit, decimal PaidAmount)?>(
+                    new CommandDefinition("SELECT debit, paid_amount FROM sim_ar_ledger WHERE id=@id FOR UPDATE",
+                        new { id = onlyInvoiceId }, tx, cancellationToken: ct));
+                if (inv is { } row)
+                {
+                    var newPaid = Math.Min(row.PaidAmount + discountAmount, row.Debit);
+                    var newStatus = newPaid >= row.Debit ? "paid" : "partial";
+                    await conn.ExecuteAsync(new CommandDefinition(
+                        "UPDATE sim_ar_ledger SET paid_amount=@newPaid, status=@newStatus WHERE id=@id",
+                        new { newPaid, newStatus, id = onlyInvoiceId }, tx, cancellationToken: ct));
+                    discountAllocatedInvoiceId = onlyInvoiceId;
+                }
+            }
+
             const string discountSql = """
                 INSERT INTO sim_ar_ledger
                     (tenant_id, customer_id, document_date, document_number, document_type,
-                     debit, credit, balance_after, due_date, reference_note)
+                     debit, credit, balance_after, due_date, reference_note, allocated_invoice_id)
                 VALUES
                     (@tenantId, @customerId, @receiptDate, @discountDoc, 'discount',
-                     0, @credit, @balanceAfter, NULL, @refNote)
+                     0, @credit, NULL, NULL, @refNote, @allocatedInvoiceId)
                 """;
             await conn.ExecuteAsync(new CommandDefinition(
                 discountSql,
@@ -659,21 +741,15 @@ public sealed class CustomerRepository : ICustomerRepository
                     receiptDate,
                     discountDoc = $"CK-{receiptDocumentNumber}",
                     credit = discountAmount,
-                    balanceAfter = runningBalance,
                     refNote = $"voucher:{voucherId:N}|discount:{discountReason ?? "auto"}",
+                    allocatedInvoiceId = (object?)discountAllocatedInvoiceId ?? DBNull.Value,
                 },
                 transaction: tx,
                 cancellationToken: ct));
             rowsInserted++;
         }
 
-        // Update the denormalized current_ar snapshot on the customer row.
-        var newBalance = prevBalance - totalApplied - discountAmount;
-        await conn.ExecuteAsync(new CommandDefinition(
-            "UPDATE sim_customers SET current_ar = @newBalance WHERE tenant_id = @tenantId AND id = @customerId",
-            new { newBalance, tenantId, customerId },
-            transaction: tx,
-            cancellationToken: ct));
+        var newBalance = await RecomputeCurrentArAsync(conn, tx, tenantId, customerId, ct);
 
         await tx.CommitAsync(ct);
 
@@ -693,28 +769,12 @@ public sealed class CustomerRepository : ICustomerRepository
         DateOnly invoiceDate,
         DateOnly? dueDate,
         decimal invoiceTotal,
+        Guid? contractId,
+        Guid? contractPaymentScheduleId,
         CancellationToken ct)
     {
         await using var conn = await _factory.OpenAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
-
-        const string dupSql = "SELECT COUNT(*) FROM sim_ar_ledger WHERE customer_id = @customerId AND reference_note LIKE @tag";
-        var existing = await conn.ExecuteScalarAsync<int>(
-            new CommandDefinition(dupSql,
-                new { customerId, tag = $"voucher:{voucherId:N}%" },
-                transaction: tx,
-                cancellationToken: ct));
-        if (existing > 0)
-        {
-            await tx.RollbackAsync(ct);
-            var customer = await FindByIdAsync(tenantId, customerId, ct)
-                ?? throw new InvalidOperationException("Customer not found");
-            return new InvoiceBookResult(
-                PreviousBalance: customer.CurrentAr,
-                NewBalance: customer.CurrentAr,
-                InvoiceTotal: 0m,
-                LedgerRowsInserted: 0);
-        }
 
         var prevBalance = await conn.ExecuteScalarAsync<decimal>(
             new CommandDefinition(
@@ -723,37 +783,51 @@ public sealed class CustomerRepository : ICustomerRepository
                 transaction: tx,
                 cancellationToken: ct));
 
-        var newBalance = prevBalance + invoiceTotal;
-
+        // Idempotency: a real UNIQUE(tenant_id, voucher_id) constraint
+        // (migration 045) instead of the old reference_note text match —
+        // ON CONFLICT DO NOTHING makes a second apply-invoice call for the
+        // same voucherId a guaranteed no-op at the DB level, not just an
+        // app-level check that could race.
         const string insertSql = """
             INSERT INTO sim_ar_ledger
-                (tenant_id, customer_id, document_date, document_number, document_type,
-                 debit, credit, balance_after, due_date, reference_note)
+                (tenant_id, customer_id, voucher_id, document_date, document_number, document_type,
+                 debit, credit, balance_after, due_date, reference_note,
+                 paid_amount, status, contract_id, contract_payment_schedule_id)
             VALUES
-                (@tenantId, @customerId, @invoiceDate, @invoiceDocumentNumber, 'invoice',
-                 @debit, 0, @balanceAfter, @dueDate, @refNote)
+                (@tenantId, @customerId, @voucherId, @invoiceDate, @invoiceDocumentNumber, 'invoice',
+                 @debit, 0, NULL, @dueDate, @refNote,
+                 0, 'open', @contractId, @contractPaymentScheduleId)
+            ON CONFLICT (tenant_id, voucher_id) WHERE voucher_id IS NOT NULL DO NOTHING
             """;
-        await conn.ExecuteAsync(new CommandDefinition(
+        var inserted = await conn.ExecuteAsync(new CommandDefinition(
             insertSql,
             new
             {
                 tenantId,
                 customerId,
+                voucherId,
                 invoiceDate,
                 invoiceDocumentNumber,
                 debit = invoiceTotal,
-                balanceAfter = newBalance,
                 dueDate = (object?)dueDate ?? DBNull.Value,
                 refNote = $"voucher:{voucherId:N}|book_invoice",
+                contractId = (object?)contractId ?? DBNull.Value,
+                contractPaymentScheduleId = (object?)contractPaymentScheduleId ?? DBNull.Value,
             },
             transaction: tx,
             cancellationToken: ct));
 
-        await conn.ExecuteAsync(new CommandDefinition(
-            "UPDATE sim_customers SET current_ar = @newBalance WHERE tenant_id = @tenantId AND id = @customerId",
-            new { newBalance, tenantId, customerId },
-            transaction: tx,
-            cancellationToken: ct));
+        if (inserted == 0)
+        {
+            await tx.RollbackAsync(ct);
+            return new InvoiceBookResult(
+                PreviousBalance: prevBalance,
+                NewBalance: prevBalance,
+                InvoiceTotal: 0m,
+                LedgerRowsInserted: 0);
+        }
+
+        var newBalance = await RecomputeCurrentArAsync(conn, tx, tenantId, customerId, ct);
 
         await tx.CommitAsync(ct);
 
@@ -762,6 +836,26 @@ public sealed class CustomerRepository : ICustomerRepository
             NewBalance: newBalance,
             InvoiceTotal: invoiceTotal,
             LedgerRowsInserted: 1);
+    }
+
+    // Derived, not incremented — SUM(debit - paid_amount) over every AR row
+    // still open/partial for this customer. Called after every mutation
+    // that can change an invoice's paid_amount/status (book, apply, unapply)
+    // so sim_customers.current_ar is always provably a function of the AR
+    // rows themselves, never a hand-maintained running total that can drift.
+    private static async Task<decimal> RecomputeCurrentArAsync(
+        Npgsql.NpgsqlConnection conn, Npgsql.NpgsqlTransaction tx, Guid tenantId, Guid customerId, CancellationToken ct)
+    {
+        var newBalance = await conn.ExecuteScalarAsync<decimal>(new CommandDefinition("""
+            SELECT COALESCE(SUM(debit - paid_amount), 0)
+            FROM sim_ar_ledger
+            WHERE tenant_id = @tenantId AND customer_id = @customerId
+              AND document_type = 'invoice' AND status IN ('open','partial')
+            """, new { tenantId, customerId }, tx, cancellationToken: ct));
+        await conn.ExecuteAsync(new CommandDefinition(
+            "UPDATE sim_customers SET current_ar = @newBalance WHERE tenant_id = @tenantId AND id = @customerId",
+            new { newBalance, tenantId, customerId }, tx, cancellationToken: ct));
+        return newBalance;
     }
 
     public async Task<ReceiptUnapplyResult> UnapplyReceiptAsync(
@@ -779,6 +873,33 @@ public sealed class CustomerRepository : ICustomerRepository
                 new { tenantId, customerId },
                 transaction: tx,
                 cancellationToken: ct));
+
+        // Before deleting the receipt/discount rows, reverse each specific
+        // invoice's paid_amount/status by exactly the amount this voucher
+        // allocated to it (allocated_invoice_id, set at apply time) — this
+        // is what makes unapply a real, precise reversal instead of only
+        // rebuilding the customer-wide aggregate (which would silently
+        // leave every affected invoice stuck at its old, now-wrong,
+        // paid/partial status).
+        var reversals = (await conn.QueryAsync<(Guid InvoiceId, decimal Amount)>(new CommandDefinition("""
+            SELECT allocated_invoice_id AS InvoiceId, credit AS Amount
+            FROM sim_ar_ledger
+            WHERE customer_id = @customerId AND reference_note LIKE @tag AND allocated_invoice_id IS NOT NULL
+            """, new { customerId, tag = $"voucher:{voucherId:N}%" }, tx, cancellationToken: ct))).AsList();
+
+        foreach (var group in reversals.GroupBy(r => r.InvoiceId))
+        {
+            var totalReverse = group.Sum(r => r.Amount);
+            var invoiceRow = await conn.QuerySingleOrDefaultAsync<(decimal Debit, decimal PaidAmount)?>(
+                new CommandDefinition("SELECT debit, paid_amount FROM sim_ar_ledger WHERE id=@id FOR UPDATE",
+                    new { id = group.Key }, tx, cancellationToken: ct));
+            if (invoiceRow is not { } inv) continue;
+            var restoredPaid = Math.Max(inv.PaidAmount - totalReverse, 0m);
+            var restoredStatus = restoredPaid <= 0m ? "open" : restoredPaid < inv.Debit ? "partial" : "paid";
+            await conn.ExecuteAsync(new CommandDefinition(
+                "UPDATE sim_ar_ledger SET paid_amount=@restoredPaid, status=@restoredStatus WHERE id=@id",
+                new { restoredPaid, restoredStatus, id = group.Key }, tx, cancellationToken: ct));
+        }
 
         // Delete all rows tagged với voucherId. Includes cả credit application
         // rows và optional discount row.
@@ -799,18 +920,7 @@ public sealed class CustomerRepository : ICustomerRepository
             return new ReceiptUnapplyResult(prevBalance, prevBalance, 0);
         }
 
-        // Recompute current_ar = sum(debit) - sum(credit) from remaining rows.
-        const string recomputeSql = """
-            SELECT COALESCE(SUM(debit) - SUM(credit), 0) FROM sim_ar_ledger WHERE customer_id = @customerId
-            """;
-        var newBalance = await conn.ExecuteScalarAsync<decimal>(
-            new CommandDefinition(recomputeSql, new { customerId }, transaction: tx, cancellationToken: ct));
-
-        await conn.ExecuteAsync(new CommandDefinition(
-            "UPDATE sim_customers SET current_ar = @newBalance WHERE tenant_id = @tenantId AND id = @customerId",
-            new { newBalance, tenantId, customerId },
-            transaction: tx,
-            cancellationToken: ct));
+        var newBalance = await RecomputeCurrentArAsync(conn, tx, tenantId, customerId, ct);
 
         await tx.CommitAsync(ct);
 

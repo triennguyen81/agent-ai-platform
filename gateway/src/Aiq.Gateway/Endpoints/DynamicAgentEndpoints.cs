@@ -363,7 +363,7 @@ public static class DynamicAgentEndpoints
                 new { tenantId = testTenantId, departmentId = testDepartmentId, allowed = testResult.Manifest is not null, denialReason = testResult.DenialReason },
                 ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
             return testResult.Manifest is not null
-                ? Results.Ok(testResult.Manifest)
+                ? Results.Ok(await ctx.RequestServices.GetRequiredService<Aiq.Gateway.Notes.KnowledgeBaseRepository>().ReferencesAsync(testResult.Manifest, ct))
                 : Results.Json(new { error = testResult.DenialReason }, statusCode: StatusCodes.Status403Forbidden);
         }
 
@@ -418,7 +418,7 @@ public static class DynamicAgentEndpoints
             new { tenantId, departmentId, allowed = result.Manifest is not null, denialReason = result.DenialReason },
             ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
         return result.Manifest is not null
-            ? Results.Ok(result.Manifest)
+            ? Results.Ok(await ctx.RequestServices.GetRequiredService<Aiq.Gateway.Notes.KnowledgeBaseRepository>().ReferencesAsync(result.Manifest, ct))
             : Results.Json(new { error = result.DenialReason }, statusCode: StatusCodes.Status403Forbidden);
     }
 
@@ -454,7 +454,7 @@ public static class DynamicAgentEndpoints
             new { tenantId, departmentId, routerAgentId, specialistAgentId, allowed = result.Manifest is not null, denialReason = result.DenialReason },
             ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
         return result.Manifest is not null
-            ? Results.Ok(result.Manifest)
+            ? Results.Ok(await ctx.RequestServices.GetRequiredService<Aiq.Gateway.Notes.KnowledgeBaseRepository>().ReferencesAsync(result.Manifest, ct))
             : Results.Json(new { error = result.DenialReason }, statusCode: StatusCodes.Status403Forbidden);
     }
 

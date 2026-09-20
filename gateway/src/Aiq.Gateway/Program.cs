@@ -195,6 +195,7 @@ builder.Services.AddScoped<IWorkflowRepository, WorkflowRepository>();
 builder.Services.AddScoped<IReviewBoardRepository, ReviewBoardRepository>();
 builder.Services.AddScoped<IHitlRepository, HitlRepository>();
 builder.Services.AddScoped<IAgentKnowledgeRepository, AgentKnowledgeRepository>();
+builder.Services.AddScoped<KnowledgeBaseRepository>();
 builder.Services.AddScoped<ISkillRepository, SkillRepository>();
 builder.Services.AddScoped<IDepartmentKnowledgeRepository, DepartmentKnowledgeRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Customers.ICustomerRepository, Aiq.Gateway.Customers.CustomerRepository>();
@@ -458,10 +459,13 @@ app.MapToolEndpoints();
 app.MapWorkflowEndpoints();
 app.MapSkillEndpoints();
 app.MapDepartmentKnowledgeEndpoints();
+app.MapKnowledgeBaseEndpoints();
 app.MapReviewEndpoints();
 app.MapHitlEndpoints();
 app.MapAgentKnowledgeEndpoints();
 app.MapUserEndpoints();
+app.MapMeEndpoints();
+app.MapAccountingEndpoints();
 app.MapMetrics();              // Prometheus scrape endpoint at /metrics
 
 if (!string.IsNullOrWhiteSpace(jobsOptions.DashboardPath))
@@ -519,10 +523,15 @@ static TimeZoneInfo TryGetVnTimeZone()
     return TimeZoneInfo.Utc;
 }
 
-app.MapGet("/me", (HttpContext ctx) =>
+app.MapGet("/me", async (HttpContext ctx, Aiq.Gateway.Data.IUserRepository users, CancellationToken ct) =>
 {
     var user = ctx.User;
     AuthenticatedPrincipalContext.TryGet(ctx, out var principal);
+    // Extra lookup (not carried on the JWT/PrincipalContext) purely to
+    // surface the soft change-password prompt to the web tier — see
+    // Endpoints/MeEndpoints.cs ChangePasswordAsync and migration 046.
+    var mustChangePassword = principal is not null
+        && (await users.FindByIdAsync(principal.UserId, ct))?.MustChangePassword == true;
     return Results.Ok(new
     {
         sub   = user.FindFirst("sub")?.Value,
@@ -535,7 +544,8 @@ app.MapGet("/me", (HttpContext ctx) =>
         tenantActive = principal?.TenantActive,
         departmentActive = principal?.DepartmentActive,
         departmentCode = principal?.DepartmentCode,
-        departmentName = principal?.DepartmentName
+        departmentName = principal?.DepartmentName,
+        mustChangePassword,
     });
 })
 .RequireAuthorization("authenticated")

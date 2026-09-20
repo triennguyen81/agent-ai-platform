@@ -73,6 +73,8 @@ TT200_ACCOUNTS: dict[str, tuple[str, str | None, str]] = {
     "331": ("Phải trả người bán", None, "Chi tiết từng NCC; có thể có dư Nợ (ứng trước)"),
     "333": ("Thuế và các khoản phải nộp NN", None, "3331 GTGT · 3334 TNDN · 3335 TNCN · 3338 phí lệ phí"),
     "3331": ("Thuế GTGT phải nộp", "333", "33311 GTGT đầu ra · 33312 GTGT hàng nhập khẩu"),
+    "33311": ("Thuế GTGT đầu ra", "3331", "Dùng khi hạch toán VAT đầu ra của hoá đơn bán ra (invoice_vat_out) — Có 33311 khi ghi nhận doanh thu"),
+    "33312": ("Thuế GTGT hàng nhập khẩu", "3331", "VAT hàng nhập khẩu phải nộp ở khâu nhập khẩu, khác với 1331/1332 (VAT được khấu trừ)"),
     "3332": ("Thuế tiêu thụ đặc biệt", "333", ""),
     "3333": ("Thuế xuất nhập khẩu", "333", ""),
     "3334": ("Thuế thu nhập doanh nghiệp", "333", ""),

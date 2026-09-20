@@ -30,6 +30,7 @@ from aiq_agent.agentic.contract_normalize import (
     normalize_vat_rate,
     repair_milestone,
     repair_payment_term,
+    split_clauses_from_raw_text,
     validate_extracted_payload,
 )
 
@@ -95,20 +96,94 @@ def _normalize_payment_terms(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _normalize_clauses(clauses_in: Any, raw_text: str) -> list[dict[str, Any]]:
+    """Real bug fix: clause body/heading must never depend on the LLM
+    faithfully reproducing (or even summarizing) the source text — a
+    production extraction returned clauses with ordinal only, no heading
+    or body, for every single clause, even though raw_text held the full
+    original wording. split_clauses_from_raw_text (contract_normalize.py)
+    deterministically slices the ACTUAL contract text by its own "Điều N"
+    markers; that becomes the authoritative heading/body for every clause
+    it finds. The model's own clauses_in is only ever used for two things:
+      (a) the semantic classification fields a regex cannot determine
+          (has_deadline/has_penalty/clause_type/is_open/trigger_event),
+          merged in here by ordinal;
+      (b) a fallback source of heading/body for a document that doesn't
+          use the "Điều N" convention at all (deterministic split empty) —
+          never silently dropping clauses for those contracts.
+    """
+    llm_by_ordinal: dict[int, dict[str, Any]] = {}
+    if isinstance(clauses_in, list):
+        for idx, c in enumerate(clauses_in, start=1):
+            if not isinstance(c, dict):
+                continue
+            ordinal = coerce_positive_int(c.get("ordinal")) or idx
+            llm_by_ordinal[ordinal] = c
+
+    def classification_for(ordinal: int) -> dict[str, Any]:
+        llm_clause = llm_by_ordinal.get(ordinal) or {}
+        return {
+            "hasDeadline": bool(llm_clause.get("has_deadline", False)),
+            "hasPenalty": bool(llm_clause.get("has_penalty", False)),
+            "clauseType": llm_clause.get("clause_type"),
+            "isOpen": bool(llm_clause.get("is_open", False)),
+            "triggerEvent": llm_clause.get("trigger_event"),
+        }
+
+    deterministic = split_clauses_from_raw_text(raw_text)
+    if deterministic:
+        return [
+            {
+                "ordinal": d["ordinal"],
+                "heading": d["heading"],
+                "body": d["body"],
+                **classification_for(d["ordinal"]),
+            }
+            for d in deterministic
+        ]
+
+    # No "Điều N" structure found in raw_text (e.g. a different contract
+    # template) — fall back to whatever the model itself provided, exactly
+    # as before, rather than returning zero clauses.
+    out: list[dict[str, Any]] = []
+    for ordinal, c in sorted(llm_by_ordinal.items()):
+        out.append(
+            {
+                "ordinal": ordinal,
+                "heading": c.get("heading"),
+                "body": str(c.get("body", "")),
+                **classification_for(ordinal),
+            }
+        )
+    return out
+
+
 def _normalize_milestones(raw: Any) -> list[dict[str, Any]]:
     """Same deterministic repair as _normalize_payment_terms, via
-    repair_milestone (duration_months instead of offset_days)."""
+    repair_milestone (duration_months instead of offset_days).
+
+    Bug fix: this used to `continue` (silently drop) any milestone whose
+    `name` was missing/blank — MilestoneDto.Name is a required, non-null
+    Gateway field, so a model extraction that named some milestones "M2",
+    "M3"... in a different field (or omitted a name outright) lost those
+    milestones entirely before /process ever saw them, rather than being
+    normalized. A missing name is now repaired with a generic, ordinal-
+    based fallback ("Mốc {ordinal}") — never a hardcoded specific-contract
+    label — so every extracted milestone is preserved and reaches the
+    canonical schema the processor expects."""
     if not isinstance(raw, list):
         return []
     out: list[dict[str, Any]] = []
     for idx, m in enumerate(raw, start=1):
-        if not isinstance(m, dict) or not m.get("name"):
+        if not isinstance(m, dict):
             continue
         repaired = repair_milestone(m)
+        ordinal = coerce_positive_int(m.get("ordinal")) or idx
+        name = str(m.get("name") or "").strip() or f"Mốc {ordinal}"
         out.append(
             {
-                "ordinal": coerce_positive_int(m.get("ordinal")) or idx,
-                "name": str(m["name"]),
+                "ordinal": ordinal,
+                "name": name,
                 "dueDate": repaired["due_date"],
                 "reminderDays": coerce_positive_int(m.get("reminder_days")) or 7,
                 "triggerEvent": repaired["trigger_event"],
@@ -190,25 +265,14 @@ def build_contract_tools(*, token: str, gateway_base: str) -> list[Any]:
         # best-effort repair with no visibility at all.
         validation_issues = validate_extracted_payload(fields)
 
-        # Normalize clauses payload — agent may send arbitrary shapes.
-        clauses_in = fields.get("clauses") or []
-        clauses_out: list[dict[str, Any]] = []
-        if isinstance(clauses_in, list):
-            for idx, c in enumerate(clauses_in, start=1):
-                if not isinstance(c, dict):
-                    continue
-                clauses_out.append(
-                    {
-                        "ordinal": int(c.get("ordinal", idx)),
-                        "heading": c.get("heading"),
-                        "body": str(c.get("body", "")),
-                        "hasDeadline": bool(c.get("has_deadline", False)),
-                        "hasPenalty": bool(c.get("has_penalty", False)),
-                        "clauseType": c.get("clause_type"),
-                        "isOpen": bool(c.get("is_open", False)),
-                        "triggerEvent": c.get("trigger_event"),
-                    }
-                )
+        # Same "prefer the tool's own raw_text arg, fall back to fields"
+        # resolution the saved rawText field below already used — clause
+        # splitting needs the identical effective text.
+        effective_raw_text = raw_text or str(fields.get("raw_text") or "")
+
+        # Clause body/heading come from raw_text deterministically whenever
+        # possible — never trusted from the LLM alone. See _normalize_clauses.
+        clauses_out = _normalize_clauses(fields.get("clauses"), effective_raw_text)
 
         body = {
             "title": str(fields.get("title"))[:500],
@@ -220,7 +284,7 @@ def build_contract_tools(*, token: str, gateway_base: str) -> list[Any]:
             "totalValue": fields.get("total_value"),
             "currency": fields.get("currency") or "VND",
             "sourcePdfPath": fields.get("source_pdf_path"),
-            "rawText": raw_text or fields.get("raw_text"),
+            "rawText": effective_raw_text or None,
             "tags": [str(t) for t in (fields.get("tags") or []) if t],
             "clauses": clauses_out,
         }

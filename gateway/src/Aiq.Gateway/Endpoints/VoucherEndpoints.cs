@@ -92,6 +92,10 @@ public static class VoucherEndpoints
         // DELETE rows tagged voucher:{id} + recompute current_ar.
         group.MapPost("/{id:guid}/unapply-receipt", UnapplyReceiptAsync).RequireAuthorization("department_admin");
 
+        // Symmetric reversal for the Purchase side — previously missing
+        // entirely (only Customer/receipt had an unapply path).
+        group.MapPost("/{id:guid}/unapply-payment", UnapplyPaymentAsync).RequireAuthorization("department_admin");
+
         // Luồng 02 — Customer/AR/Contract-installment match proposal for a
         // receipt voucher. Read is Department-scoped like GetAsync; reject
         // (ADMIN decides the proposed match is wrong, e.g. UNKNOWN_PAYER/
@@ -623,6 +627,7 @@ public static class VoucherEndpoints
         Guid id,
         IVoucherRepository repo,
         Aiq.Gateway.Customers.ICustomerRepository customers,
+        Aiq.Gateway.Governance.ITenantRepository tenants,
         HttpContext ctx,
         CancellationToken ct)
     {
@@ -645,6 +650,27 @@ public static class VoucherEndpoints
         if (voucher.Voucher.Status == "verified")
         {
             return Results.Ok(new { voucherId = id, status = "already_applied", message = "Đã áp trước đó." });
+        }
+
+        // Deterministic direction gate — never trust voucher_type alone (it
+        // is set by the LLM extraction pipeline from document text). Resolve
+        // from the voucher's own seller/buyer MST against the tenant's
+        // server-side-configured company_tax_id; block the apply rather than
+        // silently booking AR under a possibly-wrong classification.
+        var companyTaxId = await tenants.GetCompanyTaxIdAsync(tenantId, ct);
+        var resolution = Aiq.Gateway.Accounting.InvoiceDirectionResolver.Resolve(
+            voucher.Voucher.SellerMst, voucher.Voucher.BuyerMst, companyTaxId);
+        if (resolution.Direction != Aiq.Gateway.Accounting.InvoiceDirection.Sales)
+        {
+            return Results.Conflict(new
+            {
+                error = "invoice_direction_mismatch",
+                resolvedDirection = resolution.Direction.ToString().ToLowerInvariant(),
+                reason = resolution.Reason,
+                message = resolution.Direction == Aiq.Gateway.Accounting.InvoiceDirection.NeedsReview
+                    ? "Không xác định được chiều hoá đơn (bán/mua) một cách chắc chắn — cần cấu hình MST công ty hoặc kiểm tra lại MST người bán/mua."
+                    : "MST người mua trùng với MST công ty hiện tại — đây có vẻ là hoá đơn MUA, không áp dụng apply-invoice (hoá đơn bán).",
+            });
         }
 
         var extractedJson = voucher.Voucher.ExtractedFieldsJson ?? "{}";
@@ -675,7 +701,8 @@ public static class VoucherEndpoints
         }
 
         var result = await customers.BookInvoiceAsync(
-            tenantId, customerId, id, docNumber, docDate, dueDate, invoiceTotal, ct);
+            tenantId, customerId, id, docNumber, docDate, dueDate, invoiceTotal,
+            voucher.Voucher.ContractId, voucher.Voucher.ContractInstallmentId, ct);
 
         await repo.UpdateAsync(
             tenantId, voucher.Voucher.UserId, id,
@@ -764,11 +791,77 @@ public static class VoucherEndpoints
         });
     }
 
+    // Symmetric to UnapplyReceiptAsync, Purchase side — previously missing
+    // entirely: only payment/bank_transfer vouchers (not invoice_vat_in
+    // itself, which is a one-shot book, not a reversible "match") are
+    // unappliable, mirroring what actually gets reversed.
+    private static async Task<IResult> UnapplyPaymentAsync(
+        Guid id,
+        IVoucherRepository repo,
+        Aiq.Gateway.Suppliers.ISupplierRepository suppliers,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
+
+        var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (voucher is null) return Results.NotFound();
+        var vt = voucher.Voucher.VoucherType?.ToLowerInvariant() ?? "";
+        if (vt is not ("payment" or "bank_transfer"))
+        {
+            return Results.BadRequest(new { error = "unapply-payment chỉ áp dụng cho payment / bank_transfer" });
+        }
+        if (voucher.Voucher.Status != "verified")
+        {
+            return Results.BadRequest(new
+            {
+                error = $"chỉ unapply được payment đã verified (hiện: {voucher.Voucher.Status})",
+            });
+        }
+
+        var extractedJson = voucher.Voucher.ExtractedFieldsJson ?? "{}";
+        using var doc = System.Text.Json.JsonDocument.Parse(extractedJson);
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("ap_context", out var apEl)
+            || !apEl.TryGetProperty("supplier", out var supEl)
+            || !supEl.TryGetProperty("Id", out var supIdEl))
+        {
+            return Results.BadRequest(new { error = "voucher chưa có ap_context.supplier" });
+        }
+        var supplierId = supIdEl.GetGuid();
+
+        var result = await suppliers.UnapplyExpenseAsync(tenantId, supplierId, id, ct);
+
+        await repo.UpdateAsync(
+            tenantId, voucher.Voucher.UserId, id,
+            new UpdateVoucherRequest(
+                Status: "extracted",
+                DocumentNumber: null, DocumentSeries: null, DocumentDate: null,
+                SellerName: null, SellerMst: null, SellerAddress: null,
+                BuyerName: null, BuyerMst: null, BuyerAddress: null,
+                PaymentMethod: null, Subtotal: null, VatRate: null, VatAmount: null,
+                DiscountAmount: null, TotalAmount: null, Currency: null,
+                AmountInWords: null,
+                ErrorMessage: null,
+                Tags: null),
+            ct);
+
+        return Results.Ok(new
+        {
+            voucherId = id,
+            status = result.LedgerRowsDeleted == 0 ? "nothing_to_unapply" : "unapplied",
+            previous_balance = result.PreviousBalance,
+            new_balance = result.NewBalance,
+            ledger_rows_deleted = result.LedgerRowsDeleted,
+        });
+    }
+
     private static async Task<IResult> ApplyExpenseAsync(
         Guid id,
         IVoucherRepository repo,
         Aiq.Gateway.Suppliers.ISupplierRepository suppliers,
         Aiq.Gateway.Employees.IExpenseClaimRepository expenseClaims,
+        Aiq.Gateway.Governance.ITenantRepository tenants,
         HttpContext ctx,
         CancellationToken ct)
     {
@@ -791,6 +884,29 @@ public static class VoucherEndpoints
         if (voucher.Voucher.Status == "verified")
         {
             return Results.Ok(new { voucherId = id, status = "already_applied", message = "Đã áp trước đó." });
+        }
+
+        // Same deterministic direction gate as ApplyInvoiceAsync — only for
+        // invoice_vat_in (payment/bank_transfer settle an AP that already
+        // passed this gate when its invoice was booked; expense_claim is a
+        // different domain, no seller/buyer MST pair at all).
+        if (vt == "invoice_vat_in")
+        {
+            var companyTaxId = await tenants.GetCompanyTaxIdAsync(tenantId, ct);
+            var resolution = Aiq.Gateway.Accounting.InvoiceDirectionResolver.Resolve(
+                voucher.Voucher.SellerMst, voucher.Voucher.BuyerMst, companyTaxId);
+            if (resolution.Direction != Aiq.Gateway.Accounting.InvoiceDirection.Purchase)
+            {
+                return Results.Conflict(new
+                {
+                    error = "invoice_direction_mismatch",
+                    resolvedDirection = resolution.Direction.ToString().ToLowerInvariant(),
+                    reason = resolution.Reason,
+                    message = resolution.Direction == Aiq.Gateway.Accounting.InvoiceDirection.NeedsReview
+                        ? "Không xác định được chiều hoá đơn (bán/mua) một cách chắc chắn — cần cấu hình MST công ty hoặc kiểm tra lại MST người bán/mua."
+                        : "MST người bán trùng với MST công ty hiện tại — đây có vẻ là hoá đơn BÁN, không áp dụng apply-expense (hoá đơn mua).",
+                });
+            }
         }
 
         var extractedJson = voucher.Voucher.ExtractedFieldsJson ?? "{}";
@@ -827,7 +943,8 @@ public static class VoucherEndpoints
                 }
 
                 var bookResult = await suppliers.BookInvoiceAsync(
-                    tenantId, supplierId, id, docNumber, docDate, dueDate, invoiceTotal, ct);
+                    tenantId, supplierId, id, docNumber, docDate, dueDate, invoiceTotal,
+                    voucher.Voucher.ContractId, voucher.Voucher.ContractInstallmentId, ct);
                 payload = new
                 {
                     voucherId = id,
@@ -1286,6 +1403,7 @@ public static class VoucherEndpoints
     private static async Task<IResult> GetAsync(
         Guid id,
         IVoucherRepository repo,
+        Aiq.Gateway.Governance.ITenantRepository tenants,
         HttpContext ctx,
         CancellationToken ct)
     {
@@ -1296,7 +1414,27 @@ public static class VoucherEndpoints
         if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
 
         var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
-        return voucher is null ? Results.NotFound() : Results.Ok(voucher);
+        if (voucher is null) return Results.NotFound();
+
+        // Explain, never decide — this is display-only so a human reviewer
+        // (or the agent, when asked to explain) can see the deterministic
+        // classification BEFORE apply-invoice/apply-expense enforces it.
+        var vt = voucher.Voucher.VoucherType?.ToLowerInvariant() ?? "";
+        object? resolvedDirection = null;
+        if (vt is "invoice_vat_out" or "invoice_vat_in" or "invoice_vat")
+        {
+            var companyTaxId = await tenants.GetCompanyTaxIdAsync(tenantId, ct);
+            var resolution = Aiq.Gateway.Accounting.InvoiceDirectionResolver.Resolve(
+                voucher.Voucher.SellerMst, voucher.Voucher.BuyerMst, companyTaxId);
+            resolvedDirection = new
+            {
+                direction = resolution.Direction.ToString().ToLowerInvariant(),
+                counterpartyTaxId = resolution.CounterpartyTaxId,
+                reason = resolution.Reason,
+            };
+        }
+
+        return Results.Ok(new { voucher.Voucher, voucher.LineItems, voucher.JournalSuggestions, resolvedDirection });
     }
 
     private static async Task<IResult> UpdateAsync(

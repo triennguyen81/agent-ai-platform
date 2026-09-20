@@ -36,8 +36,8 @@ Khi nhận raw text của hợp đồng, trả về **JSON hợp lệ** (không 
   "clauses": [
     {
       "ordinal": 1,
-      "heading": "string | null — vd 'Điều 3 — Giá trị hợp đồng'",
-      "body": "string — nội dung tóm tắt 1-3 câu",
+      "heading": "string | null — chỉ dùng nếu văn bản KHÔNG theo mẫu 'Điều N' (xem ghi chú dưới); vd 'Điều 3 — Giá trị hợp đồng'",
+      "body": "string | null — CHỈ dùng nếu văn bản KHÔNG theo mẫu 'Điều N' (xem ghi chú dưới). Nếu điền, PHẢI là nguyên văn đầy đủ của điều khoản, KHÔNG tóm tắt.",
       "has_deadline": true,
       "has_penalty": false
     }
@@ -128,8 +128,8 @@ Các trường này nuôi bước "Sinh lịch thu tiền" và "Kiểm tra" củ
 
 ### Clauses
 - Mỗi "Điều X" trong hợp đồng = 1 clause — **bắt buộc trích xuất TẤT CẢ, kể cả điều cuối cùng.** Đếm số điều trong văn bản gốc trước khi trả JSON; số clause trả về phải khớp số đó.
-- `heading`: format "Điều {N} — {tên điều}" nếu có.
-- `body`: tóm tắt **1-3 câu** ý chính. KHÔNG copy nguyên văn dài.
+- **`heading`/`body` KHÔNG còn là việc của bạn cho văn bản theo mẫu "Điều N":** hệ thống tự động cắt nguyên văn `heading`+`body` từng điều trực tiếp từ raw_text (khớp theo `ordinal`) — KHÔNG dùng bản tóm tắt của model nữa, vì tóm tắt luôn thiếu chi tiết so với văn bản gốc. Để trống hai trường này (hoặc bỏ qua) là bình thường; chỉ điền nếu bạn chắc chắn văn bản KHÔNG theo mẫu "Điều N" (auto-detect sẽ không tìm thấy điều nào, hệ thống mới dùng lại giá trị bạn điền ở đây làm phương án dự phòng) — khi đó `body` phải là nguyên văn đầy đủ, không tóm tắt.
+- **Việc thật sự quan trọng của bạn cho mỗi `ordinal`** là 4 trường phân loại ngữ nghĩa bên dưới — hệ thống ghép chúng vào đúng điều theo `ordinal`, nên `ordinal` phải khớp đúng số thứ tự "Điều N" thật trong văn bản.
 - `has_deadline` = true nếu clause chứa: "trong vòng X ngày", "trước ngày", "không muộn hơn", "chậm nhất", "định kỳ", "hằng tháng", "hằng quý".
 - `has_penalty` = true **CHỈ KHI** clause nêu rõ một mức phạt/lãi suất phạt cụ thể áp dụng khi vi phạm — vd "phạt 0,03%/ngày", "phạt vi phạm hợp đồng", "lãi suất chậm trả 0,05%/ngày". Đây là NGHĨA VỤ TÀI CHÍNH có tỷ lệ/mức cụ thể.
   KHÔNG đánh dấu `has_penalty=true` chỉ vì clause nhắc đến "bồi thường", "chấm dứt hợp đồng", "đơn phương chấm dứt", hoặc "vi phạm" — các từ này chỉ là penalty nếu đi kèm một con số/tỷ lệ phạt cụ thể. Ví dụ điều khoản chấm dứt hợp đồng nêu "nghĩa vụ thanh toán/bồi thường phát sinh trước đó vẫn phải thực hiện" là điều khoản CHẤM DỨT, không phải điều khoản PHẠT — `has_penalty=false`.
@@ -166,5 +166,4 @@ Trả JSON tối thiểu:
 
 - Không thêm comment Markdown bên ngoài JSON.
 - Không bịa số liệu — null tốt hơn sai.
-- Không trích nguyên văn body > 500 ký tự cho mỗi clause.
 - Không thêm clause `Điều khoản chung` chỉ để đếm số.

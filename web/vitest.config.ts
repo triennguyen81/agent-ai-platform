@@ -1,9 +1,9 @@
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
-// D7: covers pure logic modules only (nav-model.ts and similar) — no
-// jsdom/React rendering setup, matching what these tests actually need.
+// Node tests cover pure logic, route handlers and server-rendered React forms.
 export default defineConfig({
+  esbuild: { jsx: "automatic" },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from aiq_agent.llm.base import ChatMessage
-from aiq_agent.memory.base import MemoryStore, ThreadSummary
+from aiq_agent.memory.base import DEFAULT_THREAD_MODE, MemoryStore, ThreadSummary
 
 
 class RedisMemoryStore(MemoryStore):
@@ -58,7 +58,14 @@ class RedisMemoryStore(MemoryStore):
     def _meta_key(self, thread_id: str) -> str:
         return f"{self._key_prefix}meta:{thread_id}"
 
-    async def append(self, thread_id: str, messages: Sequence[ChatMessage]) -> None:
+    async def append(
+        self,
+        thread_id: str,
+        messages: Sequence[ChatMessage],
+        *,
+        mode: str = DEFAULT_THREAD_MODE,
+        agent_id: str | None = None,
+    ) -> None:
         if not messages:
             return
 
@@ -83,6 +90,12 @@ class RedisMemoryStore(MemoryStore):
         if first_user:
             # Only set the title on the first user message of the thread.
             pipe.hsetnx(meta_key, "title", first_user[:120])
+        # Same set-once semantics as title: a thread's mode/agent_id are
+        # fixed at creation and never changed by a later append to the
+        # same id.
+        pipe.hsetnx(meta_key, "mode", mode)
+        if agent_id:
+            pipe.hsetnx(meta_key, "agent_id", agent_id)
         pipe.hset(meta_key, mapping=meta_updates)
         pipe.expire(meta_key, self._ttl_seconds)
         await pipe.execute()
@@ -93,8 +106,21 @@ class RedisMemoryStore(MemoryStore):
         pipe.delete(self._meta_key(thread_id))
         await pipe.execute()
 
+    async def get_mode(self, thread_id: str) -> str:
+        mode = await self._redis.hget(self._meta_key(thread_id), "mode")
+        return mode or DEFAULT_THREAD_MODE
+
+    async def get_agent_id(self, thread_id: str) -> str | None:
+        agent_id = await self._redis.hget(self._meta_key(thread_id), "agent_id")
+        return agent_id or None
+
     async def list_threads(
-        self, *, prefix: str | None = None, limit: int = 50
+        self,
+        *,
+        prefix: str | None = None,
+        limit: int = 50,
+        mode: str | None = None,
+        agent_id: str | None = None,
     ) -> list[ThreadSummary]:
         # SCAN over message-list keys; meta entries live under a separate
         # prefix so the pattern below doesn't collect them twice.
@@ -114,6 +140,12 @@ class RedisMemoryStore(MemoryStore):
                     continue
                 meta = await self._redis.hgetall(self._meta_key(thread_id))
                 title = (meta.get("title") or "Cuộc trò chuyện")[:120]
+                thread_mode = meta.get("mode") or DEFAULT_THREAD_MODE
+                if mode is not None and thread_mode != mode:
+                    continue
+                thread_agent_id = meta.get("agent_id") or None
+                if agent_id is not None and thread_agent_id != agent_id:
+                    continue
                 try:
                     updated_at = float(meta.get("updated_at", "0"))
                 except ValueError:
@@ -124,6 +156,8 @@ class RedisMemoryStore(MemoryStore):
                         title=title,
                         message_count=length,
                         updated_at=updated_at,
+                        mode=thread_mode,
+                        agent_id=thread_agent_id,
                     )
                 )
             if cursor == 0:

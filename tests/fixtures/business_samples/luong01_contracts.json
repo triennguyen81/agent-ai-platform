@@ -1,0 +1,266 @@
+{
+  "_note": "Luồng 01 — Hợp đồng. Each case gives the exact request bodies for POST /contracts (create) then POST /contracts/{id}/process (classify/extract/validate/schedule), matching gateway/src/Aiq.Gateway/Contracts/ContractRecords.cs's CreateContractRequest/ProcessContractRequest exactly (camelCase JSON, ASP.NET default). VERIFIED LIVE (2026-09-15): /contracts requires the 'department_member' policy — a tenant_owner token gets rejected (not a Department principal, matches the platform's existing ACL tests); use a department_admin token (or a department-assigned user token) instead. The create response is WRAPPED: the new contract's id is at response.contract.id, not response.id — substitute THAT into the process call's URL, not the top-level response.",
+
+  "cases": [
+    {
+      "caseId": "HD-001",
+      "label": "Normal contract (matches the business process document's own worked example)",
+      "customerRef": "CUS-001",
+      "create": {
+        "method": "POST",
+        "path": "/contracts",
+        "body": {
+          "title": "Hợp đồng dịch vụ CNTT 147/2026/HĐDV",
+          "partyA": "AccAgent Demo Co.",
+          "partyB": "Công ty CP Kỹ thuật Bình Minh",
+          "signedDate": "2026-08-15",
+          "effectiveDate": "2026-08-15",
+          "endDate": "2026-12-31",
+          "totalValue": 1980000000,
+          "currency": "VND",
+          "tags": ["luong01", "sample", "normal"]
+        }
+      },
+      "process": {
+        "method": "POST",
+        "path": "/contracts/{{contractId}}/process",
+        "body": {
+          "documentType": "service_contract",
+          "contractNumber": "147/2026/HĐDV",
+          "subtotal": 1800000000,
+          "vatRate": 10,
+          "totalValue": 1980000000,
+          "retentionPercent": 5,
+          "penaltyPercent": 0.05,
+          "warrantyMonths": 12,
+          "parties": [
+            { "partyRole": "seller", "name": "AccAgent Demo Co.", "taxCode": "0100000999", "address": "Trụ sở demo", "representative": "Đại diện Demo" },
+            { "partyRole": "buyer", "name": "Công ty CP Kỹ thuật Bình Minh", "taxCode": "0301234567", "address": "12 Nguyễn Huệ, Quận 1, TP.HCM", "representative": "Nguyễn Văn Bình" }
+          ],
+          "paymentTerms": [
+            { "ordinal": 1, "description": "Ký hợp đồng", "percentage": 30, "dueDate": "2026-09-14" },
+            { "ordinal": 2, "description": "Nghiệm thu giai đoạn 1", "percentage": 40, "triggerEvent": "Nghiệm thu giai đoạn 1" },
+            { "ordinal": 3, "description": "Nghiệm thu & bàn giao", "percentage": 30, "triggerEvent": "Nghiệm thu tổng thể & bàn giao" }
+          ],
+          "milestones": [
+            { "ordinal": 1, "name": "Bàn giao tài liệu thiết kế", "dueDate": "2026-09-30", "reminderDays": 7 },
+            { "ordinal": 2, "name": "Nghiệm thu giai đoạn 1", "triggerEvent": "Sau khi thanh toán đợt 1", "durationMonths": 1, "reminderDays": 7 },
+            { "ordinal": 3, "name": "Nghiệm thu tổng thể & bàn giao", "dueDate": "2026-12-15", "reminderDays": 7 },
+            { "ordinal": 4, "name": "Hết hiệu lực hợp đồng", "dueDate": "2026-12-31", "reminderDays": 30 }
+          ]
+        }
+      },
+      "expected": {
+        "workflowState": "SCHEDULE_GENERATED",
+        "alerts": [],
+        "paymentCount": 3,
+        "milestoneCount": 4,
+        "counterpartyProposal": "expected — CUS-001's MST 0301234567 is not yet in sim_customers/sim_suppliers of a freshly-seeded demo tenant, so a NEW_COUNTERPARTY info alert + counterparty proposal is expected on first run (load master_data.json's customers via seed.sql BEFORE processing this contract if you want to test the 'already-known counterparty' path instead)",
+        "journalEntries": "NONE — signing/processing a contract must never create a voucher or journal_suggestions row (see contract-processing E2E §6)",
+        "crossFlowNote": "Paying payment-term ordinal 1 via a Luồng 02 receipt (see luong02_receivables.json case AR-001) is expected to: (a) recompute contracts.progress_percent to 30, (b) activate milestone ordinal 2 (status pending -> active, expected_date computed from duration_months)."
+      }
+    },
+    {
+      "caseId": "HD-002",
+      "label": "Missing appendix — a clause references 'phụ lục bảng giá' that was never received",
+      "customerRef": "CUS-002",
+      "create": {
+        "method": "POST",
+        "path": "/contracts",
+        "body": {
+          "title": "Hợp đồng mua bán vật tư 210/2026/HĐMB",
+          "partyA": "AccAgent Demo Co.",
+          "partyB": "Công ty TNHH Thương mại Hải Đăng",
+          "signedDate": "2026-08-20",
+          "effectiveDate": "2026-08-20",
+          "totalValue": 450000000,
+          "currency": "VND",
+          "tags": ["luong01", "sample", "missing_appendix"],
+          "clauses": [
+            { "ordinal": 1, "heading": "Điều 1. Đối tượng hợp đồng", "body": "Bên B cung cấp vật tư theo bảng giá quy định tại phụ lục đính kèm hợp đồng này." },
+            { "ordinal": 2, "heading": "Điều 2. Thanh toán", "body": "Thanh toán trong vòng 15 ngày kể từ ngày nhận hàng và hoá đơn hợp lệ." }
+          ]
+        }
+      },
+      "process": {
+        "method": "POST",
+        "path": "/contracts/{{contractId}}/process",
+        "body": {
+          "documentType": "purchase_contract",
+          "contractNumber": "210/2026/HĐMB",
+          "subtotal": 409090909,
+          "vatRate": 10,
+          "totalValue": 450000000,
+          "parties": [
+            { "partyRole": "seller", "name": "AccAgent Demo Co.", "taxCode": "0100000999" },
+            { "partyRole": "buyer", "name": "Công ty TNHH Thương mại Hải Đăng", "taxCode": "0302345678" }
+          ],
+          "paymentTerms": [
+            { "ordinal": 1, "description": "Thanh toán sau nhận hàng", "percentage": 100, "dueDate": "2026-09-05" }
+          ]
+        }
+      },
+      "expected": {
+        "workflowState": "SCHEDULE_GENERATED",
+        "alerts": [
+          { "code": "MISSING_APPENDIX", "severity": "warning", "message": "Hợp đồng dẫn chiếu phụ lục nhưng chưa nhận được phụ lục.", "fieldName": "documents" }
+        ],
+        "paymentCount": 1,
+        "milestoneCount": 0,
+        "journalEntries": "NONE",
+        "resolutionHint": "Compare with HD-005, which uploads the matching appendix document BEFORE processing and gets no MISSING_APPENDIX alert."
+      }
+    },
+    {
+      "caseId": "HD-003",
+      "label": "Template deviation — penalty rate above the business-standard threshold",
+      "customerRef": "CUS-003",
+      "create": {
+        "method": "POST",
+        "path": "/contracts",
+        "body": {
+          "title": "Hợp đồng thi công xây dựng 305/2026/HĐXD",
+          "partyA": "AccAgent Demo Co.",
+          "partyB": "Công ty CP Xây dựng Sông Hồng",
+          "signedDate": "2026-07-01",
+          "effectiveDate": "2026-07-01",
+          "endDate": "2027-01-31",
+          "totalValue": 8000000000,
+          "currency": "VND",
+          "tags": ["luong01", "sample", "penalty_deviation"]
+        }
+      },
+      "process": {
+        "method": "POST",
+        "path": "/contracts/{{contractId}}/process",
+        "body": {
+          "documentType": "service_contract",
+          "contractNumber": "305/2026/HĐXD",
+          "subtotal": 7272727273,
+          "vatRate": 10,
+          "totalValue": 8000000000,
+          "penaltyPercent": 0.05,
+          "standardPenaltyThreshold": 0.03,
+          "parties": [
+            { "partyRole": "seller", "name": "AccAgent Demo Co.", "taxCode": "0100000999" },
+            { "partyRole": "buyer", "name": "Công ty CP Xây dựng Sông Hồng", "taxCode": "0100000001" }
+          ],
+          "paymentTerms": [
+            { "ordinal": 1, "description": "Tạm ứng khởi công", "percentage": 20, "dueDate": "2026-07-10" },
+            { "ordinal": 2, "description": "Nghiệm thu hoàn thành", "percentage": 80, "triggerEvent": "Nghiệm thu hoàn thành công trình" }
+          ]
+        }
+      },
+      "expected": {
+        "workflowState": "SCHEDULE_GENERATED",
+        "alerts": [
+          { "code": "PENALTY_DEVIATION", "severity": "warning", "message": "Mức phạt vượt ngưỡng hợp đồng chuẩn.", "fieldName": "penaltyPercent" }
+        ],
+        "note": "standardPenaltyThreshold is passed explicitly at 0.03 (matching the business document's own worked example scale, '0,05%/ngày, cao hơn mẫu chuẩn 0,03%') — the API's own bare default (8) uses a different numeric scale, so a fixture wanting the PDF's exact framing must pass this override explicitly, as shown.",
+        "paymentCount": 2,
+        "journalEntries": "NONE"
+      }
+    },
+    {
+      "caseId": "HD-004",
+      "label": "Ambiguous retention — retention % above the default standard threshold (10%)",
+      "customerRef": "CUS-005",
+      "create": {
+        "method": "POST",
+        "path": "/contracts",
+        "body": {
+          "title": "Hợp đồng cung cấp thiết bị y tế 412/2026/HĐCC",
+          "partyA": "AccAgent Demo Co.",
+          "partyB": "Công ty CP Dược phẩm An Khang",
+          "signedDate": "2026-08-01",
+          "effectiveDate": "2026-08-01",
+          "totalValue": 1650000000,
+          "currency": "VND",
+          "tags": ["luong01", "sample", "retention_deviation"]
+        }
+      },
+      "process": {
+        "method": "POST",
+        "path": "/contracts/{{contractId}}/process",
+        "body": {
+          "documentType": "sale_contract",
+          "contractNumber": "412/2026/HĐCC",
+          "subtotal": 1500000000,
+          "vatRate": 10,
+          "totalValue": 1650000000,
+          "retentionPercent": 15,
+          "parties": [
+            { "partyRole": "seller", "name": "AccAgent Demo Co.", "taxCode": "0100000999" },
+            { "partyRole": "buyer", "name": "Công ty CP Dược phẩm An Khang", "taxCode": "0305678901" }
+          ],
+          "paymentTerms": [
+            { "ordinal": 1, "description": "Giao hàng", "percentage": 85, "dueDate": "2026-08-20" },
+            { "ordinal": 2, "description": "Hết bảo hành, hoàn tiền giữ lại", "percentage": 15, "triggerEvent": "Hết thời hạn bảo hành 12 tháng" }
+          ]
+        }
+      },
+      "expected": {
+        "workflowState": "SCHEDULE_GENERATED",
+        "alerts": [
+          { "code": "RETENTION_DEVIATION", "severity": "warning", "message": "Tỷ lệ giữ lại vượt ngưỡng hợp đồng chuẩn.", "fieldName": "retentionPercent" }
+        ],
+        "paymentCount": 2,
+        "journalEntries": "NONE"
+      }
+    },
+    {
+      "caseId": "HD-005",
+      "label": "Appendix correctly linked to its parent contract (contrast with HD-002)",
+      "customerRef": "CUS-002",
+      "create": {
+        "method": "POST",
+        "path": "/contracts",
+        "body": {
+          "title": "Hợp đồng mua bán vật tư 210B/2026/HĐMB",
+          "partyA": "AccAgent Demo Co.",
+          "partyB": "Công ty TNHH Thương mại Hải Đăng",
+          "signedDate": "2026-08-25",
+          "effectiveDate": "2026-08-25",
+          "totalValue": 300000000,
+          "currency": "VND",
+          "tags": ["luong01", "sample", "appendix_linked"],
+          "clauses": [
+            { "ordinal": 1, "heading": "Điều 1. Đối tượng hợp đồng", "body": "Bên B cung cấp vật tư theo bảng giá quy định tại phụ lục đính kèm hợp đồng này." }
+          ]
+        }
+      },
+      "uploadAppendixBeforeProcess": {
+        "method": "POST",
+        "path": "/contracts/{{contractId}}/documents",
+        "contentType": "multipart/form-data",
+        "formFields": { "documentType": "appendix", "referencedCode": "PL-01" },
+        "note": "contract_documents.uploaded_by is a real FK to users(id) and the file is hashed server-side — this must go through the real multipart endpoint (see curl_examples.sh), it cannot be hand-seeded via SQL without a real user/file."
+      },
+      "process": {
+        "method": "POST",
+        "path": "/contracts/{{contractId}}/process",
+        "body": {
+          "documentType": "purchase_contract",
+          "contractNumber": "210B/2026/HĐMB",
+          "subtotal": 272727273,
+          "vatRate": 10,
+          "totalValue": 300000000,
+          "parties": [
+            { "partyRole": "seller", "name": "AccAgent Demo Co.", "taxCode": "0100000999" },
+            { "partyRole": "buyer", "name": "Công ty TNHH Thương mại Hải Đăng", "taxCode": "0302345678" }
+          ],
+          "paymentTerms": [
+            { "ordinal": 1, "description": "Thanh toán sau nhận hàng", "percentage": 100, "dueDate": "2026-09-10" }
+          ]
+        }
+      },
+      "expected": {
+        "workflowState": "SCHEDULE_GENERATED",
+        "alerts": [],
+        "note": "No MISSING_APPENDIX alert, unlike HD-002, because the appendix document was uploaded (document_type='appendix') before /process ran — see IContractRepository.cs's hasAppendixDocument check.",
+        "paymentCount": 1,
+        "journalEntries": "NONE"
+      }
+    }
+  ]
+}

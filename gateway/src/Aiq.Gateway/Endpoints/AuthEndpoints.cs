@@ -177,7 +177,7 @@ public static class AuthEndpoints
         var token = jwt.Issue(user, roles, user.TenantId);
 
         return Results.Ok(new AuthResponse(
-            token.Token, token.ExpiresAt, user.Id, user.Email, roles));
+            token.Token, token.ExpiresAt, user.Id, user.Email, roles, user.MustChangePassword));
     }
 
     /// <summary>

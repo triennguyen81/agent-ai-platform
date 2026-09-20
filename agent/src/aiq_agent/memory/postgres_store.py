@@ -7,6 +7,7 @@ Persistence layout — 1 thread = 1 row:
         title          text
         messages       jsonb   (Claude Messages API layout — array of role/content)
         message_count  int
+        mode           text    ('chat' | 'agentic', set once at creation, default 'chat')
         created_at     timestamptz
         updated_at     timestamptz (auto-bumped via trigger)
 
@@ -31,7 +32,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from aiq_agent.llm.base import ChatMessage
-from aiq_agent.memory.base import MemoryStore, ThreadSummary
+from aiq_agent.memory.base import DEFAULT_THREAD_MODE, MemoryStore, ThreadSummary
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,12 @@ class PostgresMemoryStore(MemoryStore):
         return decoded[-limit:]
 
     async def append(
-        self, thread_id: str, messages: Sequence[ChatMessage]
+        self,
+        thread_id: str,
+        messages: Sequence[ChatMessage],
+        *,
+        mode: str = DEFAULT_THREAD_MODE,
+        agent_id: str | None = None,
     ) -> None:
         if not messages:
             return
@@ -133,11 +139,15 @@ class PostgresMemoryStore(MemoryStore):
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Upsert: append new messages, bump count, set title on first insert
+                # Upsert: append new messages, bump count, set title on first
+                # insert. `mode`/`agent_id` are intentionally NOT in the
+                # UPDATE SET list — they are only ever written by the INSERT
+                # branch (thread creation) and never change on a later append
+                # to the same thread_id, mirroring title's set-once behavior.
                 await conn.execute(
                     """
-                    INSERT INTO chat_threads (thread_id, title, messages, message_count)
-                    VALUES ($1, $2, $3::jsonb, $4)
+                    INSERT INTO chat_threads (thread_id, title, messages, message_count, mode, agent_id)
+                    VALUES ($1, $2, $3::jsonb, $4, $5, $6)
                     ON CONFLICT (thread_id) DO UPDATE
                     SET messages       = chat_threads.messages || EXCLUDED.messages,
                         message_count  = chat_threads.message_count + EXCLUDED.message_count,
@@ -147,6 +157,8 @@ class PostgresMemoryStore(MemoryStore):
                     title_snippet,
                     new_json,
                     len(payloads),
+                    mode,
+                    agent_id,
                 )
 
                 # Cap the messages array to the last max_messages entries so
@@ -178,23 +190,48 @@ class PostgresMemoryStore(MemoryStore):
                 "DELETE FROM chat_threads WHERE thread_id = $1", thread_id
             )
 
+    async def get_mode(self, thread_id: str) -> str:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            mode = await conn.fetchval(
+                "SELECT mode FROM chat_threads WHERE thread_id = $1", thread_id
+            )
+        return mode or DEFAULT_THREAD_MODE
+
+    async def get_agent_id(self, thread_id: str) -> str | None:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            agent_id = await conn.fetchval(
+                "SELECT agent_id FROM chat_threads WHERE thread_id = $1", thread_id
+            )
+        return agent_id or None
+
     async def list_threads(
-        self, *, prefix: str | None = None, limit: int = 50
+        self,
+        *,
+        prefix: str | None = None,
+        limit: int = 50,
+        mode: str | None = None,
+        agent_id: str | None = None,
     ) -> list[ThreadSummary]:
         pool = await self._get_pool()
         pattern = f"{prefix}%" if prefix else "%"
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT thread_id, title, message_count, updated_at
+                SELECT thread_id, title, message_count, updated_at, mode, agent_id
                 FROM chat_threads
                 WHERE thread_id LIKE $1
                   AND message_count > 0
+                  AND ($3::text IS NULL OR mode = $3)
+                  AND ($4::text IS NULL OR agent_id = $4)
                 ORDER BY updated_at DESC
                 LIMIT $2
                 """,
                 pattern,
                 max(1, min(limit, 200)),
+                mode,
+                agent_id,
             )
 
         return [
@@ -205,6 +242,8 @@ class PostgresMemoryStore(MemoryStore):
                 updated_at=(
                     r["updated_at"].timestamp() if r["updated_at"] is not None else 0.0
                 ),
+                mode=r["mode"] or DEFAULT_THREAD_MODE,
+                agent_id=r["agent_id"] or None,
             )
             for r in rows
         ]

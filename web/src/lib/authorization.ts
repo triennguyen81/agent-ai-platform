@@ -18,6 +18,7 @@ export interface Viewer {
   departmentId: string | null;
   departmentCode: string | null;
   departmentName: string | null;
+  mustChangePassword: boolean;
 }
 
 export async function requireViewer(allowed?: LoginRole[]): Promise<Viewer> {
@@ -29,6 +30,7 @@ export async function requireViewer(allowed?: LoginRole[]): Promise<Viewer> {
   const body = (await response.json()) as {
     sub?: string; email?: string; tenantId?: string | null; roles?: string[];
     departmentId?: string | null; departmentCode?: string | null; departmentName?: string | null;
+    mustChangePassword?: boolean;
   };
   const roles = (body.roles ?? []).filter((role): role is LoginRole =>
     role === "super_admin" || role === "tenant_owner" || role === "admin" || role === "user",
@@ -43,5 +45,6 @@ export async function requireViewer(allowed?: LoginRole[]): Promise<Viewer> {
     departmentId: body.departmentId ?? null,
     departmentCode: body.departmentCode ?? null,
     departmentName: body.departmentName ?? null,
+    mustChangePassword: body.mustChangePassword ?? false,
   };
 }

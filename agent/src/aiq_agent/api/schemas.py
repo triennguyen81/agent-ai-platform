@@ -58,6 +58,12 @@ class ThreadSummaryResponse(BaseModel):
     title: str
     message_count: int
     updated_at: float
+    # Explicit, persisted 'chat' | 'agentic' — see memory/base.py
+    # DEFAULT_THREAD_MODE. Never inferred client-side from title/content.
+    mode: str = "chat"
+    # Which agent this thread was created against, or None for a plain
+    # no-agent chat. Set once at creation — see memory/base.py ThreadSummary.
+    agent_id: str | None = None
 
 
 class ThreadHistoryMessage(BaseModel):
@@ -68,6 +74,8 @@ class ThreadHistoryMessage(BaseModel):
 class ThreadHistoryResponse(BaseModel):
     thread_id: str
     messages: list[ThreadHistoryMessage]
+    mode: str = "chat"
+    agent_id: str | None = None
 
 
 class AgentRunRequest(BaseModel):
@@ -78,6 +86,16 @@ class AgentRunRequest(BaseModel):
         description="Skill names to enable (default: all auto-discovered).",
     )
     max_turns: int = Field(default=8, ge=1, le=20)
+    thread_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description=(
+            "Agentic conversation id. When provided, prior turns are loaded "
+            "from memory (manifest-driven execution only) and the new "
+            "exchange is appended, persisted under mode='agentic' so it "
+            "never mixes with mode='chat' threads from /chat."
+        ),
+    )
     agent_id: str | None = Field(
         default=None,
         description=(
@@ -104,6 +122,15 @@ class AgentRunStep(BaseModel):
 class AgentRunResponse(BaseModel):
     final_answer: str
     steps: list[AgentRunStep]
+    # ExecutionResult.tools_used was already computed and audited internally
+    # but never reached the caller — this field was simply missing from the
+    # response schema, so FastAPI's response_model silently dropped it.
+    # Empty on the legacy no-manifest path (AgenticRunResult has no tracing).
+    tools_used: list[str] = []
+    # Echoes AgentRunRequest.thread_id (mirrors ChatResponse.thread_id) so
+    # the caller can confirm which agentic thread this exchange was
+    # persisted under.
+    thread_id: str | None = None
 
 
 class SkillSummary(BaseModel):

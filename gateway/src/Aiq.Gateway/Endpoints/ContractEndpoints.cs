@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using Aiq.Gateway.Books;
 using Aiq.Gateway.Contracts;
 using Aiq.Gateway.Governance;
 using Aiq.Gateway.Middleware;
@@ -20,6 +21,7 @@ public static class ContractEndpoints
         g.MapGet("/{id:guid}/documents",Documents);
         g.MapPost("/{id:guid}/documents",UploadDocument).DisableAntiforgery();
         g.MapDelete("/{id:guid}/documents/{documentId:guid}",DeleteDocument);
+        g.MapPost("/extract-text",ExtractText).DisableAntiforgery();
         return app;
     }
     private static async Task<IResult> List(IContractRepository r,ICapabilityRepository c,HttpContext x,CancellationToken ct,string? status=null,string? q=null,int limit=50,int offset=0)
@@ -60,6 +62,108 @@ public static class ContractEndpoints
     private static readonly HashSet<string> DocumentTypes=["contract","sale_contract","purchase_contract","rent_contract","loan_contract","appendix","acceptance","delivery","other"];
     private static async Task<IResult> UploadDocument(Guid id,[FromForm] IFormFile file,[FromForm] string documentType,IContractRepository contracts,IContractDocumentRepository docs,ICapabilityRepository caps,IFileUploadGuard guard,IObjectStorage storage,IOptions<S3Options> options,HttpContext x,CancellationToken ct,[FromForm] string? referencedCode=null)
     {if(!Scope(x,out var p,out var t,out var d)||!await Consume(p,"contract.intake",caps,ct))return Results.Forbid();if(!DocumentTypes.Contains(documentType))return Results.BadRequest(new{error="invalid_document_type"});var contract=await contracts.FindAsync(t,d,id,ct);if(contract is null)return Results.NotFound();if(!CanEdit(p,contract.Contract))return Results.Forbid();var metadata=guard.ValidateMetadata(file.FileName,file.ContentType,file.Length);if(!metadata.Ok)return Results.BadRequest(new{error=metadata.Code,detail=metadata.Reason});await using var input=file.OpenReadStream();await using var buffer=new MemoryStream();await input.CopyToAsync(buffer,ct);buffer.Position=0;var header=buffer.ToArray().AsSpan(0,(int)Math.Min(buffer.Length,16));var bodyCheck=guard.ValidateBody(file.ContentType,header);if(!bodyCheck.Ok)return Results.BadRequest(new{error=bodyCheck.Code,detail=bodyCheck.Reason});buffer.Position=0;var sha=await guard.ComputeSha256Async(buffer,ct);buffer.Position=0;var extension=Path.GetExtension(file.FileName).ToLowerInvariant();var key=TenantObjectKey.Build(t,"contracts",d.ToString("N"),id.ToString("N"),$"{sha}{extension}");var put=await storage.PutAsync(options.Value.ContractBucket,key,buffer,file.ContentType,ct);var row=await docs.AddAsync(t,d,p.UserId,id,documentType,referencedCode,file.FileName,file.ContentType,key,put.Sha256Hex,put.SizeBytes,ct);return row is null?Results.Conflict(new{error="contract_not_editable"}):Results.Created($"/contracts/{id}/documents/{row.Id}",row);}
+    // Contract Upload page's file-upload path: upload → extract text →
+    // hand the text to the browser for review/edit → user still has to
+    // click "Trích xuất + lưu hợp đồng" (POST /api/contracts/upload →
+    // save_contract) to actually create anything. This endpoint alone
+    // never creates a contract.
+    //
+    // Own allow-list on purpose — NOT FileUploadOptions/IFileUploadGuard's
+    // shared config (that's also used by BookEndpoints and this file's own
+    // UploadDocument, both PDF-only today; widening it globally would
+    // silently loosen those two as a side effect of this feature).
+    private static readonly HashSet<string> ExtractExtensions=[".pdf",".docx",".png",".jpg",".jpeg"];
+    private const long ExtractMaxBytes=25L*1024*1024;
+    private static readonly Dictionary<string,byte[]> ExtractMagicByExtension=new()
+    {
+        [".pdf"]=Convert.FromHexString("255044462D"), // %PDF-
+        [".docx"]=Convert.FromHexString("504B0304"),  // PK\x03\x04 (docx is a zip)
+        [".png"]=Convert.FromHexString("89504E470D0A1A0A"),
+        [".jpg"]=Convert.FromHexString("FFD8FF"),
+        [".jpeg"]=Convert.FromHexString("FFD8FF"),
+    };
+    private static readonly Dictionary<string,string> ExtractContentTypeByExtension=new()
+    {
+        [".pdf"]="application/pdf",
+        [".docx"]="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        [".png"]="image/png",
+        [".jpg"]="image/jpeg",
+        [".jpeg"]="image/jpeg",
+    };
+
+    private static async Task<IResult> ExtractText(
+        [FromForm] IFormFile file,
+        IAgentClient agent,
+        IFileUploadGuard guard,
+        IObjectStorage storage,
+        IOptions<S3Options> options,
+        ICapabilityRepository caps,
+        HttpContext x,
+        CancellationToken ct)
+    {
+        if (!Scope(x, out var p, out var t, out var d) || !await Consume(p, "contract.intake", caps, ct))
+            return Results.Forbid();
+
+        var filename = file.FileName ?? "";
+        var extension = Path.GetExtension(filename).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(filename))
+            return Results.BadRequest(new { error = "missing_filename" });
+        if (extension == ".doc")
+            return Results.UnprocessableEntity(new
+            {
+                error = "doc_not_supported",
+                detail = "Định dạng .doc cũ chưa được hỗ trợ — vui lòng lưu lại thành .docx hoặc PDF rồi tải lên.",
+            });
+        if (!ExtractExtensions.Contains(extension))
+            return Results.BadRequest(new { error = "unsupported_file_type" });
+        if (file.Length <= 0)
+            return Results.BadRequest(new { error = "empty_body" });
+        if (file.Length > ExtractMaxBytes)
+            return Results.BadRequest(new { error = "payload_too_large" });
+
+        await using var input = file.OpenReadStream();
+        await using var buffer = new MemoryStream();
+        await input.CopyToAsync(buffer, ct);
+        buffer.Position = 0;
+
+        var magic = ExtractMagicByExtension[extension];
+        var header = buffer.ToArray().AsSpan(0, (int)Math.Min(buffer.Length, magic.Length));
+        if (header.Length < magic.Length || !header.SequenceEqual(magic))
+            return Results.BadRequest(new { error = "magic_byte_mismatch" });
+        buffer.Position = 0;
+
+        var contentType = ExtractContentTypeByExtension[extension];
+
+        // Store the original upload now, under a staging key (no contract
+        // exists yet — the whole point of this endpoint is text review
+        // BEFORE save). Content-hash-keyed like UploadDocument above, so a
+        // retry/re-extract of the identical file is a storage no-op. Not
+        // linked via IContractDocumentRepository (requires a contract id
+        // that doesn't exist yet) — the eventual save_contract call passes
+        // this key through as ContractRecord.SourcePdfPath instead, a field
+        // that already existed on the contract domain and already flows
+        // through end to end (agentic/contract_tools.py save_contract →
+        // POST /contracts), just never populated by any caller until now.
+        var sha = await guard.ComputeSha256Async(buffer, ct);
+        buffer.Position = 0;
+        var key = TenantObjectKey.Build(t, "contracts", d.ToString("N"), "staging", $"{sha}{extension}");
+        await storage.PutAsync(options.Value.ContractBucket, key, buffer, contentType, ct);
+        buffer.Position = 0;
+
+        return await AgentCallResult.RunAsync(
+            () => agent.ExtractDocumentTextAsync(buffer, filename, contentType, ct),
+            extracted => Results.Ok(new
+            {
+                text = extracted.Text,
+                charCount = extracted.CharCount,
+                mimeType = extracted.MimeType,
+                extractionMethod = extracted.ExtractionMethod,
+                originalFilename = filename,
+                sourceObjectKey = key,
+            }),
+            ct);
+    }
+
     private static async Task<IResult> DeleteDocument(Guid id,Guid documentId,IContractRepository contracts,IContractDocumentRepository docs,ICapabilityRepository caps,IObjectStorage storage,IOptions<S3Options> options,HttpContext x,CancellationToken ct)
     {if(!Scope(x,out var p,out var t,out var d)||!await Consume(p,"contract.intake",caps,ct))return Results.Forbid();var contract=await contracts.FindAsync(t,d,id,ct);if(contract is null)return Results.NotFound();if(!CanEdit(p,contract.Contract))return Results.Forbid();var doc=await docs.FindAsync(t,d,documentId,ct);if(doc is null||doc.ContractId!=id)return Results.NotFound();if(!await docs.DeleteAsync(t,d,documentId,ct))return Results.Conflict(new{error="contract_not_editable"});await storage.DeleteAsync(options.Value.ContractBucket,doc.StorageKey,ct);return Results.NoContent();}
     private static bool CanEdit(PrincipalContext p,ContractRecord c)=>c.WorkflowState is not("APPROVED" or "HANDED_OFF" or "REJECTED")&&(p.IsInRole("admin")||c.UserId==p.UserId);

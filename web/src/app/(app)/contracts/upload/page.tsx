@@ -1,17 +1,22 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Loader2, Wand2 } from "lucide-react";
+import { ArrowLeft, FileText, Loader2, Trash2, Upload, Wand2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
+import { isImageFilename, uploadAndExtract } from "@/lib/upload-extract";
 
 interface AgentRunResponse {
   final_answer: string;
 }
+
+type FileStatus = "idle" | "uploading" | "reading" | "ocr" | "done" | "error";
+
+const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".png", ".jpg", ".jpeg"];
 
 const SAMPLE = `HỢP ĐỒNG CUNG CẤP DỊCH VỤ
 Số: 04/2026/HĐDV
@@ -70,6 +75,74 @@ export default function ContractUploadPage() {
   const [result, setResult] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [fileStatus, setFileStatus] = useState<FileStatus>("idle");
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [extracted, setExtracted] = useState<{ charCount: number; filename: string } | null>(null);
+  // Points at the file already stored in MinIO by the extract-text step —
+  // carried through to save_contract as source_pdf_path so the saved
+  // contract links back to its source file. Editing rawText afterward does
+  // NOT clear this (the edited text still came from this file); only
+  // removing the file ("Xóa file") or picking a different one does.
+  const [sourceObjectKey, setSourceObjectKey] = useState<string | null>(null);
+
+  function pickFile() {
+    fileInputRef.current?.click();
+  }
+
+  function onFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = e.target.files?.[0] ?? null;
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!picked) return;
+    setFile(picked);
+    setFileStatus("idle");
+    setFileError(null);
+    setExtracted(null);
+    setSourceObjectKey(null);
+  }
+
+  function clearFile() {
+    setFile(null);
+    setFileStatus("idle");
+    setFileError(null);
+    setExtracted(null);
+    setSourceObjectKey(null);
+    // rawText is deliberately left untouched — manual input stays available.
+  }
+
+  const extractFromFile = useCallback(async () => {
+    if (!file || fileStatus === "uploading" || fileStatus === "reading" || fileStatus === "ocr") return;
+    setFileStatus("uploading");
+    setFileError(null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const outcome = await uploadAndExtract("/api/contracts/extract-text", formData, () => {
+      setFileStatus(isImageFilename(file.name) ? "ocr" : "reading");
+    });
+
+    if (!outcome.ok) {
+      setFileStatus("error");
+      setFileError(
+        outcome.status === 415
+          ? "Định dạng file không được hỗ trợ."
+          : outcome.status === 422
+            ? outcome.detail || "Không trích xuất được nội dung từ file này."
+            : outcome.status === 413
+              ? "File quá lớn."
+              : `${outcome.detail} (HTTP ${outcome.status || "network"})`,
+      );
+      return; // rawText (any manual edits) is preserved — never touched here.
+    }
+
+    setRawText(outcome.body.text);
+    setExtracted({ charCount: outcome.body.charCount, filename: outcome.body.originalFilename });
+    setSourceObjectKey(outcome.body.sourceObjectKey);
+    setFileStatus("done");
+  }, [file, fileStatus]);
+
   async function submit() {
     if (loading || !rawText.trim()) return;
     setLoading(true);
@@ -83,6 +156,8 @@ export default function ContractUploadPage() {
         body: JSON.stringify({
           raw_text: rawText,
           title_hint: titleHint || undefined,
+          source_pdf_path: sourceObjectKey || undefined,
+          original_filename: file?.name || undefined,
         }),
       });
 
@@ -112,6 +187,16 @@ export default function ContractUploadPage() {
     }
   }
 
+  const fileBusy = fileStatus === "uploading" || fileStatus === "reading" || fileStatus === "ocr";
+  const fileStatusLabel: Record<FileStatus, string> = {
+    idle: "",
+    uploading: "Đang tải...",
+    reading: "Đang đọc nội dung...",
+    ocr: "OCR...",
+    done: "Hoàn tất",
+    error: "Lỗi",
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -126,8 +211,9 @@ export default function ContractUploadPage() {
       <header className="space-y-2">
         <h1 className="font-serif text-3xl">Thêm hợp đồng</h1>
         <p className="text-sm text-[var(--color-muted-fg)]">
-          Paste nội dung hợp đồng (copy từ PDF / Word hoặc OCR text). AI sẽ
-          trích xuất các trường + clauses và lưu vào KB.
+          Tải lên file PDF / Word / ảnh để tự động trích xuất nội dung, hoặc
+          paste trực tiếp nội dung hợp đồng bên dưới. AI sẽ trích xuất các
+          trường + clauses và lưu vào KB.
         </p>
       </header>
 
@@ -172,6 +258,68 @@ export default function ContractUploadPage() {
         </div>
 
         <div className="space-y-3">
+          <div className="space-y-2 rounded-[var(--radius)] border border-dashed border-[var(--color-border)] bg-[var(--color-muted)]/30 p-4">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ACCEPTED_EXTENSIONS.join(",")}
+              onChange={onFileSelected}
+              className="hidden"
+            />
+            {!file ? (
+              <Button type="button" variant="outline" onClick={pickFile} className="w-full">
+                <Upload className="size-4" /> Chọn file PDF / Word / ảnh
+              </Button>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <FileText className="size-4 shrink-0 text-[var(--color-primary)]" />
+                  <span className="min-w-0 flex-1 truncate">
+                    Tên file: <span className="font-medium">{file.name}</span>
+                  </span>
+                </div>
+
+                {fileStatusLabel[fileStatus] && (
+                  <p
+                    className={`text-xs ${
+                      fileStatus === "error"
+                        ? "text-red-700"
+                        : fileStatus === "done"
+                          ? "text-emerald-700"
+                          : "text-[var(--color-muted-fg)]"
+                    }`}
+                  >
+                    {fileBusy && <Loader2 className="mr-1 inline size-3 animate-spin" />}
+                    Status: {fileStatusLabel[fileStatus]}
+                  </p>
+                )}
+
+                {fileStatus === "done" && extracted && (
+                  <p className="text-xs text-emerald-700">
+                    Đã trích xuất {extracted.charCount.toLocaleString("vi-VN")} ký tự từ{" "}
+                    {extracted.filename}
+                  </p>
+                )}
+                {fileStatus === "error" && fileError && (
+                  <p className="text-xs text-red-700">{fileError}</p>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" size="sm" onClick={() => void extractFromFile()} disabled={fileBusy}>
+                    {fileBusy ? <Loader2 className="size-3.5 animate-spin" /> : <Wand2 className="size-3.5" />}
+                    {fileStatus === "error" ? "Thử lại" : "Trích xuất nội dung"}
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={pickFile} disabled={fileBusy}>
+                    Chọn file khác
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost" onClick={clearFile} disabled={fileBusy}>
+                    <Trash2 className="size-3.5" /> Xóa file
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="space-y-1.5">
             <Label htmlFor="raw-text">Nội dung hợp đồng (raw text)</Label>
             <Textarea
@@ -184,6 +332,7 @@ export default function ContractUploadPage() {
             <p className="text-[10px] text-[var(--color-muted-fg)]">
               {rawText.length.toLocaleString("vi-VN")} ký tự
               {rawText.length > 50_000 && " — sẽ cắt ở 50K"}
+              {sourceObjectKey && " · nguồn: file đã tải lên"}
             </p>
           </div>
 

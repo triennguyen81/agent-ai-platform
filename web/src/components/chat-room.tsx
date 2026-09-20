@@ -24,6 +24,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { MicButton } from "@/components/mic-button";
 import { SaveToKbButton } from "@/components/save-to-kb-button";
+import {
+  filterThreadsByAgent,
+  filterThreadsByMode,
+  modeForHistoryItem,
+  normalizeMode,
+  storageKeyForAgentAndMode,
+  threadBelongsToAgent,
+} from "@/lib/chat-history";
 
 interface AgenticStep {
   role: string;
@@ -64,7 +72,12 @@ function findUrls(text: string): string[] {
   return Array.from(new Set(matches));
 }
 
-const THREAD_KEY = "aiq.chat.thread_id";
+// Chat and Agentic each keep their own active-thread pointer, scoped to the
+// currently selected agent — switching the mode toggle OR the agent must
+// never mix histories or clobber another (mode, agent) pair's in-progress
+// thread. See @/lib/chat-history for the localStorage key selection
+// (storageKeyForAgentAndMode) and mode/agent-filtering logic shared with the
+// /api/chat/threads routes.
 const AUTO_SUBMIT_KEY = "aiq.chat.mic.autoSubmit";
 
 const THINKING_TAG_RE = /<thinking>[\s\S]*?<\/thinking>/gi;
@@ -95,6 +108,12 @@ interface ThreadSummary {
   title: string;
   message_count: number;
   updated_at: number;
+  // Explicit, persisted server-side (agent/src/aiq_agent/memory/base.py) —
+  // never inferred here from title or which list the item came from.
+  mode: ChatMode;
+  // Which agent this thread belongs to, or null/undefined for a plain
+  // no-agent chat. Same set-once, never-inferred contract as `mode`.
+  agent_id?: string | null;
 }
 
 interface HistoryMessage {
@@ -106,11 +125,15 @@ function makeThreadId(): string {
   return `t-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-export function ChatRoom() {
+export function ChatRoom({ cookieAgentId = null }: { cookieAgentId?: string | null } = {}) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
-  const [threadId, setThreadId] = useState<string | null>(null);
+  // Separate active-thread pointer per mode — never a single shared
+  // threadId, so switching modes can never accidentally continue writing
+  // into the other mode's thread.
+  const [chatThreadId, setChatThreadId] = useState<string | null>(null);
+  const [agenticThreadId, setAgenticThreadId] = useState<string | null>(null);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [loadingThread, setLoadingThread] = useState(false);
   const [chatInterim, setChatInterim] = useState("");
@@ -118,70 +141,151 @@ export function ChatRoom() {
   const [autoSubmitAfterMic, setAutoSubmitAfterMic] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchParams = useSearchParams();
-  // When the URL includes ?agent=..., chat requests will pull RAG context
-  // from that agent's admin-curated knowledge base instead of the caller's
-  // own notes. Users assigned an agent land here via /my-agents.
-  const activeAgentId = searchParams.get("agent");
+  // When the URL includes ?agent=..., chat requests pull RAG context and
+  // (for a manifest-driven agent) the entire system prompt from that
+  // specific agent — never a different/default one. Users assigned an
+  // agent land here via /my-agents, or via SideNav's agent switcher (which
+  // navigates to /chat?agent=... precisely so this URL param and the
+  // "active agent" cookie can never disagree — see side-nav.tsx
+  // switchAgent). The cookie (passed down as `cookieAgentId` by the /chat
+  // Server Component, which re-reads it on every router.refresh()) is only
+  // a fallback for when the URL carries none at all — e.g. a super_admin/
+  // tenant_owner landing on plain /chat. The URL always wins when present.
+  // This is independent of `mode` on purpose — switching Chat ↔ Agentic
+  // must never change the selected agent.
+  const activeAgentId = searchParams.get("agent") || cookieAgentId || null;
+  const requestedThreadParam = searchParams.get("thread");
   // Latest transcribed text — used to auto-submit after listening ends
   // without racing React's async state batching (setInput → onListeningChange).
   const pendingAutoSubmitRef = useRef<string | null>(null);
 
   const detectedUrls = findUrls(input);
+  const threadId = mode === "agentic" ? agenticThreadId : chatThreadId;
 
-  const refreshThreads = useCallback(async () => {
+  const refreshThreads = useCallback(async (forMode: ChatMode, forAgentId: string | null) => {
     try {
-      const res = await fetch("/api/chat/threads");
+      const params = new URLSearchParams({ mode: forMode });
+      if (forAgentId) params.set("agent_id", forAgentId);
+      const res = await fetch(`/api/chat/threads?${params.toString()}`);
       if (!res.ok) return;
       const body = (await res.json()) as { items: ThreadSummary[] };
-      setThreads(body.items ?? []);
+      // Server already filters by ?mode=/?agent_id= — this is a defensive
+      // second guard so a stale/misbehaving response can never mix modes or
+      // agents in the sidebar (requirement: legacy/other-agent threads must
+      // never silently attach to the currently selected agent).
+      const byMode = filterThreadsByMode(body.items ?? [], forMode);
+      setThreads(filterThreadsByAgent(byMode, forAgentId));
     } catch {
       // silent
     }
   }, []);
 
-  const loadThread = useCallback(async (tid: string) => {
-    setLoadingThread(true);
-    try {
-      const res = await fetch(`/api/chat/threads/${encodeURIComponent(tid)}`);
-      if (!res.ok) {
-        setMessages([]);
-        return;
-      }
-      const body = (await res.json()) as { messages: HistoryMessage[] };
-      const restored: Message[] = (body.messages ?? []).map((m, i) => {
-        const isAssistant = m.role === "assistant";
-        const { thinking, answer } = isAssistant
-          ? extractThinking(m.content)
-          : { thinking: null, answer: m.content };
-        return {
-          id: `h-${i}-${tid}`,
-          role: isAssistant ? "assistant" : "user",
-          content: answer,
-          thinking,
+  const loadThread = useCallback(
+    async (tid: string): Promise<{ mode: ChatMode; agent_id: string | null } | null> => {
+      setLoadingThread(true);
+      try {
+        const qs = activeAgentId ? `?agent_id=${encodeURIComponent(activeAgentId)}` : "";
+        const res = await fetch(`/api/chat/threads/${encodeURIComponent(tid)}${qs}`);
+        if (!res.ok) {
+          setMessages([]);
+          return null;
+        }
+        const body = (await res.json()) as {
+          messages: HistoryMessage[];
+          mode?: string;
+          agent_id?: string | null;
         };
-      });
-      setMessages(restored);
-    } catch {
-      setMessages([]);
-    } finally {
-      setLoadingThread(false);
-    }
-  }, []);
+        const restored: Message[] = (body.messages ?? []).map((m, i) => {
+          const isAssistant = m.role === "assistant";
+          const { thinking, answer } = isAssistant
+            ? extractThinking(m.content)
+            : { thinking: null, answer: m.content };
+          return {
+            id: `h-${i}-${tid}`,
+            role: isAssistant ? "assistant" : "user",
+            content: answer,
+            thinking,
+          };
+        });
+        setMessages(restored);
+        return { mode: normalizeMode(body.mode), agent_id: body.agent_id ?? null };
+      } catch {
+        setMessages([]);
+        return null;
+      } finally {
+        setLoadingThread(false);
+      }
+    },
+    [activeAgentId],
+  );
 
+  // Mic auto-submit is a global UI preference, not agent-scoped — read once.
   useEffect(() => {
-    const stored = window.localStorage.getItem(THREAD_KEY);
-    const tid = stored ?? makeThreadId();
-    if (!stored) {
-      window.localStorage.setItem(THREAD_KEY, tid);
-    }
-    setThreadId(tid);
     const storedAuto = window.localStorage.getItem(AUTO_SUBMIT_KEY);
     if (storedAuto === "1") setAutoSubmitAfterMic(true);
-    void refreshThreads();
-    if (stored) {
-      void loadThread(stored);
+  }, []);
+
+  // Re-runs whenever the resolved agent changes (URL ?agent= navigation, or
+  // the cookie-derived fallback changing after a SideNav switch + Server
+  // Component refresh) — requirement: switching agents must resume THAT
+  // agent's own thread ids, never a previous agent's in-progress thread
+  // (whose prior_history would otherwise bleed into the new agent's
+  // context), and never silently reattach a thread that has no stored
+  // agent_id to whichever agent is now selected.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function init() {
+      const chatKey = storageKeyForAgentAndMode(activeAgentId, "chat");
+      const agenticKey = storageKeyForAgentAndMode(activeAgentId, "agentic");
+
+      const storedChat = window.localStorage.getItem(chatKey);
+      const chatTid = storedChat ?? makeThreadId();
+      if (!storedChat) window.localStorage.setItem(chatKey, chatTid);
+
+      const storedAgentic = window.localStorage.getItem(agenticKey);
+      const agenticTid = storedAgentic ?? makeThreadId();
+      if (!storedAgentic) window.localStorage.setItem(agenticKey, agenticTid);
+
+      if (cancelled) return;
+      setChatThreadId(chatTid);
+      setAgenticThreadId(agenticTid);
+      setMode("chat");
+      setMessages([]);
+      setInput("");
+      void refreshThreads("chat", activeAgentId);
+
+      // Deep-link from SideNav's "Chat gần đây" (/chat?agent=X&thread=Y) —
+      // only honored when the thread actually belongs to this agent;
+      // otherwise silently fall back to the default thread rather than
+      // showing another agent's history under the current selection.
+      if (requestedThreadParam) {
+        const meta = await loadThread(requestedThreadParam);
+        if (cancelled) return;
+        if (meta && threadBelongsToAgent({ agent_id: meta.agent_id }, activeAgentId)) {
+          window.localStorage.setItem(
+            storageKeyForAgentAndMode(activeAgentId, meta.mode),
+            requestedThreadParam,
+          );
+          if (meta.mode === "agentic") setAgenticThreadId(requestedThreadParam);
+          else setChatThreadId(requestedThreadParam);
+          setMode(meta.mode);
+          void refreshThreads(meta.mode, activeAgentId);
+          return;
+        }
+        setMessages([]);
+      }
+
+      if (storedChat) {
+        void loadThread(storedChat);
+      }
     }
-  }, [refreshThreads, loadThread]);
+
+    void init();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAgentId, requestedThreadParam, refreshThreads, loadThread]);
 
   const toggleAutoSubmit = useCallback(() => {
     setAutoSubmitAfterMic((prev) => {
@@ -274,7 +378,7 @@ export function ChatRoom() {
             meta: { provider: body.provider, model: body.model },
           },
         ]);
-        void refreshThreads();
+        void refreshThreads("chat", activeAgentId);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Network error";
         setMessages((m) => [
@@ -305,7 +409,12 @@ export function ChatRoom() {
         const res = await fetch("/api/agent/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ task, max_turns: 8, agent_id: activeAgentId ?? undefined }),
+          body: JSON.stringify({
+            task,
+            max_turns: 8,
+            agent_id: activeAgentId ?? undefined,
+            thread_id: agenticThreadId ?? undefined,
+          }),
         });
 
         if (!res.ok) {
@@ -351,6 +460,7 @@ export function ChatRoom() {
             agenticSteps: body.steps ?? [],
           },
         ]);
+        void refreshThreads("agentic", activeAgentId);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Network error";
         setMessages((m) => [
@@ -361,7 +471,7 @@ export function ChatRoom() {
         setPending(false);
       }
     },
-    [pending],
+    [pending, activeAgentId, agenticThreadId, refreshThreads],
   );
 
   const send = useCallback(() => {
@@ -374,21 +484,51 @@ export function ChatRoom() {
     }
   }, [input, mode, sendAgenticTask, sendPrompt]);
 
+  // Switching the toggle must switch history immediately, never mix Chat
+  // and Agentic, and never touch the selected agent (activeAgentId is
+  // derived from the URL, untouched here). Each mode remembers its own
+  // active thread — reselecting a mode restores whatever thread it had.
+  const changeMode = useCallback(
+    (next: ChatMode) => {
+      if (next === mode) return;
+      setMode(next);
+      setMessages([]);
+      setInput("");
+      void refreshThreads(next, activeAgentId);
+      const tid = next === "agentic" ? agenticThreadId : chatThreadId;
+      if (tid) void loadThread(tid);
+    },
+    [mode, agenticThreadId, chatThreadId, refreshThreads, loadThread, activeAgentId],
+  );
+
+  // "+ Mới" always creates a thread in the CURRENTLY selected mode AND the
+  // currently selected agent — never touches another (mode, agent) bucket.
   function newThread() {
     const fresh = makeThreadId();
-    window.localStorage.setItem(THREAD_KEY, fresh);
-    setThreadId(fresh);
+    window.localStorage.setItem(storageKeyForAgentAndMode(activeAgentId, mode), fresh);
+    if (mode === "agentic") setAgenticThreadId(fresh);
+    else setChatThreadId(fresh);
     setMessages([]);
     setInput("");
   }
 
-  function switchThread(tid: string) {
-    if (tid === threadId) return;
-    window.localStorage.setItem(THREAD_KEY, tid);
-    setThreadId(tid);
+  // Called with the full ThreadSummary (not just an id) so a click always
+  // restores the item's OWN persisted mode, even defensively — never
+  // assumes "whatever list it came from" implies the mode. Also refuses to
+  // open a thread belonging to a different agent — the sidebar list is
+  // already agent-filtered so this should never trigger in practice, but it
+  // is the requirement's explicit backstop against cross-agent bleed.
+  function switchThread(item: ThreadSummary) {
+    if (!threadBelongsToAgent(item, activeAgentId)) return;
+    const restoredMode = modeForHistoryItem(item);
+    if (item.thread_id === threadId && restoredMode === mode) return;
+    window.localStorage.setItem(storageKeyForAgentAndMode(activeAgentId, restoredMode), item.thread_id);
+    if (restoredMode === "agentic") setAgenticThreadId(item.thread_id);
+    else setChatThreadId(item.thread_id);
+    if (restoredMode !== mode) setMode(restoredMode);
     setMessages([]);
     setInput("");
-    void loadThread(tid);
+    void loadThread(item.thread_id);
   }
 
   async function deleteThread(tid: string) {
@@ -400,12 +540,13 @@ export function ChatRoom() {
     if (tid === threadId) {
       newThread();
     }
-    void refreshThreads();
+    void refreshThreads(mode, activeAgentId);
   }
 
   return (
     <div className="grid h-[calc(100dvh-120px)] gap-4 lg:grid-cols-[280px_1fr]">
       <ThreadSidebar
+        mode={mode}
         threads={threads}
         activeId={threadId}
         onNew={newThread}
@@ -424,7 +565,7 @@ export function ChatRoom() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <ModeToggle mode={mode} onChange={setMode} />
+            <ModeToggle mode={mode} onChange={changeMode} />
             <Button variant="ghost" size="sm" onClick={newThread}>
               <Plus className="size-4" /> New
             </Button>
@@ -576,23 +717,30 @@ export function ChatRoom() {
 }
 
 function ThreadSidebar({
+  mode,
   threads,
   activeId,
   onNew,
   onSelect,
   onDelete,
 }: {
+  mode: ChatMode;
   threads: ThreadSummary[];
   activeId: string | null;
   onNew: () => void;
-  onSelect: (id: string) => void;
+  onSelect: (item: ThreadSummary) => void;
   onDelete: (id: string) => void;
 }) {
+  const title = mode === "agentic" ? "LỊCH SỬ AGENT" : "LỊCH SỬ CHAT";
+  const emptyLabel =
+    mode === "agentic"
+      ? "Chưa có tác vụ agentic nào. Mô tả 1 task để bắt đầu."
+      : "Chưa có cuộc trò chuyện nào. Hỏi câu đầu tiên để bắt đầu.";
   return (
     <aside className="hidden min-h-0 flex-col rounded-[var(--radius)] border bg-[var(--color-bg)] lg:flex">
       <div className="flex items-center justify-between border-b px-3 py-2">
         <span className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted-fg)]">
-          Lịch sử
+          {title}
         </span>
         <Button size="sm" variant="ghost" onClick={onNew}>
           <Plus className="size-3.5" /> Mới
@@ -600,9 +748,7 @@ function ThreadSidebar({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {threads.length === 0 ? (
-          <p className="px-2 py-3 text-xs text-[var(--color-muted-fg)]">
-            Chưa có cuộc trò chuyện nào. Hỏi câu đầu tiên để bắt đầu.
-          </p>
+          <p className="px-2 py-3 text-xs text-[var(--color-muted-fg)]">{emptyLabel}</p>
         ) : (
           <ul className="space-y-1">
             {threads.map((t) => {
@@ -618,10 +764,14 @@ function ThreadSidebar({
                   >
                     <button
                       type="button"
-                      onClick={() => onSelect(t.thread_id)}
+                      onClick={() => onSelect(t)}
                       className="flex min-w-0 flex-1 items-center gap-2 text-left"
                     >
-                      <MessageSquare className="size-3.5 shrink-0 text-[var(--color-muted-fg)]" />
+                      {t.mode === "agentic" ? (
+                        <Wand2 className="size-3.5 shrink-0 text-[var(--color-accent)]" />
+                      ) : (
+                        <MessageSquare className="size-3.5 shrink-0 text-[var(--color-muted-fg)]" />
+                      )}
                       <span className="truncate text-xs">{t.title || "Cuộc trò chuyện"}</span>
                     </button>
                     <button

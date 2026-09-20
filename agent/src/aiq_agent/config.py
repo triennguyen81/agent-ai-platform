@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LlmProvider = Literal["ollama", "anthropic", "claude_cli"]
@@ -45,8 +45,7 @@ class Settings(BaseSettings):
     gateway_base_url: str = Field(default="http://aiq-gateway:8080")
 
     # ---- M6: Embeddings + Qdrant top-K RAG ----
-    # Self-hosted via fastembed (ONNX) — $0 marginal cost. Falls back to
-    # full-context RAG if Qdrant or model init fails.
+    # Self-hosted via fastembed (ONNX). Versioned retrieval fails closed on index errors.
     # paraphrase-multilingual-MiniLM-L12-v2: 384 dim, ~220MB, supports
     # Vietnamese + 50 languages. Smallest fastembed multilingual model.
     embedding_model: str = Field(
@@ -58,6 +57,18 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = Field(default=None)
     qdrant_collection: str = Field(default="aiq_notes")
     qdrant_top_k: int = Field(default=10, gt=0, le=100)
+
+    knowledge_postgres_dsn: str | None = None
+    knowledge_chunk_size: int = Field(default=800, ge=64, le=8000)
+    knowledge_chunk_overlap: int = Field(default=120, ge=0)
+    knowledge_score_threshold: float = Field(default=0.25, ge=-1, le=1)
+    knowledge_context_chars: int = Field(default=12000, ge=1000, le=64000)
+
+    @model_validator(mode="after")
+    def validate_knowledge_chunking(self):
+        if self.knowledge_chunk_overlap >= self.knowledge_chunk_size:
+            raise ValueError("knowledge_chunk_overlap must be less than knowledge_chunk_size")
+        return self
 
     # ---- Memory ----
     memory_backend: MemoryBackend = Field(default="in_memory")

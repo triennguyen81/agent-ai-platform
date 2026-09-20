@@ -8,6 +8,7 @@ import { requireViewer } from "@/lib/authorization";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { TenantRoleChangeButton } from "@/components/tenant-role-change-button";
+import { ResetPasswordForm } from "@/components/reset-password-form";
 
 interface TenantAccount {
   id: string;
@@ -138,6 +139,41 @@ async function changeRoleAction(userId: string, nextRole: "user" | "admin"): Pro
 // can reach), so this re-derives the real role server-side exactly like
 // changeRoleAction above, on top of the gateway's own tenant_owner-only
 // policy on this route.
+// Admin-facing reset-password action for the unified accounts table.
+// targetRole picks the endpoint (and therefore the exact same server-side
+// scope each already enforces): "admin" only reachable by TENANT_OWNER
+// (gateway rejects anyone else), "user" reachable by ADMIN (own department)
+// or TENANT_OWNER (own tenant). Never called for a tenant_owner row — that
+// action is not rendered in the UI at all (see isReadOnlyOwner below).
+async function resetPasswordAction(formData: FormData): Promise<void> {
+  "use server";
+  const userId = String(formData.get("userId") ?? "").trim();
+  const targetRole = String(formData.get("targetRole") ?? "").trim();
+  const newPassword = String(formData.get("newPassword") ?? "");
+  const confirmPassword = String(formData.get("confirmPassword") ?? "");
+  if (!userId || newPassword.length < 8) {
+    redirect("/admin/tenant-users?error=mat-khau-moi-toi-thieu-8-ky-tu");
+  }
+  if (newPassword !== confirmPassword) {
+    redirect("/admin/tenant-users?error=xac-nhan-mat-khau-khong-khop");
+  }
+  if (targetRole === "admin") {
+    // The gateway's /tenant/admins/* routes are tenant_owner-only — verify
+    // here too so a plain ADMIN never even attempts the call.
+    await requireViewer(["tenant_owner"]);
+  }
+  const token = await requireSession();
+  const res = targetRole === "admin"
+    ? await gateway.resetOwnTenantAdminPassword(token, userId, { newPassword, confirmPassword })
+    : await gateway.resetTenantUserPassword(token, userId, { newPassword, confirmPassword });
+  if (!res.ok) {
+    const body = await res.text();
+    redirect(`/admin/tenant-users?error=${encodeURIComponent(body.slice(0, 200))}`);
+  }
+  revalidatePath("/admin/tenant-users");
+  redirect("/admin/tenant-users?ok=password-reset");
+}
+
 async function moveDepartmentAction(formData: FormData): Promise<void> {
   "use server";
   await requireViewer(["tenant_owner"]);
@@ -353,6 +389,17 @@ export default async function TenantUsersPage({
                               {account.isActive ? "Khoá" : "Mở lại"}
                             </Button>
                           </form>
+                          <details className="text-left">
+                            <summary className="cursor-pointer text-[var(--color-primary)]">
+                              Đặt lại mật khẩu
+                            </summary>
+                            <ResetPasswordForm
+                              userId={account.id}
+                              targetRole={account.role}
+                              email={account.email}
+                              action={resetPasswordAction}
+                            />
+                          </details>
                           {isOwner && account.role !== "tenant_owner" && (
                             <details className="text-left">
                               <summary className="cursor-pointer text-[var(--color-primary)]">
@@ -420,6 +467,7 @@ export default async function TenantUsersPage({
               : ok === "disabled" ? "Đã khoá tài khoản."
               : ok === "role-changed" ? "Đã đổi vai trò."
               : ok === "department-moved" ? "Đã chuyển phòng ban."
+              : ok === "password-reset" ? "Đã đặt lại mật khẩu. Người dùng cần đổi mật khẩu ở lần đăng nhập tiếp theo."
               : "Đã mở lại tài khoản."}
           </p>
         )}

@@ -1,13 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { agent, gateway } from "@/lib/api";
-import { decodeUserId, getSession } from "@/lib/auth";
-
-function namespacedThreadId(token: string, raw: string | undefined): string | undefined {
-  if (!raw) return undefined;
-  const userId = decodeUserId(token);
-  if (!userId) return raw;
-  return raw.startsWith(`${userId}:`) ? raw : `${userId}:${raw}`;
-}
+import { decodeUserId, getSession, namespacedThreadId } from "@/lib/auth";
 
 interface NoteRecord {
   id: string;

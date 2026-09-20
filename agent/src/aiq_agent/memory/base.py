@@ -9,6 +9,14 @@ from dataclasses import dataclass
 from aiq_agent.llm.base import ChatMessage
 
 
+#: The only two valid values for a thread's persisted `mode`. Explicit and
+#: set once at creation (first `append()` call) — never inferred later from
+#: title text or message content. A thread with no stored mode (created
+#: before this field existed) is treated as "chat" for backward
+#: compatibility, everywhere a mode is read.
+DEFAULT_THREAD_MODE = "chat"
+
+
 @dataclass(frozen=True, slots=True)
 class ThreadSummary:
     """Light metadata for the thread-history sidebar."""
@@ -17,6 +25,15 @@ class ThreadSummary:
     title: str
     message_count: int
     updated_at: float  # unix seconds; 0 if unknown
+    mode: str = DEFAULT_THREAD_MODE
+    # Which agent this thread belongs to, or None for a plain/no-agent chat
+    # (e.g. an admin/super_admin using generic chat with no agent selected).
+    # Set once at creation, same as `mode` and `title` — never changes on a
+    # later append. A thread with no stored agent_id NEVER matches a
+    # `list_threads(agent_id=...)` filter for a specific agent, even if that
+    # agent happens to be the caller's currently selected one — see
+    # list_threads docstring below.
+    agent_id: str | None = None
 
 
 class MemoryStore(ABC):
@@ -31,16 +48,54 @@ class MemoryStore(ABC):
         """Return the message history. Newest message last."""
 
     @abstractmethod
-    async def append(self, thread_id: str, messages: Sequence[ChatMessage]) -> None:
-        """Append messages to the thread."""
+    async def append(
+        self,
+        thread_id: str,
+        messages: Sequence[ChatMessage],
+        *,
+        mode: str = DEFAULT_THREAD_MODE,
+        agent_id: str | None = None,
+    ) -> None:
+        """Append messages to the thread.
+
+        `mode` and `agent_id` are persisted only on the THREAD's first append
+        (like the title, derived from the first user message) and never
+        overwritten on later appends to the same thread_id — a thread cannot
+        silently change mode or switch to a different agent mid-conversation.
+        """
 
     @abstractmethod
     async def clear(self, thread_id: str) -> None:
         """Drop all messages for a thread."""
 
     @abstractmethod
-    async def list_threads(self, *, prefix: str | None = None, limit: int = 50) -> list[ThreadSummary]:
-        """List threads, optionally filtered by an id prefix (e.g. per-user)."""
+    async def get_mode(self, thread_id: str) -> str:
+        """Return the thread's persisted mode, or DEFAULT_THREAD_MODE if the
+        thread doesn't exist or predates this field."""
+
+    @abstractmethod
+    async def get_agent_id(self, thread_id: str) -> str | None:
+        """Return the thread's persisted agent_id, or None if the thread
+        doesn't exist, predates this field, or was created without an
+        agent (plain chat)."""
+
+    @abstractmethod
+    async def list_threads(
+        self,
+        *,
+        prefix: str | None = None,
+        limit: int = 50,
+        mode: str | None = None,
+        agent_id: str | None = None,
+    ) -> list[ThreadSummary]:
+        """List threads, optionally filtered by an id prefix (e.g. per-user),
+        an exact `mode` match, and/or an exact `agent_id` match.
+
+        `mode=None` / `agent_id=None` return every mode / every agent
+        respectively — passing an explicit `agent_id` never matches a
+        thread that has no stored agent_id (legacy threads must not
+        silently attach to whichever agent the caller happens to filter
+        by)."""
 
     async def aclose(self) -> None:
         """Release any underlying resources."""

@@ -314,6 +314,14 @@ async def chat(
                 ChatMessage("user", body.prompt),
                 ChatMessage("assistant", final_answer),
             ],
+            # Explicit, never inferred — this is the plain /chat endpoint,
+            # so every thread it writes is mode='chat' by construction.
+            mode="chat",
+            # Bound to the exact agent_id this turn was resolved against
+            # (None for a plain no-agent chat) — set once, so a thread can
+            # never silently pick up a different agent later. See
+            # memory/base.py MemoryStore.append docstring.
+            agent_id=body.agent_id,
         )
         history_length += 2
 
@@ -365,15 +373,21 @@ async def list_threads(
     principal: RuntimePrincipal = Depends(require_principal),
     prefix: str | None = None,
     limit: int = 50,
+    mode: str | None = None,
+    agent_id: str | None = None,
 ) -> list[ThreadSummaryResponse]:
     scope = _tenant_thread_prefix(principal)
-    summaries = await memory.list_threads(prefix=scope + (prefix or ""), limit=limit)
+    summaries = await memory.list_threads(
+        prefix=scope + (prefix or ""), limit=limit, mode=mode, agent_id=agent_id
+    )
     return [
         ThreadSummaryResponse(
             thread_id=s.thread_id.removeprefix(scope),
             title=s.title,
             message_count=s.message_count,
             updated_at=s.updated_at,
+            mode=s.mode,
+            agent_id=s.agent_id,
         )
         for s in summaries
     ]
@@ -384,8 +398,20 @@ async def get_thread(
     thread_id: str,
     memory: MemoryStore = Depends(_memory),
     principal: RuntimePrincipal = Depends(require_principal),
+    agent_id: str | None = None,
 ) -> ThreadHistoryResponse:
-    history = await memory.get(_tenant_thread_id(principal, thread_id))
+    full_id = _tenant_thread_id(principal, thread_id)
+    thread_agent_id = await memory.get_agent_id(full_id)
+    # Defense-in-depth backstop for requirement 7/8: even though the sidebar
+    # only ever lists the caller's currently-selected agent's threads (see
+    # /chat/threads?agent_id=...), a caller that already knows a thread_id
+    # (stale localStorage, direct API call) must never be handed another
+    # agent's history by opening it — a mismatch is treated as "not found"
+    # rather than silently reattaching the thread to `agent_id`.
+    if agent_id is not None and thread_agent_id != agent_id:
+        raise HTTPException(status_code=404, detail="Thread not found for this agent")
+    history = await memory.get(full_id)
+    mode = await memory.get_mode(full_id)
     return ThreadHistoryResponse(
         thread_id=thread_id,
         messages=[
@@ -393,6 +419,8 @@ async def get_thread(
             for m in history
             if m.role in ("user", "assistant")
         ],
+        mode=mode,
+        agent_id=thread_agent_id,
     )
 
 
@@ -536,6 +564,7 @@ async def agentic_run(
     principal: RuntimePrincipal = Depends(require_principal),
     audit: AuditStore | None = Depends(_audit),
     skill_registry: SkillRegistry = Depends(_skills),
+    memory: MemoryStore = Depends(_memory),
 ) -> AgentRunResponse:
     """Run a multi-step agentic task via the Claude Agent SDK.
 
@@ -569,10 +598,17 @@ async def agentic_run(
     )
     user_prefix = principal.user_id[:12] or "anon"
 
+    full_thread_id = _tenant_thread_id(principal, body.thread_id) if body.thread_id else None
+    prior_history: list[ChatMessage] = []
+    if full_thread_id:
+        prior_history = await memory.get(full_thread_id)
+
     try:
         if manifest is not None:
             executor = build_agent_executor(manifest, settings, skill_registry)
-            result = await executor.execute(prompt=body.task, token=principal.token)
+            result = await executor.execute(
+                prompt=body.task, token=principal.token, prior_history=prior_history
+            )
         else:
             result = await run_task(
                 task=body.task,
@@ -629,7 +665,29 @@ async def agentic_run(
             workflow_id=result.workflow_id if manifest else None,
         )
 
+    if full_thread_id:
+        await memory.append(
+            full_thread_id,
+            [
+                ChatMessage("user", body.task),
+                ChatMessage("assistant", result.final_answer),
+            ],
+            # Explicit, never inferred — this is /agent/run, so every thread
+            # it writes is mode='agentic' by construction. Chat's /chat
+            # endpoint writes mode='chat' the same way, into the same
+            # underlying store — the two never share a thread_id namespace
+            # (web/src/components/chat-room.tsx keeps separate ids per mode)
+            # and are always filterable by this field.
+            mode="agentic",
+            # Bound to the resolved agent_id (capability codes are already
+            # resolved to a concrete agent_id above) — None for the legacy
+            # no-manifest path. Set once, same rationale as /chat above.
+            agent_id=resolved_agent_id,
+        )
+
     return AgentRunResponse(
         final_answer=result.final_answer,
         steps=[AgentRunStep(role=s.role, text=s.text) for s in result.steps],
+        tools_used=result.tools_used if manifest else [],
+        thread_id=body.thread_id,
     )

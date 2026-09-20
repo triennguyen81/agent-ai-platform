@@ -1,0 +1,189 @@
+{
+  "_note": "Luồng 02 — Phiếu thu công nợ. Each case gives the exact POST /vouchers (create receipt voucher) body, then POST /vouchers/{{voucherId}}/receipt-match/propose (no body). Field names match CreateVoucherRequest exactly (gateway/src/Aiq.Gateway/Vouchers/VoucherRecords.cs) — voucherType/documentNumber/buyerMst/totalAmount/currency/paymentMethod. Outcome enum and journal routing match gateway/src/Aiq.Gateway/Receipts/IReceiptMatchRepository.cs and gateway/src/Aiq.Gateway/Accounting/JournalRoutingRules.cs exactly — nothing here is invented. VERIFIED LIVE (2026-09-15) against a freshly-bootstrapped isolated instance: AR-001's full propose -> apply-extraction(ar_context/receipt_matching) -> apply-receipt chain reproduced every expected number exactly, including progressPercent=30 and milestone ordinal 2 activating with expected_date computed — see the 'applyExtractionForSettlement' note on AR-001 for an important correction: /receipt-match/propose and /apply-receipt are two INDEPENDENT classification paths in the current implementation, not a sequential propose-then-confirm pair.",
+
+  "supportingContractForAR004": {
+    "_note": "AR-004 (advance before invoice) needs an unpaid contract installment linked to CUS-007's tax code, resolved by IReceiptMatchRepository.FindOpenInstallmentAsync (tax-code + earliest-unpaid heuristic) — independent of the Luồng 01 /process pipeline. seed.sql inserts this directly as supporting data (contracts + contract_payment_schedules rows), not as a Luồng 01 test case in its own right.",
+    "contractId": "60000000-0000-4000-8000-000000000006",
+    "title": "Hợp đồng tư vấn đầu tư 501/2026/HĐTV (hỗ trợ AR-004)",
+    "buyerMst": "0307890123",
+    "installment": { "ordinal": 1, "description": "Đặt cọc tư vấn", "percentage": 100, "totalAmount": 150000000, "status": "pending" }
+  },
+
+  "cases": [
+    {
+      "caseId": "AR-001",
+      "label": "Full payment (FULL_MATCH) — settles HD-001's payment-term ordinal 1 exactly",
+      "customerRef": "CUS-001",
+      "create": {
+        "method": "POST",
+        "path": "/vouchers",
+        "body": { "voucherType": "receipt", "documentNumber": "PT-2026-0901", "buyerMst": "0301234567", "totalAmount": 594000000, "currency": "VND", "paymentMethod": "CK" }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/receipt-match/propose", "note": "Classification-only preview — computes and stores the outcome/journal proposal but does NOT settle anything." },
+      "applyExtractionForSettlement": {
+        "method": "PATCH", "path": "/vouchers/{{voucherId}}/apply-extraction",
+        "body": { "voucherType": "receipt", "documentNumber": "PT-2026-0901", "buyerMst": "0301234567", "totalAmount": 594000000, "currency": "VND", "paymentMethod": "CK",
+          "extractedFields": { "ar_context": { "customer": { "Id": "30000000-0000-4000-8000-000000000001" } }, "receipt_matching": { "receipt_amount": 594000000, "applications": [{ "document_number": "INV-BM-001", "applied": 594000000 }] } } },
+        "note": "IMPORTANT — verified against the real running system: POST /apply-receipt does NOT chain off the plain 'propose' call above. It independently re-derives the match from extractedFields.ar_context/receipt_matching (a second, parallel classification path — ApplyReceiptAsync calls ProposeMatchAsync itself, then ConfirmMatchAsync, using THESE fields, not whatever /receipt-match/propose already computed from the voucher's own buyerMst/totalAmount). Both paths independently produce the same FULL_MATCH outcome here because the numbers agree, but only THIS path (apply-extraction with ar_context/receipt_matching, then apply-receipt) actually settles sim_ar_ledger, contract progress, and milestone activation — /receipt-match/propose alone never does."
+      },
+      "apply": { "method": "POST", "path": "/vouchers/{{voucherId}}/apply-receipt", "note": "department_admin only, and the actor must not be the voucher's own creator (R16 self-approval guard). Must be called AFTER applyExtractionForSettlement, not after the plain propose call." },
+      "expected": {
+        "outcome": "FULL_MATCH",
+        "matchedAmount": 594000000,
+        "unallocatedAmount": 0,
+        "customerMatchConfidence": 1.0,
+        "installmentLinked": "HD-001 ordinal 1 (if seeded via the Luồng 01 fixture and processed first)",
+        "journalProposal": [{ "debitAccount": "1121", "creditAccount": "131", "amount": 594000000, "description": "Thu tiền công nợ" }],
+        "reviewStatus_afterPropose": "proposed",
+        "reviewStatus_afterApply": "confirmed",
+        "receivableAfter": "sim_ar_ledger open balance for CUS-001 reduced to 0 for this invoice",
+        "contractProgressAfterApply": "HD-001.progress_percent recomputed to 30 (installment ordinal 1's 30% share)",
+        "milestoneActivationAfterApply": "HD-001 milestone ordinal 2 ('Nghiệm thu giai đoạn 1') flips pending -> active, expected_date computed from duration_months=1"
+      }
+    },
+    {
+      "caseId": "AR-002",
+      "label": "Partial payment (PARTIAL_PAYMENT)",
+      "customerRef": "CUS-005",
+      "openInvoice": { "documentNumber": "INV-AK-100", "debit": 200000000, "dueDate": "+20d" },
+      "create": {
+        "method": "POST",
+        "path": "/vouchers",
+        "body": { "voucherType": "receipt", "documentNumber": "PT-2026-0902", "buyerMst": "0305678901", "totalAmount": 120000000, "currency": "VND", "paymentMethod": "CK" }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/receipt-match/propose" },
+      "expected": {
+        "outcome": "PARTIAL_PAYMENT",
+        "matchedAmount": 120000000,
+        "unallocatedAmount": 0,
+        "journalProposal": [{ "debitAccount": "1121", "creditAccount": "131", "amount": 120000000, "description": "Thu tiền công nợ" }],
+        "receivableAfter": "sim_ar_ledger balance for CUS-005 remains open at 80,000,000 (200,000,000 - 120,000,000) — confirm requires a follow-up receipt, not modeled by this single case",
+        "contractProgress": "not applicable — this invoice is not linked to a contract installment"
+      }
+    },
+    {
+      "caseId": "AR-003",
+      "label": "Overpayment (OVERPAYMENT)",
+      "customerRef": "CUS-006",
+      "openInvoice": { "documentNumber": "INV-PN-050", "debit": 2000000, "dueDate": "+20d" },
+      "create": {
+        "method": "POST",
+        "path": "/vouchers",
+        "body": { "voucherType": "receipt", "documentNumber": "PT-2026-0903", "buyerMst": "0306789012", "totalAmount": 2500000, "currency": "VND", "paymentMethod": "CK" }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/receipt-match/propose" },
+      "expected": {
+        "outcome": "OVERPAYMENT",
+        "matchedAmount": 2000000,
+        "unallocatedAmount": 500000,
+        "journalProposal": [
+          { "debitAccount": "1121", "creditAccount": "131", "amount": 2000000, "description": "Thu tiền công nợ — phần khớp hoá đơn" },
+          { "debitAccount": "1121", "creditAccount": "3388", "amount": 500000, "description": "Khách trả thừa — chờ xác nhận hoàn trả hoặc cấn trừ đợt sau" }
+        ],
+        "reviewNote": "Kế toán công nợ phải xác nhận với khách: hoàn trả hay cấn trừ đợt sau (per the business process document) — the system never auto-decides this."
+      }
+    },
+    {
+      "caseId": "AR-004",
+      "label": "Advance before invoice (ADVANCE_PAYMENT)",
+      "customerRef": "CUS-007",
+      "create": {
+        "method": "POST",
+        "path": "/vouchers",
+        "body": { "voucherType": "receipt", "documentNumber": "PT-2026-0904", "buyerMst": "0307890123", "totalAmount": 150000000, "currency": "VND", "paymentMethod": "CK" }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/receipt-match/propose" },
+      "expected": {
+        "outcome": "ADVANCE_PAYMENT",
+        "matchedAmount": 0,
+        "unallocatedAmount": 150000000,
+        "installmentLinked": "supportingContractForAR004, ordinal 1",
+        "journalProposal": [{ "debitAccount": "1121", "creditAccount": "131", "amount": 150000000, "description": "Khách trả trước khi có hoá đơn" }],
+        "note": "Credit 131 ('trả trước') is the router's always-safe default. 3387 (doanh thu chưa thực hiện) is a distinct, stricter sub-case the extracted data has no signal for — never auto-selected (see JournalRoutingRules.ForReceiptOutcome). A human may override to 3387 manually if they determine the revenue is genuinely unearned."
+      }
+    },
+    {
+      "caseId": "AR-005",
+      "label": "Unknown payer (UNKNOWN_PAYER) — MST doesn't resolve to any sim_customers row",
+      "customerRef": null,
+      "create": {
+        "method": "POST",
+        "path": "/vouchers",
+        "body": { "voucherType": "receipt", "documentNumber": "PT-2026-0905", "buyerMst": "0199999999", "totalAmount": 300000, "currency": "VND", "paymentMethod": "CK" }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/receipt-match/propose" },
+      "expected": {
+        "outcome": "UNKNOWN_PAYER",
+        "journalProposal": "NONE — review only, per the business document's 'Không' column",
+        "reviewQueue": "Vào hàng đợi tra soát — gửi yêu cầu tra soát ngân hàng; treo 3388 nếu quá 30 ngày (manual/kế toán công nợ action, not automated)",
+        "notification": "receipt_unknown_payer fan-out to every department_admin in the Accounting department (deduplicated, see INotificationRepository.NotifyDepartmentAdminsAsync)"
+      }
+    },
+    {
+      "caseId": "AR-006",
+      "label": "Known customer but unmatched invoice (CUSTOMER_NO_OPEN_RECEIVABLE)",
+      "customerRef": "CUS-009",
+      "create": {
+        "method": "POST",
+        "path": "/vouchers",
+        "body": { "voucherType": "receipt", "documentNumber": "PT-2026-0906", "buyerMst": "0309012345", "totalAmount": 500000, "currency": "VND", "paymentMethod": "CK" }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/receipt-match/propose" },
+      "expected": {
+        "outcome": "CUSTOMER_NO_OPEN_RECEIVABLE",
+        "journalProposal": "NONE — review only",
+        "reviewQueue": "Hỏi kinh doanh hoặc khách để xác định khoản thu thuộc về việc gì (manual)",
+        "mappingNote": "This is the closest real, already-implemented equivalent to the business document's 'đúng khách nhưng không khớp hoá đơn nào' — the system matches by comparing the receipt amount against a customer's TOTAL open balance, not against individual invoice line items, so 'zero open invoices at all' is the deterministic outcome this maps to."
+      }
+    },
+    {
+      "caseId": "AR-007",
+      "label": "Reversed transaction (REVERSED_TRANSACTION) — negative amount, a bank reversal after an earlier credit",
+      "customerRef": "CUS-001",
+      "create": {
+        "method": "POST",
+        "path": "/vouchers",
+        "body": { "voucherType": "receipt", "documentNumber": "PT-2026-0907", "buyerMst": "0301234567", "totalAmount": -100000, "currency": "VND", "paymentMethod": "CK" }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/receipt-match/propose" },
+      "expected": {
+        "outcome": "REVERSED_TRANSACTION",
+        "journalProposal": "NONE — review only",
+        "reviewQueue": "Đánh dấu huỷ, giữ nguyên công nợ, cảnh báo kế toán ngay (manual)",
+        "notification": "receipt_reversed_transaction fan-out to every department_admin in the Accounting department"
+      }
+    },
+    {
+      "caseId": "AR-008",
+      "label": "Overdue receivable — 65 days past due_date, unpaid",
+      "customerRef": "CUS-004",
+      "openInvoice": { "documentNumber": "INV-TL-001", "debit": 350000000, "dueDate": "-65d" },
+      "expected": {
+        "outcome": "N/A — this is not a receipt-match outcome, it is exercised by the scheduled AccountsReceivableOverdueJob and ContractInstallmentPenaltyJob (daily 07:00 VN)",
+        "howToTrigger": "No public HTTP endpoint triggers these jobs on demand in this build. For manual/browser testing: either wait for the next scheduled run, or (dev-only) invoke the job class directly in a test harness — see gateway/tests/Aiq.Gateway.Tests/Jobs/AccountsReceivableOverdueJobTests.cs and ContractInstallmentPenaltyJobTests.cs for exact expected behavior.",
+        "expectedAfterJobRuns": {
+          "notificationKind": "ar_overdue_notice (65 days crosses the default NoticeDays=30 threshold but not PenaltyDays=60... note: 65 > 60, so the expected kind is actually ar_overdue_penalty per ArOverdueOptions defaults 1/30/60/90)",
+          "correctedExpectedKind": "ar_overdue_penalty",
+          "penaltyFields": "Only computed if this invoice is ALSO a contract_payment_schedules row with status='pending' and the parent contract's penalty_percent is set — this plain sim_ar_ledger invoice has no such link, so ContractInstallmentPenaltyJob will NOT compute a penalty amount for it (by design — see BR-adjacent note in BUSINESS_SAMPLE_TEST_MATRIX.md: penalty calculation is scoped to contract installments only, not generic AR invoices, because only contract installments carry a due_date+percent+parent-contract-rate triple the schema can resolve unambiguously)."
+        }
+      }
+    },
+    {
+      "caseId": "AR-009",
+      "label": "Foreign currency receipt (FOREIGN_CURRENCY) — BLOCKED for journal proposal, no FX rate source",
+      "customerRef": "CUS-003",
+      "create": {
+        "method": "POST",
+        "path": "/vouchers",
+        "body": { "voucherType": "receipt", "documentNumber": "PT-2026-0909", "buyerMst": "0100000001", "totalAmount": 500, "currency": "USD", "paymentMethod": "CK" }
+      },
+      "propose": { "method": "POST", "path": "/vouchers/{{voucherId}}/receipt-match/propose" },
+      "expected": {
+        "outcome": "FOREIGN_CURRENCY",
+        "journalProposal": "BLOCKED — no FX rate source is configured anywhere in this system (confirmed by inspection: zero exchange-rate table/API config exists). JournalRoutingRules.ForReceiptOutcome's FOREIGN_CURRENCY branch returns JournalRoutingOutcome.Blocked with reason 'no_fx_rate_source_configured' — zero entries are proposed, and NO EXCHANGE RATE IS INVENTED for this fixture.",
+        "uiBehavior": "vouchers/[id]/page.tsx shows an explicit message: 'Giao dịch ngoại tệ — hệ thống chưa có nguồn tỷ giá cấu hình... Vui lòng nhập bút toán thủ công.' instead of implying a transient AI delay.",
+        "manualNextStep": "A human must determine the applicable rate under internal policy and enter the 515/635 journal entry by hand — this fixture does not and must not supply one."
+      }
+    }
+  ]
+}

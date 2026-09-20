@@ -21,6 +21,7 @@ interface ContractRecord {
   status: string;
   workflowState: string;
   documentType: string;
+  direction?: string | null;
   contractNumber?: string | null;
   subtotal?: number | null;
   vatRate?: number | null;
@@ -146,6 +147,15 @@ export default async function ContractDetailPage({ params }: Props) {
           <span className="rounded-full border px-2 py-0.5 text-xs">
             {contract.workflowState}
           </span>
+          {contract.direction && (
+            <span className={`rounded-full border px-2 py-0.5 text-xs ${
+              contract.direction === "sales" ? "border-emerald-300 bg-emerald-50 text-emerald-700"
+              : contract.direction === "purchase" ? "border-blue-300 bg-blue-50 text-blue-700"
+              : "border-amber-300 bg-amber-50 text-amber-700"
+            }`}>
+              {contract.direction === "sales" ? "Bán (Sales)" : contract.direction === "purchase" ? "Mua (Purchase)" : "Cần xác minh chiều hợp đồng"}
+            </span>
+          )}
           {contract.tags?.map((t) => (
             <span key={t} className="rounded-full border px-2 py-0.5 text-[10px] text-[var(--color-muted-fg)]">
               {t}

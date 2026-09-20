@@ -1,19 +1,17 @@
 import { NextResponse } from "next/server";
 import { agent } from "@/lib/api";
-import { decodeUserId, getSession } from "@/lib/auth";
+import { getSession, namespacedThreadId } from "@/lib/auth";
+import { normalizeMode } from "@/lib/chat-history";
 
 interface AgentThreadHistory {
   thread_id: string;
   messages: { role: string; content: string }[];
-}
-
-function buildKey(userId: string | null, raw: string): string {
-  if (!userId) return raw;
-  return raw.startsWith(`${userId}:`) ? raw : `${userId}:${raw}`;
+  mode: string;
+  agent_id?: string | null;
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const token = await getSession();
@@ -21,18 +19,23 @@ export async function GET(
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  const userId = decodeUserId(token);
   const { id } = await context.params;
-  const fullId = buildKey(userId, id);
+  const fullId = namespacedThreadId(token, id) ?? id;
+  const agentId = new URL(request.url).searchParams.get("agent_id") || undefined;
 
-  const res = await agent.getThread(token, fullId);
+  const res = await agent.getThread(token, fullId, agentId);
   if (!res.ok) {
-    return NextResponse.json({ thread_id: id, messages: [] }, { status: res.status });
+    return NextResponse.json(
+      { thread_id: id, messages: [], mode: "chat", agent_id: null },
+      { status: res.status },
+    );
   }
   const payload = (await res.json()) as AgentThreadHistory;
   return NextResponse.json({
     thread_id: id,
     messages: payload.messages ?? [],
+    mode: normalizeMode(payload.mode),
+    agent_id: payload.agent_id ?? null,
   });
 }
 
@@ -44,9 +47,8 @@ export async function DELETE(
   if (!token) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  const userId = decodeUserId(token);
   const { id } = await context.params;
-  const fullId = buildKey(userId, id);
+  const fullId = namespacedThreadId(token, id) ?? id;
 
   const res = await agent.clearThread(token, fullId);
   return new NextResponse(null, { status: res.status === 204 ? 204 : res.status });

@@ -5,18 +5,25 @@ import { getSession } from "@/lib/auth";
 interface UploadBody {
   raw_text?: string;
   title_hint?: string;
+  // Set when the text came from the file-upload path (contracts/upload's
+  // extract-text step) — already-uploaded MinIO object key for the source
+  // file. save_contract (agentic/contract_tools.py) already reads
+  // fields.source_pdf_path and forwards it as ContractRecord.SourcePdfPath;
+  // this was simply never populated by any caller until now.
+  source_pdf_path?: string;
+  original_filename?: string;
 }
 
 /**
- * Phase 1 upload flow:
- *   - User pastes raw contract text (after OCR or copy/paste from PDF)
+ * Contract intake — final step, always text-based:
+ *   - User has raw contract text in the textarea, either typed/pasted
+ *     directly, or populated by the separate /api/contracts/extract-text
+ *     step (file upload → PDF text-layer/OCR/DOCX extraction) and possibly
+ *     hand-edited afterward — this route never knows or cares which.
  *   - Web hands the text to /agent/run with a task to extract fields and
  *     save via the `save_contract` tool
  *   - Agent runs the contract-extractor skill, calls save_contract → POST
  *     /contracts on gateway → returns final summary
- *
- * Phase 1.5 will add a binary PDF dropzone that pipes through agent's
- * /ocr/pdf first, then this same task.
  */
 export async function POST(request: NextRequest) {
   const token = await getSession();
@@ -34,12 +41,16 @@ export async function POST(request: NextRequest) {
   }
 
   const titleHint = body?.title_hint?.trim();
+  const sourcePdfPath = body?.source_pdf_path?.trim();
   const task = [
     "Bạn là chuyên viên pháp chế. Thực hiện 2 bước:",
     "",
     "**Bước 1** — Áp dụng skill `contract-extractor` để trích xuất JSON từ raw text bên dưới.",
     `${titleHint ? `User gợi ý title: "${titleHint}"\n` : ""}`,
     "**Bước 2** — Gọi tool `save_contract` với fields = JSON đã extract + raw_text = nguyên văn raw text bên dưới. Đảm bảo party_a, party_b, ngày tháng, total_value đầy đủ nhất có thể.",
+    sourcePdfPath
+      ? `Nội dung này được trích xuất từ file đã upload — thêm đúng nguyên văn key "source_pdf_path": "${sourcePdfPath}" vào object fields khi gọi save_contract (copy chính xác, không sửa đổi chuỗi này).`
+      : "",
     "",
     "Sau khi save xong, trả về 1 đoạn tổng kết ngắn cho user về:",
     "- ID hợp đồng đã lưu",

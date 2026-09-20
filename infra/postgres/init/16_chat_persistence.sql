@@ -15,13 +15,36 @@ CREATE TABLE IF NOT EXISTS chat_threads (
     title           TEXT,
     messages        JSONB NOT NULL DEFAULT '[]'::jsonb,
     message_count   INT NOT NULL DEFAULT 0,
+    -- Explicit, persisted conversation type — set once at thread creation,
+    -- never inferred from title/content. Existing rows created before this
+    -- column existed default to 'chat' (ADD COLUMN below), matching the
+    -- Chat/Agentic mode toggle in web/src/components/chat-room.tsx.
+    mode            TEXT NOT NULL DEFAULT 'chat',
+    -- Which agent this thread belongs to (agents.id from the Gateway), or
+    -- NULL for a plain/no-agent chat. Set once at thread creation, never
+    -- changed on a later append — a thread cannot silently switch agents
+    -- mid-conversation, and a NULL agent_id never matches a
+    -- list_threads(agent_id=...) filter for a specific agent (legacy
+    -- threads must not silently attach to whichever agent is selected now).
+    agent_id        TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Backward compatibility for a database that already ran this file before
+-- the `mode`/`agent_id` columns existed (docker-entrypoint-initdb.d scripts
+-- only run once, on a brand-new data directory, so an already-initialized
+-- instance needs these explicit ADD COLUMN statements too).
+ALTER TABLE chat_threads ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'chat';
+ALTER TABLE chat_threads ADD COLUMN IF NOT EXISTS agent_id TEXT;
+
 -- Sidebar orders newest-first
 CREATE INDEX IF NOT EXISTS idx_chat_threads_updated
     ON chat_threads(updated_at DESC);
+
+-- Agent-scoped thread listing (list_threads(agent_id=...))
+CREATE INDEX IF NOT EXISTS idx_chat_threads_agent_id
+    ON chat_threads(agent_id) WHERE agent_id IS NOT NULL;
 
 -- LIKE prefix scan for per-user filtering (web sends thread_id = "{userId}:...")
 CREATE INDEX IF NOT EXISTS idx_chat_threads_id_prefix
