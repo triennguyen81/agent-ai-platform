@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Data;
 using Dapper;
+using Npgsql;
 
 namespace Aiq.Gateway.Governance;
 
@@ -73,11 +74,36 @@ public interface ICapabilityRepository
     /// Binding-first: an active department_capability_bindings row is
     /// authoritative — if the caller isn't independently eligible for the
     /// bound agent, resolution fails closed rather than falling back to
-    /// another eligible agent. No binding: exactly one eligible agent
-    /// resolves deterministically; zero is unavailable; more than one is an
-    /// explicit ambiguity error. Never picks by name/order/priority.
+    /// another eligible agent. No binding + no preferredAgentId: exactly one
+    /// eligible agent resolves deterministically; zero is unavailable; more
+    /// than one is an explicit ambiguity error (unchanged for any caller
+    /// that never supplies a preference — Voucher/Invoice/etc. keep this
+    /// exact behavior). preferredAgentId (contracts/upload's "Xử lý bằng
+    /// trợ lý" selector) is ALWAYS re-validated against the freshly computed
+    /// eligible set for this exact principal/tenant/department/capability
+    /// before being honored — a client-supplied id that isn't in that set
+    /// (wrong capability, wrong department/tenant, not assigned/eligible)
+    /// is rejected exactly like "not available," never trusted directly.
+    /// Never picks by name/order/priority.
     /// </summary>
-    Task<CapabilityResolution> ResolveAgentAsync(Guid tenantId, Guid departmentId, Guid? userId, bool isAdmin, string capabilityCode, CancellationToken ct);
+    Task<CapabilityResolution> ResolveAgentAsync(
+        Guid tenantId, Guid departmentId, Guid? userId, bool isAdmin, string capabilityCode,
+        Guid? preferredAgentId, CancellationToken ct);
+
+    /// <summary>
+    /// Every agent this exact principal could be routed to for one
+    /// capability — the data behind the "Xử lý bằng trợ lý" selector shown
+    /// when ResolveAgentAsync would otherwise report capability_ambiguous.
+    /// Identical eligibility computation ResolveAgentAsync uses (same
+    /// tenant/department/production/enabled/ownership-or-entitlement
+    /// filters, same USER direct-assignment vs ADMIN department-manager
+    /// chain) — this only skips the "collapse to one or fail" step. Callers
+    /// still MUST pass whatever the user picks back through ResolveAgentAsync
+    /// as preferredAgentId; this list is never itself an authorization
+    /// decision.
+    /// </summary>
+    Task<IReadOnlyList<EligibleCapabilityAgentRecord>> ListEligibleAgentsAsync(
+        Guid tenantId, Guid departmentId, Guid? userId, bool isAdmin, string capabilityCode, CancellationToken ct);
 
     /// <summary>TENANT_OWNER management view — see §7 of the D4 spec.</summary>
     Task<IReadOnlyList<DepartmentCapabilityRecord>> ListDepartmentCapabilitiesAsync(Guid tenantId, Guid departmentId, CancellationToken ct);
@@ -209,13 +235,19 @@ public sealed class CapabilityRepository(NpgsqlConnectionFactory factory) : ICap
             """, new { tenantId, userId, departmentId }, cancellationToken: ct))).AsList();
     }
 
-    public async Task<CapabilityResolution> ResolveAgentAsync(Guid tenantId, Guid departmentId, Guid? userId, bool isAdmin, string capabilityCode, CancellationToken ct)
+    /// <summary>
+    /// Shared by ResolveAgentAsync and ListEligibleAgentsAsync so the two
+    /// can never drift — "what could this principal be routed to" is
+    /// computed exactly once. Returns (capabilityId: null, []) when the
+    /// code doesn't resolve to an active catalog entry.
+    /// </summary>
+    private static async Task<(Guid? CapabilityId, IReadOnlyList<EligibleCapabilityAgentRecord> Eligible)> ComputeEligibleAsync(
+        NpgsqlConnection conn, Guid tenantId, Guid departmentId, Guid? userId, bool isAdmin, string capabilityCode, CancellationToken ct)
     {
-        await using var conn = await factory.OpenAsync(ct);
         var capabilityId = await conn.ExecuteScalarAsync<Guid?>(new CommandDefinition(
             "SELECT id FROM business_capabilities WHERE code=@capabilityCode AND is_active",
             new { capabilityCode }, cancellationToken: ct));
-        if (capabilityId is null) return new(null, "capability_not_found");
+        if (capabilityId is null) return (null, []);
 
         var eligible = isAdmin
             ? (await conn.QueryAsync<EligibleCapabilityAgentRecord>(new CommandDefinition($"""
@@ -224,6 +256,7 @@ public sealed class CapabilityRepository(NpgsqlConnectionFactory factory) : ICap
                 JOIN agent_versions v ON v.id = avc.agent_version_id AND v.status = 'published'
                 JOIN agents a ON a.id = v.agent_id AND a.published_version_id = v.id AND a.disabled_at IS NULL AND a.lifecycle_state = 'production'
                 WHERE avc.capability_id = @capabilityId AND {AgentOwnershipOrEntitlement}
+                ORDER BY a.name
                 """, new { tenantId, departmentId, capabilityId }, cancellationToken: ct))).AsList()
             : (await conn.QueryAsync<EligibleCapabilityAgentRecord>(new CommandDefinition($"""
                 SELECT DISTINCT a.id AS AgentId, a.slug AS Slug, a.name AS Name
@@ -232,7 +265,43 @@ public sealed class CapabilityRepository(NpgsqlConnectionFactory factory) : ICap
                 JOIN agents a ON a.id = v.agent_id AND a.published_version_id = v.id AND a.disabled_at IS NULL AND a.lifecycle_state = 'production'
                 JOIN agent_assignments aa ON aa.agent_id = a.id AND aa.tenant_id = @tenantId AND aa.user_id = @userId AND aa.status = 'active'
                 WHERE avc.capability_id = @capabilityId AND {AgentOwnershipOrEntitlement}
+                ORDER BY a.name
                 """, new { tenantId, departmentId, userId, capabilityId }, cancellationToken: ct))).AsList();
+
+        return (capabilityId, eligible);
+    }
+
+    public async Task<IReadOnlyList<EligibleCapabilityAgentRecord>> ListEligibleAgentsAsync(
+        Guid tenantId, Guid departmentId, Guid? userId, bool isAdmin, string capabilityCode, CancellationToken ct)
+    {
+        await using var conn = await factory.OpenAsync(ct);
+        var (_, eligible) = await ComputeEligibleAsync(conn, tenantId, departmentId, userId, isAdmin, capabilityCode, ct);
+        return eligible;
+    }
+
+    public async Task<CapabilityResolution> ResolveAgentAsync(
+        Guid tenantId, Guid departmentId, Guid? userId, bool isAdmin, string capabilityCode,
+        Guid? preferredAgentId, CancellationToken ct)
+    {
+        await using var conn = await factory.OpenAsync(ct);
+        var (capabilityId, eligible) = await ComputeEligibleAsync(conn, tenantId, departmentId, userId, isAdmin, capabilityCode, ct);
+        if (capabilityId is null) return new(null, "capability_not_found");
+
+        // contracts/upload's "Xử lý bằng trợ lý" selector: the client MAY
+        // name which eligible agent it wants, but that name is never
+        // trusted directly — it only wins if it's actually a member of the
+        // eligible set just (re)computed above for THIS principal/tenant/
+        // department/capability. Anything else (unauthorized agent id,
+        // cross-tenant/cross-department agent, an agent that doesn't even
+        // declare this capability) is rejected exactly like "not
+        // available" — it can never reveal whether the id was simply
+        // ineligible vs. didn't exist vs. belongs to someone else.
+        if (preferredAgentId is { } preferred)
+        {
+            return eligible.Any(a => a.AgentId == preferred)
+                ? new(preferred, null)
+                : new(null, "capability_not_available");
+        }
 
         var boundAgentId = await conn.ExecuteScalarAsync<Guid?>(new CommandDefinition("""
             SELECT agent_id FROM department_capability_bindings

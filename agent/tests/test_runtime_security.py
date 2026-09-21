@@ -77,6 +77,7 @@ class _FakeAsyncClient:
         self._response = response
         self.requested_url: str | None = None
         self.requested_headers: dict | None = None
+        self.requested_params: dict | None = None
 
     async def __aenter__(self) -> _FakeAsyncClient:
         return self
@@ -84,9 +85,10 @@ class _FakeAsyncClient:
     async def __aexit__(self, *exc_info: object) -> bool:
         return False
 
-    async def get(self, url: str, headers: dict | None = None) -> _FakeResponse:
+    async def get(self, url: str, headers: dict | None = None, params: dict | None = None) -> _FakeResponse:
         self.requested_url = url
         self.requested_headers = headers
+        self.requested_params = params
         return self._response
 
 
@@ -114,6 +116,43 @@ async def test_resolve_capability_agent_returns_the_resolved_id_on_200(monkeypat
     base = security.get_settings().gateway_base_url.rstrip("/")
     assert fake_client.requested_url == f"{base}/me/capabilities/accounting.journal/agent"
     assert fake_client.requested_headers == {"Authorization": "Bearer signed.jwt.value"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_capability_agent_omits_preferred_param_when_not_given(monkeypatch) -> None:
+    # Every existing caller (Voucher/Invoice/etc., not yet migrated to the
+    # "Xử lý bằng trợ lý" selector) must see byte-for-byte the same request
+    # this always sent before preferred_agent_id existed.
+    fake_client = _patch_gateway_response(
+        monkeypatch, _FakeResponse(200, {"agentId": "11111111-1111-1111-1111-111111111111"})
+    )
+    await resolve_capability_agent(_principal(), "accounting.journal")
+    assert fake_client.requested_params is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_capability_agent_forwards_preferred_agent_id_as_query_param(monkeypatch) -> None:
+    fake_client = _patch_gateway_response(
+        monkeypatch, _FakeResponse(200, {"agentId": "22222222-2222-2222-2222-222222222222"})
+    )
+    resolved = await resolve_capability_agent(
+        _principal(), "contract.processing", preferred_agent_id="22222222-2222-2222-2222-222222222222"
+    )
+    assert resolved == "22222222-2222-2222-2222-222222222222"
+    assert fake_client.requested_params == {"preferredAgentId": "22222222-2222-2222-2222-222222222222"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_capability_agent_rejects_unauthorized_preferred_agent_id(monkeypatch) -> None:
+    # The Gateway is the one re-validating preferred_agent_id — this just
+    # proves the 403 it returns for a rejected preference surfaces exactly
+    # like any other denial, never silently falls back to a different agent.
+    _patch_gateway_response(monkeypatch, _FakeResponse(403, {"error": "capability_not_available"}))
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_capability_agent(
+            _principal(), "contract.processing", preferred_agent_id="not-actually-eligible"
+        )
+    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio

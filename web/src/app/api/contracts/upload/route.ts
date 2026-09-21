@@ -12,6 +12,11 @@ interface UploadBody {
   // this was simply never populated by any caller until now.
   source_pdf_path?: string;
   original_filename?: string;
+  // "Xử lý bằng trợ lý" selector (auto-selected when exactly one Agent is
+  // eligible, user-chosen when more than one is) — the id itself is never
+  // trusted here or by the agent service; the Gateway re-validates it
+  // against a freshly computed eligible set before ever honoring it.
+  preferred_agent_id?: string;
 }
 
 /**
@@ -65,9 +70,12 @@ export async function POST(request: NextRequest) {
   // D6: routes through the capability resolver (contract.processing)
   // instead of the legacy no-agent-id path — skills/tools now come from
   // whatever agent the resolver authorizes, not this request.
+  // preferred_agent_id is the "Xử lý bằng trợ lý" selector's pick when more
+  // than one Agent is eligible — see contracts/upload/page.tsx.
   const res = await agent.runTask(token, {
     task,
     capability: "contract.processing",
+    preferred_agent_id: body?.preferred_agent_id?.trim() || undefined,
     max_turns: 6,
   });
 

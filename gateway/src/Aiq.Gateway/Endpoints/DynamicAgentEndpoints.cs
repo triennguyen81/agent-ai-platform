@@ -349,7 +349,8 @@ public static class DynamicAgentEndpoints
 
     private static async Task<IResult> ManifestAsync(
         Guid agentId, IDynamicAgentRepository repo, IAuditLogger audit,
-        IJwtTokenService jwt, IUserRepository users, HttpContext ctx, CancellationToken ct)
+        IJwtTokenService jwt, IUserRepository users, ITenantCompanyProfileRepository companyProfiles,
+        HttpContext ctx, CancellationToken ct)
     {
         if (!TryActor(ctx, out var userId)) return Results.Unauthorized();
         if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal)) return Results.Forbid();
@@ -375,7 +376,8 @@ public static class DynamicAgentEndpoints
             {
                 var mintedTestToken = await MintToolExecutionTokenAsync(jwt, users, ctx, userId, testTenantId, testResult.Manifest.TimeoutSeconds, ct);
                 if (mintedTestToken is null) return Results.Forbid();
-                testResult = testResult with { Manifest = testResult.Manifest with { ToolExecutionToken = mintedTestToken } };
+                var testCompanyProfile = ToManifestCompanyProfile(await companyProfiles.GetAsync(testTenantId, ct));
+                testResult = testResult with { Manifest = testResult.Manifest with { ToolExecutionToken = mintedTestToken, CompanyProfile = testCompanyProfile } };
             }
             await audit.WriteAsync(new AuditEntry(userId, "GET runtime agent manifest (department agent test)",
                 "agent", agentId.ToString(),
@@ -423,7 +425,8 @@ public static class DynamicAgentEndpoints
             {
                 var minted = await MintToolExecutionTokenAsync(jwt, users, ctx, userId, resolvedTenantId, result.Manifest.TimeoutSeconds, ct);
                 if (minted is null) return Results.Forbid();
-                result = result with { Manifest = result.Manifest with { ToolExecutionToken = minted } };
+                var companyProfile = ToManifestCompanyProfile(await companyProfiles.GetAsync(resolvedTenantId, ct));
+                result = result with { Manifest = result.Manifest with { ToolExecutionToken = minted, CompanyProfile = companyProfile } };
             }
         }
 
@@ -450,7 +453,8 @@ public static class DynamicAgentEndpoints
     /// </summary>
     private static async Task<IResult> DelegateManifestAsync(
         Guid routerAgentId, Guid specialistAgentId, IDynamicAgentRepository repo, IAuditLogger audit,
-        IJwtTokenService jwt, IUserRepository users, HttpContext ctx, CancellationToken ct)
+        IJwtTokenService jwt, IUserRepository users, ITenantCompanyProfileRepository companyProfiles,
+        HttpContext ctx, CancellationToken ct)
     {
         if (!TryActor(ctx, out var userId)) return Results.Unauthorized();
         // Delegation stays USER-only in D3 (see GetDelegateManifestAsync's
@@ -465,7 +469,8 @@ public static class DynamicAgentEndpoints
         {
             var minted = await MintToolExecutionTokenAsync(jwt, users, ctx, userId, tenantId, result.Manifest.TimeoutSeconds, ct);
             if (minted is null) return Results.Forbid();
-            result = result with { Manifest = result.Manifest with { ToolExecutionToken = minted } };
+            var companyProfile = ToManifestCompanyProfile(await companyProfiles.GetAsync(tenantId, ct));
+            result = result with { Manifest = result.Manifest with { ToolExecutionToken = minted, CompanyProfile = companyProfile } };
         }
 
         await audit.WriteAsync(new AuditEntry(userId, "GET runtime agent delegate manifest",
@@ -497,6 +502,17 @@ public static class DynamicAgentEndpoints
         var token = jwt.Issue(actingUser, realRoles, tenantId, toolTtl, new Dictionary<string, string> { ["scope"] = "tool_execution" });
         return token.Token;
     }
+
+    /// <summary>
+    /// Null when the tenant has no Company Profile configured yet — the
+    /// runtime renders that as an explicit not_configured identity, never a
+    /// guess (see ManifestCompanyProfile / _company_context_block).
+    /// </summary>
+    public static ManifestCompanyProfile? ToManifestCompanyProfile(CompanyProfileRecord? record) =>
+        record is null ? null : new ManifestCompanyProfile(
+            record.LegalName, record.TaxCode, record.ShortName, record.Aliases,
+            record.RegisteredAddress, record.LegalRepresentative, record.RepresentativeTitle,
+            record.Phone, record.Email, record.Website);
 
     private static bool TryActor(HttpContext ctx, out Guid actorId) => Guid.TryParse(ctx.User.FindFirst("sub")?.Value, out actorId);
     private static bool TryValidate(object value, out Dictionary<string, string[]> errors)

@@ -84,7 +84,9 @@ async def require_agent_execution(principal: RuntimePrincipal, agent_id: str, *,
         raise HTTPException(status_code=503, detail="Authorization service unavailable") from exc
 
 
-async def resolve_capability_agent(principal: RuntimePrincipal, capability: str) -> str:
+async def resolve_capability_agent(
+    principal: RuntimePrincipal, capability: str, preferred_agent_id: str | None = None,
+) -> str:
     """D4: resolve a business capability code to an authorized agent id.
 
     The Gateway is the sole authority here — it derives tenant/department/
@@ -93,12 +95,21 @@ async def resolve_capability_agent(principal: RuntimePrincipal, capability: str)
     This function only translates that decision into an HTTP outcome; the
     resolved agent id still has to pass require_agent_execution's full
     manifest check afterward, unchanged.
+
+    preferred_agent_id ("Xử lý bằng trợ lý" selector, contracts/upload and
+    later Voucher/Invoice/etc.) is passed straight through as a query
+    parameter — the Gateway re-validates it against a freshly computed
+    eligible set for THIS principal before ever honoring it; it is never
+    trusted here or anywhere else client-side.
     """
     settings = get_settings()
     url = f"{settings.gateway_base_url.rstrip('/')}/me/capabilities/{capability}/agent"
+    params = {"preferredAgentId": preferred_agent_id} if preferred_agent_id else None
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(url, headers={"Authorization": f"Bearer {principal.token}"})
+            response = await client.get(
+                url, headers={"Authorization": f"Bearer {principal.token}"}, params=params,
+            )
     except httpx.RequestError as exc:
         raise HTTPException(status_code=503, detail="Authorization service unavailable") from exc
     if response.status_code == 200:

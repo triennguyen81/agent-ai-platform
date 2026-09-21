@@ -87,6 +87,18 @@ public sealed record ManifestTool(Guid Id, string Code, string Name, string? Des
 public sealed record ManifestKnowledge(Guid NoteId, string Title, string Content, string[] Tags);
 public sealed record ManifestWorkflow(Guid Id, string Name, JsonElement Definition);
 public sealed record ManifestDelegate(Guid Id, string Slug, string Name, string? Description);
+
+/// <summary>
+/// AIQ's own legal-entity identity for the tenant ("công ty chủ thể") —
+/// resolved server-side from tenant_company_profiles by the authenticated
+/// tenant_id (see DynamicAgentEndpoints.ManifestAsync), never accepted from
+/// chat/request input. Mirrors ManifestCompanyProfile on the Python side
+/// field-for-field.
+/// </summary>
+public sealed record ManifestCompanyProfile(
+    string? LegalName, string? TaxCode, string? ShortName, IReadOnlyList<string> Aliases,
+    string? RegisteredAddress, string? LegalRepresentative, string? RepresentativeTitle,
+    string? Phone, string? Email, string? Website);
 public sealed record AgentExecutionManifest(
     Guid UserId, Guid TenantId, ManifestAgent Agent, Guid PublishedVersionId,
     int Version, string Provider, string Model, string SystemPrompt, decimal Temperature,
@@ -107,7 +119,14 @@ public sealed record AgentExecutionManifest(
     // department-entitlement decision by the time this manifest is issued.
     // Null for the departmentless SUPER_ADMIN test path.
     Guid? DepartmentId = null,
-    IReadOnlyList<Guid>? KnowledgeBaseIds = null);
+    IReadOnlyList<Guid>? KnowledgeBaseIds = null,
+    // Attached in DynamicAgentEndpoints.ManifestAsync/DelegateManifestAsync
+    // after resolution, exactly like KnowledgeBaseIds above — every manifest
+    // branch (system-scope, Department Agent, admin, super_admin test,
+    // delegate) gets it from that one place rather than five separate
+    // repository methods each re-implementing the same tenant-keyed lookup.
+    // Null means the tenant has no Company Profile configured yet.
+    ManifestCompanyProfile? CompanyProfile = null);
 public sealed record ManifestResult(AgentExecutionManifest? Manifest, string? DenialReason);
 
 /// <summary>

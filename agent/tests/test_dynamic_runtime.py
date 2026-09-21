@@ -59,6 +59,84 @@ def test_unknown_provider_fails_closed():
         ExecutionManifest.model_validate(manifest_data(provider="unknown"))
 
 
+# ---------------------------------------------------------------------
+# Company Profile ("công ty chủ thể") — companyProfile is server-resolved
+# by Gateway from the authenticated tenant_id and bundled into the
+# manifest; the user can never supply or override it. Absent (None) must
+# render as an explicit not_configured, never a guessed identity.
+# ---------------------------------------------------------------------
+
+def test_manifest_parses_company_profile_when_present():
+    from aiq_agent.runtime.manifest import ManifestCompanyProfile
+
+    manifest = ExecutionManifest.model_validate(manifest_data(companyProfile={
+        "legalName": "Công ty TNHH Việt Đăng", "taxCode": "0301234567", "shortName": "Việt Đăng",
+        "aliases": ["AIQ"], "registeredAddress": "123 Nguyễn Huệ", "legalRepresentative": "Nguyễn Văn A",
+        "representativeTitle": "Giám đốc", "phone": None, "email": None, "website": None,
+    }))
+    assert isinstance(manifest.companyProfile, ManifestCompanyProfile)
+    assert manifest.companyProfile.legalName == "Công ty TNHH Việt Đăng"
+    assert manifest.companyProfile.taxCode == "0301234567"
+
+
+def test_manifest_company_profile_defaults_to_none_when_absent():
+    manifest = ExecutionManifest.model_validate(manifest_data())
+    assert manifest.companyProfile is None
+
+
+def test_company_context_block_renders_not_configured_when_profile_absent():
+    from aiq_agent.runtime.executors import _company_context_block
+
+    manifest = ExecutionManifest.model_validate(manifest_data())
+    block = _company_context_block(manifest)
+    assert block.endswith("company_identity: not_configured")
+
+
+def test_company_context_block_renders_trusted_fields_when_profile_present():
+    from aiq_agent.runtime.executors import _company_context_block
+
+    manifest = ExecutionManifest.model_validate(manifest_data(companyProfile={
+        "legalName": "Công ty TNHH Việt Đăng", "taxCode": "0301234567", "shortName": "Việt Đăng",
+        "aliases": ["AIQ", "Cát Tường AI"], "registeredAddress": "123 Nguyễn Huệ, Q1, TP.HCM",
+        "legalRepresentative": "Nguyễn Văn A", "representativeTitle": "Giám đốc",
+        "phone": None, "email": None, "website": None,
+    }))
+    block = _company_context_block(manifest)
+    assert "TRUSTED" in block
+    assert "legal_name: Công ty TNHH Việt Đăng" in block
+    assert "tax_code: 0301234567" in block
+    assert "aliases: AIQ, Cát Tường AI" in block
+    assert "registered_address: 123 Nguyễn Huệ, Q1, TP.HCM" in block
+    assert not block.endswith("company_identity: not_configured")
+
+
+@pytest.mark.asyncio
+async def test_ollama_executor_prepends_company_context_to_system_prompt(monkeypatch):
+    captured = []
+
+    class FakeOllama:
+        def __init__(self, **kwargs):
+            pass
+
+        async def chat(self, messages, **kwargs):
+            captured.append(messages[0].content)
+            return SimpleNamespace(content="reply")
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr("aiq_agent.runtime.executors.OllamaLlmService", FakeOllama)
+    settings = Settings(embedding_enabled=False)
+    manifest = ExecutionManifest.model_validate(manifest_data(companyProfile={
+        "legalName": "Công ty TNHH Việt Đăng", "taxCode": "0301234567", "shortName": None,
+        "aliases": [], "registeredAddress": None, "legalRepresentative": None,
+        "representativeTitle": None, "phone": None, "email": None, "website": None,
+    }))
+    await build_agent_executor(manifest, settings, SkillRegistry()).execute(prompt="hi", token="t")
+    assert "legal_name: Công ty TNHH Việt Đăng" in captured[0]
+    assert "tax_code: 0301234567" in captured[0]
+
+
 def test_provider_factory_selects_ollama_and_claude_sdk():
     settings = Settings(embedding_enabled=False)
     skills = SkillRegistry()
@@ -87,8 +165,13 @@ async def test_two_manifests_change_ollama_prompt_and_model_without_process_conf
     second = ExecutionManifest.model_validate(manifest_data(model="db-model-two", systemPrompt="DB PROMPT TWO"))
     await build_agent_executor(first, settings, skills).execute(prompt="same", token="token")
     await build_agent_executor(second, settings, skills).execute(prompt="same", token="token")
-    assert [(row[0], row[1]) for row in captured] == [
-        ("db-model-one", "DB PROMPT ONE"), ("db-model-two", "DB PROMPT TWO")]
+    # Each call's system prompt always carries its OWN manifest's
+    # systemPrompt first — the trusted company-context block
+    # (_company_context_block) is always appended after it, so this checks
+    # the per-manifest prefix rather than an exact match, without hardcoding
+    # that block's wording into an otherwise-unrelated test.
+    assert [(row[0], row[1].startswith("DB PROMPT ONE")) for row in captured[:1]] == [("db-model-one", True)]
+    assert [(row[0], row[1].startswith("DB PROMPT TWO")) for row in captured[1:]] == [("db-model-two", True)]
     assert captured[0][2] == {"temperature": 0.3, "max_tokens": 512}
 
 

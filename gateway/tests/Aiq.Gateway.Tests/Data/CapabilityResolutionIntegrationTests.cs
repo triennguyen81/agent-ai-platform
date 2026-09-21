@@ -466,7 +466,7 @@ public sealed class CapabilityResolutionIntegrationTests : IAsyncLifetime
     {
         if (_scopedConnectionString is null) return;
         await AssignAgentToDepartmentAsync(_accountingAgentId, _accounting);
-        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.invoice", default);
+        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.invoice", null, default);
         Assert.Equal(_accountingAgentId, result.AgentId);
         Assert.Null(result.DenialReason);
     }
@@ -477,7 +477,7 @@ public sealed class CapabilityResolutionIntegrationTests : IAsyncLifetime
         if (_scopedConnectionString is null) return;
         await AssignAgentToDepartmentAsync(_accountingAgentId, _accounting);
         // No agent_assignments row for _adminAccounting anywhere.
-        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", default);
+        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", null, default);
         Assert.NotNull(result.AgentId);
     }
 
@@ -486,7 +486,7 @@ public sealed class CapabilityResolutionIntegrationTests : IAsyncLifetime
     {
         if (_scopedConnectionString is null) return;
         // Sales Agent supports no accounting capability at all in this fixture.
-        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "supplier.management", default);
+        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "supplier.management", null, default);
         Assert.Null(result.AgentId);
         Assert.Equal("capability_not_available", result.DenialReason);
     }
@@ -496,7 +496,7 @@ public sealed class CapabilityResolutionIntegrationTests : IAsyncLifetime
     {
         if (_scopedConnectionString is null) return;
         await AssignAgentToDepartmentAsync(_accountingAgentId, _accounting);
-        var result = await Repo().ResolveAgentAsync(_tenantA, _sales, null, isAdmin: true, "accounting.journal", default);
+        var result = await Repo().ResolveAgentAsync(_tenantA, _sales, null, isAdmin: true, "accounting.journal", null, default);
         Assert.Null(result.AgentId);
         Assert.Equal("capability_not_available", result.DenialReason);
     }
@@ -513,7 +513,7 @@ public sealed class CapabilityResolutionIntegrationTests : IAsyncLifetime
         var visible = await Repo().ListForPrincipalAsync(_tenantA, _userAccounting, default);
         Assert.Contains(visible, c => c.Code == "accounting.journal");
 
-        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", default);
+        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", null, default);
         Assert.Equal(_accountingAgentId, result.AgentId);
     }
 
@@ -526,7 +526,7 @@ public sealed class CapabilityResolutionIntegrationTests : IAsyncLifetime
         var visible = await Repo().ListForPrincipalAsync(_tenantA, _userAccounting, default);
         Assert.Empty(visible);
 
-        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", default);
+        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", null, default);
         Assert.Null(result.AgentId);
         Assert.Equal("capability_not_available", result.DenialReason);
     }
@@ -544,7 +544,7 @@ public sealed class CapabilityResolutionIntegrationTests : IAsyncLifetime
                 "UPDATE agent_department_assignments SET status='revoked', revoked_at=NOW() WHERE agent_id=@a AND department_id=@d",
                 new { a = _accountingAgentId, d = _accounting });
         }
-        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", default);
+        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", null, default);
         Assert.Null(result.AgentId);
     }
 
@@ -561,7 +561,7 @@ public sealed class CapabilityResolutionIntegrationTests : IAsyncLifetime
                 "UPDATE agent_tenant_assignments SET status='revoked', revoked_at=NOW() WHERE agent_id=@a AND tenant_id=@t",
                 new { a = _accountingAgentId, t = _tenantA });
         }
-        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", default);
+        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", null, default);
         Assert.Null(result.AgentId);
     }
 
@@ -574,9 +574,111 @@ public sealed class CapabilityResolutionIntegrationTests : IAsyncLifetime
         await AssignAgentToDepartmentAsync(_accountingAgentId, _accounting);
         await AssignAgentToDepartmentAsync(_accountingAgent2Id, _accounting);
         // Both Accounting Agent and Accounting Agent 2 declare accounting.journal.
-        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", default);
+        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", null, default);
         Assert.Null(result.AgentId);
         Assert.Equal("capability_ambiguous", result.DenialReason);
+    }
+
+    // ==== "Xử lý bằng trợ lý" selector (contracts/upload routing fix) =======
+    // ResolveAgentAsync's unbound-ambiguity case used to be a hard error the
+    // caller could only resolve by asking a TENANT_OWNER to configure a
+    // binding. ListEligibleAgentsAsync now exposes the same eligible set so
+    // the UI can offer a picker instead, and ResolveAgentAsync's new
+    // preferredAgentId always re-validates that pick against a FRESH
+    // eligibility computation for this exact principal/tenant/department/
+    // capability — never trusts the id the client sent.
+
+    [Fact]
+    public async Task ListEligibleAgents_Admin_SeesBothOwnDepartmentAgents()
+    {
+        if (_scopedConnectionString is null) return;
+        await AssignAgentToDepartmentAsync(_accountingAgentId, _accounting);
+        await AssignAgentToDepartmentAsync(_accountingAgent2Id, _accounting);
+        var items = await Repo().ListEligibleAgentsAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", default);
+        Assert.Equal(2, items.Count);
+        Assert.Contains(items, a => a.AgentId == _accountingAgentId);
+        Assert.Contains(items, a => a.AgentId == _accountingAgent2Id);
+    }
+
+    [Fact]
+    public async Task ListEligibleAgents_User_SeesOnlyOwnDirectAssignment_NotTheOtherEligibleAgent()
+    {
+        if (_scopedConnectionString is null) return;
+        await AssignAgentToDepartmentAsync(_accountingAgentId, _accounting);
+        await AssignAgentToDepartmentAsync(_accountingAgent2Id, _accounting);
+        // Both agents are department-eligible, but User Accounting is only
+        // directly assigned to the first one.
+        await AssignUserToAgentAsync(_accountingAgentId, _userAccounting);
+        var items = await Repo().ListEligibleAgentsAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", default);
+        Assert.Single(items, a => a.AgentId == _accountingAgentId);
+    }
+
+    [Fact]
+    public async Task ListEligibleAgents_ZeroWhenCapabilityUnsupported()
+    {
+        if (_scopedConnectionString is null) return;
+        var items = await Repo().ListEligibleAgentsAsync(_tenantA, _accounting, null, isAdmin: true, "supplier.management", default);
+        Assert.Empty(items);
+    }
+
+    [Fact]
+    public async Task PreferredAgentId_OneOfTwoEligible_IsHonored_NoLongerAmbiguous()
+    {
+        if (_scopedConnectionString is null) return;
+        await AssignAgentToDepartmentAsync(_accountingAgentId, _accounting);
+        await AssignAgentToDepartmentAsync(_accountingAgent2Id, _accounting);
+        var result = await Repo().ResolveAgentAsync(
+            _tenantA, _accounting, null, isAdmin: true, "accounting.journal", _accountingAgent2Id, default);
+        Assert.Equal(_accountingAgent2Id, result.AgentId);
+        Assert.Null(result.DenialReason);
+    }
+
+    [Fact]
+    public async Task PreferredAgentId_UserPicksAgentTheyAreNotAssignedTo_Rejected()
+    {
+        if (_scopedConnectionString is null) return;
+        // Both agents are department-eligible; User Accounting is directly
+        // assigned only to agent #1. Picking agent #2 must be rejected even
+        // though it's a perfectly valid choice for an ADMIN — the client's
+        // choice is never trusted directly, only what is re-derived for
+        // THIS principal.
+        await AssignAgentToDepartmentAsync(_accountingAgentId, _accounting);
+        await AssignAgentToDepartmentAsync(_accountingAgent2Id, _accounting);
+        await AssignUserToAgentAsync(_accountingAgentId, _userAccounting);
+        var result = await Repo().ResolveAgentAsync(
+            _tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", _accountingAgent2Id, default);
+        Assert.Null(result.AgentId);
+        Assert.Equal("capability_not_available", result.DenialReason);
+    }
+
+    [Fact]
+    public async Task PreferredAgentId_CrossDepartmentAgent_Rejected()
+    {
+        if (_scopedConnectionString is null) return;
+        // Accounting Agent is only ever assigned to Accounting — an ADMIN of
+        // Sales naming it as their preference must never be honored, even
+        // though the id itself is real and belongs to the same tenant.
+        await AssignAgentToDepartmentAsync(_accountingAgentId, _accounting);
+        var result = await Repo().ResolveAgentAsync(
+            _tenantA, _sales, null, isAdmin: true, "accounting.journal", _accountingAgentId, default);
+        Assert.Null(result.AgentId);
+        Assert.Equal("capability_not_available", result.DenialReason);
+    }
+
+    [Fact]
+    public async Task PreferredAgentId_AgentWithoutTheCapability_Rejected()
+    {
+        if (_scopedConnectionString is null) return;
+        // Sales Agent is department-assigned but declares no accounting
+        // capability at all — naming it for accounting.journal must fail
+        // exactly like "not available," not silently ignore the capability
+        // filter.
+        await AssignAgentToDepartmentAsync(_accountingAgentId, _accounting);
+        await AssignAgentToDepartmentAsync(_salesAgentId, _accounting);
+        var result = await Repo().ResolveAgentAsync(
+            _tenantA, _accounting, null, isAdmin: true, "accounting.journal", _salesAgentId, default);
+        Assert.Null(result.AgentId);
+        Assert.Equal("capability_not_available", result.DenialReason);
     }
 
     [Fact]
@@ -587,7 +689,7 @@ public sealed class CapabilityResolutionIntegrationTests : IAsyncLifetime
         await AssignAgentToDepartmentAsync(_accountingAgent2Id, _accounting);
         Assert.True(await Repo().SetBindingAsync(_tenantA, _accounting, _journalCapabilityId, _accountingAgent2Id, _ownerA, default));
 
-        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", default);
+        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", null, default);
         Assert.Equal(_accountingAgent2Id, result.AgentId);
     }
 
@@ -603,7 +705,7 @@ public sealed class CapabilityResolutionIntegrationTests : IAsyncLifetime
         await AssignUserToAgentAsync(_accountingAgentId, _userAccounting);
         Assert.True(await Repo().SetBindingAsync(_tenantA, _accounting, _journalCapabilityId, _accountingAgent2Id, _ownerA, default));
 
-        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", default);
+        var result = await Repo().ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", null, default);
         Assert.Null(result.AgentId);
         Assert.Equal("capability_not_available", result.DenialReason);
     }

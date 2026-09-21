@@ -38,6 +38,14 @@ public static class CapabilityEndpoints
             .RequireAuthorization("department_member").RequireRateLimiting("default");
         app.MapGet("/me/capabilities/{code}/agent", ResolveCapabilityAsync)
             .RequireAuthorization("department_member").RequireRateLimiting("default");
+        // "Xử lý bằng trợ lý" selector data: every agent this principal could
+        // be routed to for one capability, so the caller can decide 0/1/many
+        // BEFORE ever calling the run endpoint — /me/capabilities/{code}/agent
+        // above stays the single canonical resolve-or-deny decision (unbound
+        // ambiguity there still 409s exactly as before for any caller that
+        // never supplies preferredAgentId).
+        app.MapGet("/me/capabilities/{code}/agents", ListEligibleAgentsAsync)
+            .RequireAuthorization("department_member").RequireRateLimiting("default");
 
         // ACL V2-D: TENANT_OWNER keeps read-only oversight of its
         // departments' capability landscape (which capabilities exist, which
@@ -206,17 +214,18 @@ public static class CapabilityEndpoints
         return Results.Forbid();
     }
 
-    private static async Task<IResult> ResolveCapabilityAsync(string code, ICapabilityRepository repo, HttpContext ctx, IAuditLogger audit, CancellationToken ct)
+    private static async Task<IResult> ResolveCapabilityAsync(
+        string code, Guid? preferredAgentId, ICapabilityRepository repo, HttpContext ctx, IAuditLogger audit, CancellationToken ct)
     {
         if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId || principal.DepartmentId is not { } departmentId)
             return Results.Forbid();
         var isAdmin = principal.IsInRole("admin");
         if (!isAdmin && !principal.IsInRole("user")) return Results.Forbid();
 
-        var result = await repo.ResolveAgentAsync(tenantId, departmentId, isAdmin ? null : principal.UserId, isAdmin, code, ct);
+        var result = await repo.ResolveAgentAsync(tenantId, departmentId, isAdmin ? null : principal.UserId, isAdmin, code, preferredAgentId, ct);
         await audit.WriteAsync(new AuditEntry(principal.UserId, "GET capability agent resolution",
             "capability", code,
-            new { tenantId, departmentId, allowed = result.AgentId is not null, resolvedAgentId = result.AgentId, denialReason = result.DenialReason },
+            new { tenantId, departmentId, preferredAgentId, allowed = result.AgentId is not null, resolvedAgentId = result.AgentId, denialReason = result.DenialReason },
             ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
 
         return result.AgentId is { } agentId
@@ -224,6 +233,26 @@ public static class CapabilityEndpoints
             : Results.Json(new { error = result.DenialReason }, statusCode: result.DenialReason == "capability_ambiguous"
                 ? StatusCodes.Status409Conflict
                 : StatusCodes.Status403Forbidden);
+    }
+
+    /// <summary>
+    /// "Xử lý bằng trợ lý" selector data. USER gets only its own directly-
+    /// assigned eligible agents; ADMIN gets every usable agent in its own
+    /// department per current ACL V2 — same chains ResolveAgentAsync/
+    /// ListForPrincipalAsync/ListForDepartmentManagerAsync already use.
+    /// Never an authorization decision by itself — whatever the caller picks
+    /// still goes through ResolveAgentAsync's preferredAgentId re-check.
+    /// </summary>
+    private static async Task<IResult> ListEligibleAgentsAsync(
+        string code, ICapabilityRepository repo, HttpContext ctx, CancellationToken ct)
+    {
+        if (!AuthenticatedPrincipalContext.TryGet(ctx, out var principal) || principal.TenantId is not { } tenantId || principal.DepartmentId is not { } departmentId)
+            return Results.Forbid();
+        var isAdmin = principal.IsInRole("admin");
+        if (!isAdmin && !principal.IsInRole("user")) return Results.Forbid();
+
+        var items = await repo.ListEligibleAgentsAsync(tenantId, departmentId, isAdmin ? null : principal.UserId, isAdmin, code, ct);
+        return Results.Ok(new { items, total = items.Count });
     }
 
     private static async Task<IResult> ListDepartmentCapabilitiesAsync(

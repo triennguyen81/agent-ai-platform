@@ -20,17 +20,26 @@ export class CapabilityError extends Error {
 /**
  * Runs a business AI task through the capability resolver. `capability`
  * must be a stable catalog code (e.g. "accounting.journal") — the browser
- * never picks, knows, or sends an agent id.
+ * never picks, knows, or sends an agent id. `preferredAgentId` is only for
+ * pages using useCapabilityAgentSelection below (the "Xử lý bằng trợ lý"
+ * selector) — the Gateway re-validates it fresh before ever honoring it,
+ * exactly like it does for a raw agent_id.
  */
 export async function executeCapability(
   capability: string,
   task: string,
   maxTurns = 4,
+  preferredAgentId?: string,
 ): Promise<string> {
   const res = await fetch("/api/agent/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ task, max_turns: maxTurns, capability }),
+    body: JSON.stringify({
+      task,
+      max_turns: maxTurns,
+      capability,
+      preferred_agent_id: preferredAgentId,
+    }),
   });
 
   if (res.status === 409) {
@@ -53,4 +62,50 @@ export async function executeCapability(
 
   const body = (await res.json()) as { final_answer: string };
   return body.final_answer;
+}
+
+// ---------------------------------------------------------------------
+// "Xử lý bằng trợ lý" agent-selection helper — the reusable routing piece
+// this was built for (Contract first; Voucher/Invoice/Customer/Supplier/
+// Expense reuse it unchanged by just passing their own capability code).
+// Never an authorization decision on its own: it only decides what the UI
+// shows (nothing / auto-selected / a picker). Whatever ends up selected
+// still has to pass the Gateway's own preferredAgentId re-validation at
+// submit time — this module cannot forge that outcome.
+// ---------------------------------------------------------------------
+
+export interface EligibleCapabilityAgent {
+  agentId: string;
+  slug: string;
+  name: string;
+}
+
+export type CapabilityAgentSelectionState =
+  | { status: "loading" }
+  | { status: "error" }
+  | { status: "none" }
+  | { status: "auto"; agent: EligibleCapabilityAgent }
+  | { status: "choose"; agents: EligibleCapabilityAgent[]; selectedAgentId: string | null };
+
+/**
+ * Fetches the eligible-agent list for `capability` and classifies it into
+ * 0 / 1 / many. `preselectAgentId` (e.g. the page was opened with
+ * `?agent=`) is only ever used as the DEFAULT selection when it is itself
+ * a member of the eligible set — never trusted as a bypass, and never
+ * skips showing the picker when there's genuinely more than one option.
+ */
+export async function fetchCapabilityAgentSelection(
+  capability: string,
+  preselectAgentId?: string | null,
+): Promise<CapabilityAgentSelectionState> {
+  const res = await fetch(`/api/capabilities/${encodeURIComponent(capability)}/agents`);
+  if (!res.ok) return { status: "error" };
+  const body = (await res.json()) as { items: EligibleCapabilityAgent[] };
+  const agents = body.items ?? [];
+  if (agents.length === 0) return { status: "none" };
+  if (agents.length === 1) return { status: "auto", agent: agents[0] };
+  const preselected = preselectAgentId && agents.some((a) => a.agentId === preselectAgentId)
+    ? preselectAgentId
+    : null;
+  return { status: "choose", agents, selectedAgentId: preselected };
 }

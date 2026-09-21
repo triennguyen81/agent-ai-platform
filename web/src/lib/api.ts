@@ -351,6 +351,27 @@ export const gateway = {
       body: JSON.stringify(payload),
     });
   },
+  // "Hồ sơ doanh nghiệp" — AIQ's own legal-entity identity for the tenant
+  // ("công ty chủ thể"), a separate, broader record from getCompanyProfile
+  // above (which is only the single tax-code field InvoiceDirectionResolver
+  // uses). TENANT_OWNER-only (tenant_governance); tenant is always derived
+  // server-side from the JWT, never sent here.
+  getBusinessProfile(token: string) {
+    return call(GATEWAY_BASE, "/tenant/business-profile", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  updateBusinessProfile(token: string, payload: {
+    legalName: string | null; taxCode: string | null; shortName: string | null;
+    aliases: string[]; registeredAddress: string | null; legalRepresentative: string | null;
+    representativeTitle: string | null; phone: string | null; email: string | null; website: string | null;
+  }) {
+    return call(GATEWAY_BASE, "/tenant/business-profile", {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  },
   listTenantMembers(token: string, tenantId: string) {
     return call(GATEWAY_BASE, `/tenants/${tenantId}/members`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -1226,6 +1247,16 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  // "Xử lý bằng trợ lý" selector data: every agent this principal could be
+  // routed to for one capability (USER: own assignments only; ADMIN: own
+  // department per current ACL V2). Never itself an authorization decision
+  // — the chosen id still goes through resolveCapabilityAgent's/
+  // runTask's server-side re-validation.
+  listEligibleCapabilityAgents(token: string, code: string) {
+    return call(GATEWAY_BASE, `/me/capabilities/${encodeURIComponent(code)}/agents`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
   // TENANT_OWNER's read-only oversight of a department's capability
   // landscape (ACL V2-D: binding mutation moved to ADMIN — see
   // setOwnDepartmentCapabilityBinding/revokeOwnDepartmentCapabilityBinding
@@ -1592,6 +1623,10 @@ export const agent = {
     task: string;
     agent_id?: string;
     capability?: string;
+    // "Xử lý bằng trợ lý" selector — only meaningful together with
+    // `capability`; the Gateway re-validates it against a freshly computed
+    // eligible set before ever honoring it (see resolve_capability_agent).
+    preferred_agent_id?: string;
     skills?: string[];
     max_turns?: number;
     thread_id?: string;

@@ -130,7 +130,7 @@ public static class AccountingEndpoints
     {
         if (p.IsInRole("admin")) return true;
         if (!p.IsInRole("user")) return false;
-        var a = await r.ResolveAgentAsync(tenantId, departmentId, p.UserId, false, "accounting.invoice", ct);
+        var a = await r.ResolveAgentAsync(tenantId, departmentId, p.UserId, false, "accounting.invoice", null, ct);
         return a.AgentId is not null;
     }
 }

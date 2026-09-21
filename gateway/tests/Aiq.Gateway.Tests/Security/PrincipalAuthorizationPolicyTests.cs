@@ -50,6 +50,21 @@ public sealed class PrincipalAuthorizationPolicyTests
     }
 
     [Fact]
+    public void CompanyProfile_OnlyTenantOwnerPassesTheGateEndpointsRequire()
+    {
+        // GET/PUT /tenant/business-profile ("Hồ sơ doanh nghiệp") requires
+        // this exact "tenant_governance" policy — ADMIN and USER must never
+        // be able to create/update Company Profile, only read/write it as
+        // TENANT_OWNER.
+        var owner = Principal("tenant_owner", TenantId, null, true, null);
+        var admin = Principal("admin", TenantId, DepartmentId, true, true);
+        var user = Principal("user", TenantId, DepartmentId, true, true);
+        Assert.True(PrincipalAuthorizationPolicy.IsTenantGovernor(owner));
+        Assert.False(PrincipalAuthorizationPolicy.IsTenantGovernor(admin));
+        Assert.False(PrincipalAuthorizationPolicy.IsTenantGovernor(user));
+    }
+
+    [Fact]
     public void ScopePredicatesRequireBothTenantAndDepartmentMatch()
     {
         var principal = Principal("admin", TenantId, DepartmentId, true, true);

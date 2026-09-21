@@ -33,7 +33,7 @@ public static class BusinessModuleAuthorization
         if (principal.IsInRole("admin")) return true;
         foreach (var code in codes)
         {
-            var resolved = await capabilities.ResolveAgentAsync(tenantId, departmentId, principal.UserId, false, code, ct);
+            var resolved = await capabilities.ResolveAgentAsync(tenantId, departmentId, principal.UserId, false, code, null, ct);
             if (resolved.AgentId is not null) return true;
         }
         return false;

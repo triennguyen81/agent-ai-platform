@@ -112,6 +112,18 @@ class AgentRunRequest(BaseModel):
             "the browser should never need to know or choose an agent id."
         ),
     )
+    preferred_agent_id: str | None = Field(
+        default=None,
+        description=(
+            "Only meaningful together with `capability` (ignored otherwise): "
+            "the agent id a user picked from the 'Xử lý bằng trợ lý' "
+            "selector when more than one agent is eligible for this "
+            "capability. The Gateway ALWAYS re-validates this against a "
+            "freshly computed eligible set for the caller's own tenant/"
+            "department/assignments before honoring it — this value is "
+            "never trusted directly, exactly like agent_id never is."
+        ),
+    )
 
 
 class AgentRunStep(BaseModel):

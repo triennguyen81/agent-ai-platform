@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Bot, Building2, ListChecks, ShieldCheck, Users, Workflow } from "lucide-react";
+import { Bot, Building2, Landmark, ListChecks, ShieldCheck, Users, Workflow } from "lucide-react";
 import { requireViewer } from "@/lib/authorization";
 
 export default async function DashboardPage() {
@@ -18,6 +18,7 @@ export default async function DashboardPage() {
           ["Departments", "/admin/tenant-departments", Building2],
           ["Department Admins", "/tenant/department-admins", Users],
           ["Users", "/tenant/users", Users],
+          ["Hồ sơ doanh nghiệp", "/tenant/business-profile", Landmark],
           ["Tenant Audit", "/tenant/audit", ShieldCheck],
         ] as const
       : [

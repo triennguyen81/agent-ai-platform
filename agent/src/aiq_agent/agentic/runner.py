@@ -22,7 +22,11 @@ from claude_agent_sdk import (
 
 from aiq_agent.agentic.accounting_tools import build_accounting_tools
 from aiq_agent.agentic.contract_tools import build_contract_tools
-from aiq_agent.agentic.registry import fetch_agent_model, fetch_allowed_tool_codes
+from aiq_agent.agentic.registry import (
+    fetch_agent_model,
+    fetch_allowed_tool_codes,
+    fetch_company_context_block,
+)
 from aiq_agent.agentic.report_tools import build_report_tools
 from aiq_agent.agentic.tools import build_tools
 from aiq_agent.agentic.voucher_tools import build_voucher_tools
@@ -155,6 +159,9 @@ async def run_task(
                 resolved_model = fetched_model
                 logger.info("agent %s: using registered model %s", agent_id, fetched_model)
 
+    company_context = await fetch_company_context_block(
+        gateway_base=gateway_base, user_token=user_token
+    )
     options = ClaudeAgentOptions(
         mcp_servers={"aiq": mcp_server},
         allowed_tools=allowed_tools,
@@ -165,7 +172,7 @@ async def run_task(
             "Bạn là agentic assistant của AIQ. Có quyền dùng tools để search "
             "/ đọc / lưu note vào knowledge base, và fetch URL công khai. "
             "Luôn kết thúc bằng 1 đoạn tổng kết ngắn cho người dùng bằng "
-            "tiếng Việt."
+            "tiếng Việt.\n\n" + company_context
         ),
     )
 

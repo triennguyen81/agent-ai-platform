@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, FileText, Loader2, Trash2, Upload, Wand2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -9,6 +9,10 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import { isImageFilename, uploadAndExtract } from "@/lib/upload-extract";
+import { fetchCapabilityAgentSelection, type CapabilityAgentSelectionState } from "@/lib/capability";
+import { CapabilityAgentSelector } from "@/components/capability-agent-selector";
+
+const CONTRACT_CAPABILITY = "contract.processing";
 
 interface AgentRunResponse {
   final_answer: string;
@@ -69,11 +73,35 @@ Nguyễn Văn A            Trần Thị B`;
 
 export default function ContractUploadPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [titleHint, setTitleHint] = useState("");
   const [rawText, setRawText] = useState(SAMPLE);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  // "Xử lý bằng trợ lý": resolves 0/1/many eligible Agents for
+  // contract.processing up front, so the user picks (when needed) before
+  // ever submitting — never a substitute for the Gateway's own server-side
+  // re-validation of whatever ends up selected.
+  const [selection, setSelection] = useState<CapabilityAgentSelectionState>({ status: "loading" });
+  useEffect(() => {
+    const preselect = searchParams.get("agent");
+    let cancelled = false;
+    fetchCapabilityAgentSelection(CONTRACT_CAPABILITY, preselect).then((s) => {
+      if (!cancelled) setSelection(s);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Deliberately runs once on mount — searchParams is only ever read for
+    // the initial preselect, never re-resolved as the user types.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const preferredAgentId =
+    selection.status === "auto" ? selection.agent.agentId
+    : selection.status === "choose" ? selection.selectedAgentId
+    : null;
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -145,6 +173,10 @@ export default function ContractUploadPage() {
 
   async function submit() {
     if (loading || !rawText.trim()) return;
+    // Belt-and-suspenders on top of the Gateway's own re-validation: never
+    // even attempt to submit without a concrete Agent chosen.
+    if (selection.status === "none" || selection.status === "error") return;
+    if (selection.status === "choose" && !selection.selectedAgentId) return;
     setLoading(true);
     setError(null);
     setResult("");
@@ -158,6 +190,7 @@ export default function ContractUploadPage() {
           title_hint: titleHint || undefined,
           source_pdf_path: sourceObjectKey || undefined,
           original_filename: file?.name || undefined,
+          preferred_agent_id: preferredAgentId || undefined,
         }),
       });
 
@@ -233,7 +266,33 @@ export default function ContractUploadPage() {
             </p>
           </div>
 
-          <Button onClick={submit} disabled={loading || !rawText.trim()} className="w-full">
+          {selection.status === "choose" && (
+            <CapabilityAgentSelector
+              agents={selection.agents}
+              selectedAgentId={selection.selectedAgentId}
+              onSelect={(agentId) => setSelection({ ...selection, selectedAgentId: agentId })}
+              disabled={loading}
+            />
+          )}
+
+          {selection.status === "none" && (
+            <p className="rounded-[var(--radius)] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Không có trợ lý phù hợp với nghiệp vụ Hợp đồng.
+            </p>
+          )}
+
+          <Button
+            onClick={submit}
+            disabled={
+              loading ||
+              !rawText.trim() ||
+              selection.status === "loading" ||
+              selection.status === "none" ||
+              selection.status === "error" ||
+              (selection.status === "choose" && !selection.selectedAgentId)
+            }
+            className="w-full"
+          >
             {loading ? (
               <>
                 <Loader2 className="size-4 animate-spin" /> Đang xử lý…

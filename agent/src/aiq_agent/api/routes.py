@@ -583,12 +583,20 @@ async def agentic_run(
     if body.capability and body.agent_id:
         detail = "capability and agent_id are mutually exclusive"
         raise HTTPException(status_code=400, detail=detail)
+    if body.preferred_agent_id and not body.capability:
+        detail = "preferred_agent_id requires capability"
+        raise HTTPException(status_code=400, detail=detail)
     # D4: a capability code never IS an agent id — it is only ever resolved
     # through the Gateway's own tenant/department/assignment-derived chain,
     # then re-verified end to end by the exact same require_agent_execution
-    # call an explicit agent_id would go through below.
+    # call an explicit agent_id would go through below. preferred_agent_id
+    # (the "Xử lý bằng trợ lý" selector) never bypasses that — the Gateway
+    # re-derives eligibility for it fresh every time, see
+    # resolve_capability_agent's own doc comment.
     if body.capability:
-        resolved_agent_id = await resolve_capability_agent(principal, body.capability)
+        resolved_agent_id = await resolve_capability_agent(
+            principal, body.capability, body.preferred_agent_id,
+        )
     else:
         resolved_agent_id = body.agent_id
     if principal.is_user_only and not resolved_agent_id:

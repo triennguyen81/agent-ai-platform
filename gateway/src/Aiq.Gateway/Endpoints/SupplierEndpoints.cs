@@ -80,7 +80,7 @@ public static class SupplierEndpoints
     private static async Task<bool> CanManageAsync(PrincipalContext principal, ICapabilityRepository capabilities, CancellationToken ct)
     {
         if (principal.IsInRole("admin")) return true;
-        return (await capabilities.ResolveAgentAsync(principal.TenantId!.Value, principal.DepartmentId!.Value, principal.UserId, false, "supplier.management", ct)).AgentId is not null;
+        return (await capabilities.ResolveAgentAsync(principal.TenantId!.Value, principal.DepartmentId!.Value, principal.UserId, false, "supplier.management", null, ct)).AgentId is not null;
     }
 
     private static async Task<IResult> CreateAsync(

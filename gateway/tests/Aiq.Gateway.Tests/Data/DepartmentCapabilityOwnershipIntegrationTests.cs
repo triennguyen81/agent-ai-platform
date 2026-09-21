@@ -332,7 +332,7 @@ public sealed class DepartmentCapabilityOwnershipIntegrationTests : IAsyncLifeti
         Assert.Contains(adminMenu, c => c.Code == "accounting.journal");
 
         // The canonical resolver picks it up too (single eligible agent, no binding needed).
-        var resolved = await _capRepo.ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", default);
+        var resolved = await _capRepo.ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", null, default);
         Assert.Equal(agentId, resolved.AgentId);
 
         // TENANT_OWNER's oversight view (still GET-only) also sees it.
@@ -347,12 +347,12 @@ public sealed class DepartmentCapabilityOwnershipIntegrationTests : IAsyncLifeti
         var journalCap = await PlatformCapabilityIdAsync("accounting.journal");
         var (agentId, _) = await CreatePublishedDepartmentAgentAsync(_tenantA, _accounting, _adminAccounting, "acct-journal-bot-2", [journalCap]);
 
-        var before = await _capRepo.ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", default);
+        var before = await _capRepo.ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", null, default);
         Assert.Null(before.AgentId);
         Assert.Equal("capability_not_available", before.DenialReason);
 
         Assert.True(await _agentRepo.AssignUserToDepartmentAgentAsync(_tenantA, _accounting, agentId, _userAccounting, _adminAccounting, default));
-        var after = await _capRepo.ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", default);
+        var after = await _capRepo.ResolveAgentAsync(_tenantA, _accounting, _userAccounting, isAdmin: false, "accounting.journal", null, default);
         Assert.Equal(agentId, after.AgentId);
     }
 
@@ -366,7 +366,7 @@ public sealed class DepartmentCapabilityOwnershipIntegrationTests : IAsyncLifeti
         var salesMenu = await _capRepo.ListForDepartmentManagerAsync(_tenantA, _sales, default);
         Assert.DoesNotContain(salesMenu, c => c.Code == "accounting.journal");
 
-        var resolved = await _capRepo.ResolveAgentAsync(_tenantA, _sales, null, isAdmin: true, "accounting.journal", default);
+        var resolved = await _capRepo.ResolveAgentAsync(_tenantA, _sales, null, isAdmin: true, "accounting.journal", null, default);
         Assert.Null(resolved.AgentId);
         Assert.Equal("capability_not_available", resolved.DenialReason);
     }
@@ -382,7 +382,7 @@ public sealed class DepartmentCapabilityOwnershipIntegrationTests : IAsyncLifeti
         var (agentA, _) = await CreatePublishedDepartmentAgentAsync(_tenantA, _accounting, _adminAccounting, "acct-bot-a", [journalCap, taxCap]);
         var (agentB, _) = await CreatePublishedDepartmentAgentAsync(_tenantA, _accounting, _adminAccounting, "acct-bot-b", [journalCap]);
 
-        var ambiguous = await _capRepo.ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", default);
+        var ambiguous = await _capRepo.ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", null, default);
         Assert.Null(ambiguous.AgentId);
         Assert.Equal("capability_ambiguous", ambiguous.DenialReason);
 
@@ -391,12 +391,12 @@ public sealed class DepartmentCapabilityOwnershipIntegrationTests : IAsyncLifeti
         // find an agent_department_assignments row for a Department Agent).
         Assert.True(await _capRepo.SetBindingAsync(_tenantA, _accounting, journalCap, agentA, _adminAccounting, default));
 
-        var resolved = await _capRepo.ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", default);
+        var resolved = await _capRepo.ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.journal", null, default);
         Assert.Equal(agentA, resolved.AgentId);
 
         // Binding to the OTHER eligible agent for the OTHER capability still
         // resolves deterministically (single eligible agent, no binding needed).
-        var taxResolved = await _capRepo.ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.tax", default);
+        var taxResolved = await _capRepo.ResolveAgentAsync(_tenantA, _accounting, null, isAdmin: true, "accounting.tax", null, default);
         Assert.Equal(agentA, taxResolved.AgentId);
         _ = agentB; // exists only to create the ambiguity above
     }

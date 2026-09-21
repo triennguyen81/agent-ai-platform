@@ -55,6 +55,27 @@ class ManifestDelegate(BaseModel):
     description: str | None
 
 
+class ManifestCompanyProfile(BaseModel):
+    """AIQ's own legal-entity identity for the tenant ("công ty chủ thể") —
+    server-resolved from tenant_company_profiles by the authenticated
+    tenant_id, TENANT_OWNER-managed, never accepted from chat/request
+    input. Absent entirely (None on ExecutionManifest) means the tenant has
+    not configured one yet — the runtime must render that as
+    not_configured, never guess an identity from conversation content."""
+
+    model_config = ConfigDict(extra="forbid")
+    legalName: str | None
+    taxCode: str | None
+    shortName: str | None
+    aliases: list[str]
+    registeredAddress: str | None
+    legalRepresentative: str | None
+    representativeTitle: str | None
+    phone: str | None
+    email: str | None
+    website: str | None
+
+
 class ExecutionManifest(BaseModel):
     """Every field is required; extra Gateway/client data is rejected."""
 
@@ -95,6 +116,9 @@ class ExecutionManifest(BaseModel):
     # authorization input here; None for the departmentless super_admin
     # test path.
     departmentId: UUID | None = None
+    # Trusted company identity, resolved server-side from the authenticated
+    # tenant_id — see ManifestCompanyProfile. None means "not configured".
+    companyProfile: ManifestCompanyProfile | None = None
 
 
 class ManifestLookupError(PermissionError):

@@ -53,7 +53,7 @@ public static class ChecklistEndpoints
 
     private static bool CanMutate(PrincipalContext p,Guid createdBy,string state)=>state is not("APPROVED" or "HANDED_OFF" or "REJECTED")&&(p.IsInRole("admin")||createdBy==p.UserId);
     private static async Task<bool> CanUseAsync(PrincipalContext p,ICapabilityRepository repo,CancellationToken ct)
-    {if(p.IsInRole("admin"))return true;return (await repo.ResolveAgentAsync(p.TenantId!.Value,p.DepartmentId!.Value,p.UserId,false,"contract.processing",ct)).AgentId is not null;}
+    {if(p.IsInRole("admin"))return true;return (await repo.ResolveAgentAsync(p.TenantId!.Value,p.DepartmentId!.Value,p.UserId,false,"contract.processing",null,ct)).AgentId is not null;}
     private static bool TryScope(HttpContext ctx,out PrincipalContext p,out Guid tenantId,out Guid departmentId)
     {p=null!;tenantId=departmentId=Guid.Empty;if(!AuthenticatedPrincipalContext.TryGet(ctx,out p)||p.TenantId is not{}t||p.DepartmentId is not{}d||(!p.IsInRole("admin")&&!p.IsInRole("user")))return false;tenantId=t;departmentId=d;return true;}
     private static bool TryValidate(object value,out Dictionary<string,string[]> errors)
