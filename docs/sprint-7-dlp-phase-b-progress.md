@@ -33,61 +33,61 @@ ScrubbingAgentClient ──wraps──▶ ClaudeAgentClient (real impl)
 - [x] File này
 
 ### B2. DlpOptions config ⬜
-- [ ] `gateway/src/Aiq.Gateway/Configuration/DlpOptions.cs`
-- [ ] `SectionName = "Dlp"`, properties: `Enabled` (bool, default false), `VaultTtlMinutes` (int, default 10), `LogDetectedValues` (bool, default false — only for debug)
-- [ ] Add to `appsettings.cosmos.json` section Dlp: `{ "Enabled": true, "VaultTtlMinutes": 10 }`
+- [x] `gateway/src/Aiq.Gateway/Configuration/DlpOptions.cs`
+- [x] `SectionName = "Dlp"`, properties: `Enabled` (bool, default false), `VaultTtlMinutes` (int, default 10), `LogDetectedValues` (bool, default false — only for debug)
+- [x] Add to `appsettings.cosmos.json` section Dlp: `{ "Enabled": true, "VaultTtlMinutes": 10 }`
 
 ### B3. Migration 050 + DLP event repo ⬜
-- [ ] `gateway/src/Aiq.Gateway/Data/Migrations/050_dlp_events.sql`
+- [x] `gateway/src/Aiq.Gateway/Data/Migrations/050_dlp_events.sql`
   - Table `sim_dlp_events`: id, tenant_id, user_id, request_id, direction (scrub/unmask), pii_count, pii_types_json, text_length_chars, created_at
   - Index tenant_id + created_at DESC
   - KHÔNG lưu actual PII values hay masked text (compliance)
-- [ ] `gateway/src/Aiq.Gateway/Dlp/IDlpEventRepository.cs` + impl
+- [x] `gateway/src/Aiq.Gateway/Dlp/IDlpEventRepository.cs` + impl
   - `Task LogAsync(DlpEvent event, CancellationToken)`
   - `Task<DlpEventSummary> GetSummaryAsync(tenantId, days, CancellationToken)`
 
 ### B4. ScrubbingAgentClient decorator ⬜
-- [ ] `gateway/src/Aiq.Gateway/Dlp/ScrubbingAgentClient.cs`
-- [ ] Implement `IAgentClient` — delegate wrapped client
-- [ ] Intercept each method that sends text to Claude:
+- [x] `gateway/src/Aiq.Gateway/Dlp/ScrubbingAgentClient.cs`
+- [x] Implement `IAgentClient` — delegate wrapped client
+- [x] Intercept each method that sends text to Claude:
   - `RunTaskAsync` — scrub prompt, unmask response (if text)
   - `RunOcrPipelineAsync` — OCR không gửi text, chỉ gửi image → không cần scrub input; output text là OCR result có thể chứa PII nhưng không gửi ra Claude → không cần unmask
-- [ ] Emit `IDlpEventRepository.LogAsync` cho mỗi scrub
-- [ ] Short-circuit nếu `DlpOptions.Enabled = false`
+- [x] Emit `IDlpEventRepository.LogAsync` cho mỗi scrub
+- [x] Short-circuit nếu `DlpOptions.Enabled = false`
 
 ### B5. Program.cs DI wire ⬜
-- [ ] Register `DlpOptions` qua Options pattern
-- [ ] Register all `IPiiDetector` implementations as singleton
-- [ ] Register `DeterministicMasker` singleton
-- [ ] Register `IPiiScrubber` singleton
-- [ ] Register `IDlpEventRepository` scoped
-- [ ] Decorate `IAgentClient` with `ScrubbingAgentClient` CHỈ khi `Enabled = true`
+- [x] Register `DlpOptions` qua Options pattern
+- [x] Register all `IPiiDetector` implementations as singleton
+- [x] Register `DeterministicMasker` singleton
+- [x] Register `IPiiScrubber` singleton
+- [x] Register `IDlpEventRepository` scoped
+- [x] Decorate `IAgentClient` with `ScrubbingAgentClient` CHỈ khi `Enabled = true`
 
 ### B6. Admin UI dashboard ⬜
-- [ ] `web/src/app/(app)/admin/dlp/page.tsx`
-- [ ] 3 summary cards: total events (24h), total PII masked (24h), top type
-- [ ] Chart: events theo ngày (7 ngày gần nhất)
-- [ ] Table: breakdown theo PII type với counts
-- [ ] Policy: nav link "/admin/dlp" chỉ cho `tenant_owner` role
+- [x] `web/src/app/(app)/admin/dlp/page.tsx`
+- [x] 3 summary cards: total events (24h), total PII masked (24h), top type
+- [x] Chart: events theo ngày (7 ngày gần nhất)
+- [x] Table: breakdown theo PII type với counts
+- [x] Policy: nav link "/admin/dlp" chỉ cho `tenant_owner` role
 
 ### B7. Build + verify ⬜
-- [ ] Gateway build 0 error
-- [ ] Web tsc clean
-- [ ] Phase A tests still pass 51/51
-- [ ] New tests cho ScrubbingAgentClient (3-5 cases)
+- [x] Gateway build 0 error
+- [x] Web tsc clean
+- [x] Phase A tests still pass 51/51
+- [x] New tests cho ScrubbingAgentClient (3-5 cases)
 
 ### B8. Deploy cosmos ⬜
-- [ ] Commit + push
-- [ ] Pull trên cosmos + rebuild gateway + web
-- [ ] Verify migration 050 runs clean
-- [ ] Enable feature flag qua appsettings.cosmos.json
+- [x] Commit + push
+- [x] Pull trên cosmos + rebuild gateway + web
+- [x] Verify migration 050 runs clean
+- [x] Enable feature flag qua appsettings.cosmos.json
 
 ### B9. E2E verification ⬜
-- [ ] Upload voucher mẫu có PII thật (hoặc test fixture)
-- [ ] Check gateway logs: thấy scrub count ≥ 1
-- [ ] Query `sim_dlp_events` → thấy row mới
-- [ ] Voucher detail page → PII vẫn hiển thị đúng (unmask working)
-- [ ] Admin dashboard `/admin/dlp` → thấy event summary
+- [x] Upload voucher mẫu có PII thật (hoặc test fixture)
+- [x] Check gateway logs: thấy scrub count ≥ 1
+- [x] Query `sim_dlp_events` → thấy row mới
+- [x] Voucher detail page → PII vẫn hiển thị đúng (unmask working)
+- [x] Admin dashboard `/admin/dlp` → thấy event summary
 
 ### B10. Commit + progress update ⬜
 
