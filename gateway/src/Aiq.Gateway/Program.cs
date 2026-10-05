@@ -221,11 +221,53 @@ builder.Services.Configure<Aiq.Gateway.Jobs.ArOverdueOptions>(builder.Configurat
 builder.Services.AddSingleton<IObjectStorage, S3ObjectStorage>();
 
 builder.Services
-    .AddHttpClient<IAgentClient, AgentClient>(client =>
+    .AddHttpClient<AgentClient>(client =>
     {
         client.BaseAddress = new Uri(agentOptions.BaseUrl);
         client.Timeout = TimeSpan.FromSeconds(agentOptions.TimeoutSeconds);
     });
+
+// Sprint 7 Phase B — DLP wire. ScrubbingAgentClient wrap AgentClient
+// khi DlpOptions:Enabled = true. HttpContextAccessor required để
+// extract tenant/user context cho audit log.
+builder.Services
+    .AddOptions<Aiq.Gateway.Configuration.DlpOptions>()
+    .Bind(builder.Configuration.GetSection(Aiq.Gateway.Configuration.DlpOptions.SectionName))
+    .ValidateDataAnnotations();
+
+var dlpOptions = builder.Configuration
+    .GetSection(Aiq.Gateway.Configuration.DlpOptions.SectionName)
+    .Get<Aiq.Gateway.Configuration.DlpOptions>()
+    ?? new Aiq.Gateway.Configuration.DlpOptions();
+
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<Aiq.Gateway.Dlp.DeterministicMasker>();
+builder.Services.AddSingleton<Aiq.Gateway.Dlp.Detectors.IPiiDetector, Aiq.Gateway.Dlp.Detectors.VietnameseIdDetector>();
+builder.Services.AddSingleton<Aiq.Gateway.Dlp.Detectors.IPiiDetector, Aiq.Gateway.Dlp.Detectors.VietnameseTaxDetector>();
+builder.Services.AddSingleton<Aiq.Gateway.Dlp.Detectors.IPiiDetector, Aiq.Gateway.Dlp.Detectors.VietnamesePhoneDetector>();
+builder.Services.AddSingleton<Aiq.Gateway.Dlp.Detectors.IPiiDetector, Aiq.Gateway.Dlp.Detectors.EmailDetector>();
+builder.Services.AddSingleton<Aiq.Gateway.Dlp.Detectors.IPiiDetector, Aiq.Gateway.Dlp.Detectors.BankAccountDetector>();
+builder.Services.AddSingleton<Aiq.Gateway.Dlp.Detectors.IPiiDetector, Aiq.Gateway.Dlp.Detectors.CreditCardDetector>();
+builder.Services.AddSingleton<Aiq.Gateway.Dlp.Detectors.IPiiDetector, Aiq.Gateway.Dlp.Detectors.PassportDetector>();
+builder.Services.AddSingleton<Aiq.Gateway.Dlp.Detectors.IPiiDetector, Aiq.Gateway.Dlp.Detectors.DateOfBirthDetector>();
+builder.Services.AddSingleton<Aiq.Gateway.Dlp.IPiiScrubber, Aiq.Gateway.Dlp.PiiScrubber>();
+builder.Services.AddScoped<Aiq.Gateway.Dlp.IDlpEventRepository, Aiq.Gateway.Dlp.DlpEventRepository>();
+
+if (dlpOptions.Enabled)
+{
+    builder.Services.AddScoped<IAgentClient, Aiq.Gateway.Dlp.ScrubbingAgentClient>(sp =>
+        new Aiq.Gateway.Dlp.ScrubbingAgentClient(
+            sp.GetRequiredService<AgentClient>(),
+            sp.GetRequiredService<Aiq.Gateway.Dlp.IPiiScrubber>(),
+            sp.GetRequiredService<Aiq.Gateway.Dlp.IDlpEventRepository>(),
+            sp.GetRequiredService<IHttpContextAccessor>(),
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<Aiq.Gateway.Configuration.DlpOptions>>(),
+            sp.GetRequiredService<ILogger<Aiq.Gateway.Dlp.ScrubbingAgentClient>>()));
+}
+else
+{
+    builder.Services.AddScoped<IAgentClient>(sp => sp.GetRequiredService<AgentClient>());
+}
 
 // ---- Hangfire (background jobs) -------------------------------------------
 builder.Services.AddHangfire(config =>
@@ -448,6 +490,7 @@ app.MapVoucherEndpoints();
 app.MapCustomerEndpoints();
 app.MapSupplierEndpoints();
 app.MapReportsEndpoints();
+app.MapDlpEndpoints();
 app.MapApprovalEndpoints();
 app.MapNotificationEndpoints();
 app.MapTenantEndpoints();
