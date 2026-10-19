@@ -21,7 +21,7 @@ export function AccountingReviewExpenseButton({ voucherId }: { voucherId: string
       const res = await fetch(`/api/vouchers/${voucherId}/expense-claim/accounting-review`, { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.error ?? `HTTP ${res.status}`);
+        setError(body.message ?? body.error ?? `HTTP ${res.status}`);
         return;
       }
       router.refresh();

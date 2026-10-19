@@ -4,10 +4,28 @@ import { AlertTriangle, ArrowLeft, Banknote, CheckCircle2, ClipboardCheck, FileT
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
 import { VoucherExtractForm } from "@/components/voucher-extract-form";
-import { AcceptReceiptButton } from "@/components/accept-receipt-button";
+import { CashSettlementPanel, type SettlementContext } from "@/components/cash-settlement-panel";
+import { VoucherTypeReview } from "@/components/voucher-type-review";
+import { DocumentReviewPanel, type DocumentReviewTask } from "@/components/document-review-panel";
+import { ExtractionFailureBanner } from "@/components/extraction-failure-banner";
+import { BankStatementPanel, type CompanyAccountOption, type PartyOption } from "@/components/bank-statement-panel";
+import { importNoteFrom, type StatementTransactionView } from "@/lib/bank-statement";
+import { parseClassification, voucherTypeLabel } from "@/lib/voucher-type";
+import {
+  buildPartyCards,
+  overlayLiveAp,
+  overlayLiveAr,
+  pendingBalanceDelta,
+  snapshotPartyId,
+  type LivePayables,
+  type LiveReceivables,
+} from "@/lib/voucher-view";
 import { AcceptExpenseButton } from "@/components/accept-expense-button";
+import { ExpenseClaimPaymentPanel } from "@/components/expense-claim-payment-panel";
+import { ExpenseClaimItemsPanel } from "@/components/expense-claim-items-panel";
+import { splitJournal } from "@/lib/expense-claim-payment";
 import { AcceptInvoiceButton } from "@/components/accept-invoice-button";
-import { UnapplyReceiptButton } from "@/components/unapply-receipt-button";
+import { TaxVerificationPanel } from "@/components/tax-verification-panel";
 import { RejectReceiptMatchButton } from "@/components/reject-receipt-match-button";
 import { RejectExpenseClaimButton } from "@/components/reject-expense-claim-button";
 import { GrantExpenseExceptionButton } from "@/components/grant-expense-exception-button";
@@ -191,6 +209,28 @@ interface ReceiptMatchResult {
   reviewStatus: "proposed" | "confirmed" | "rejected";
   reviewedBy: string | null;
   reviewedAt: string | null;
+}
+
+// Configurable document processing provenance, written by the extract job
+// into extracted_fields.document_processing (agent / version / config source).
+interface DocumentProcessingProvenance {
+  config_source: string;
+  agent_name?: string | null;
+  agent_version?: number | null;
+  provider?: string | null;
+  model?: string | null;
+  schema_valid?: boolean | null;
+  unsupported_document_type?: boolean;
+}
+
+function documentProcessingFrom(json?: string | null): DocumentProcessingProvenance | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as { document_processing?: DocumentProcessingProvenance };
+    return parsed.document_processing ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // Luồng 03 — persisted expense-claim outcome classification (GET
@@ -419,6 +459,9 @@ interface JournalEntry {
   confidence?: number | null;
   acceptedAt?: string | null;
   rejectedAt?: string | null;
+  rejectReason?: string | null;
+  /** suggestion (AI/manual, advisory) | posting | reversal (authoritative). */
+  source?: string | null;
 }
 
 interface VoucherDetail {
@@ -427,13 +470,6 @@ interface VoucherDetail {
   journalSuggestions: JournalEntry[];
 }
 
-const TYPE_LABEL: Record<string, string> = {
-  invoice_vat: "Hoá đơn VAT",
-  receipt: "Phiếu thu",
-  payment: "Phiếu chi",
-  bank_transfer: "Uỷ nhiệm chi",
-  bank_statement: "Sao kê ngân hàng",
-};
 
 function fmtMoney(n: number | null | undefined, currency = "VND") {
   return n == null ? "—" : `${Number(n).toLocaleString("vi-VN")} ${currency}`;
@@ -547,15 +583,14 @@ function ReceiptMatchingPanel({
         </div>
       )}
 
-      {/* Accept button — writes the credit rows + updates customer.current_ar */}
-      {voucherStatus !== "verified" && matching.status !== "no_open_invoices" && (
-        <div className="border-t pt-3">
-          <AcceptReceiptButton voucherId={voucherId} />
-          <p className="mt-2 text-[11px] italic text-[var(--color-muted-fg)]">
-            Bấm để ghi credit rows vào sổ AR + giảm công nợ khách trong hệ thống. Idempotent
-            — bấm nhiều lần cũng chỉ áp 1 lần.
-          </p>
-        </div>
+      {/* Approval moved to the "Thu tiền · Đối trừ công nợ" panel above —
+          this FIFO table (built at extraction time) is informational only;
+          posting uses the server-side match with ADMIN selection. */}
+      {voucherStatus !== "verified" && (
+        <p className="border-t pt-3 text-[11px] italic text-[var(--color-muted-fg)]">
+          Bảng trên là gợi ý FIFO lúc trích xuất (tham khảo). Duyệt &amp; ghi nhận tại khung
+          “Thu tiền · Đối trừ công nợ”.
+        </p>
       )}
       {voucherStatus === "verified" && (
         <div className="rounded-[var(--radius)] border border-emerald-300 bg-emerald-100 px-3 py-2 text-sm text-emerald-900">
@@ -681,7 +716,7 @@ function MatchContextPanel({ match, currency }: { match: MatchContextFound; curr
   );
 }
 
-function ArContextPanel({ ar, currency }: { ar: ArContextFound; currency: string }) {
+function ArContextPanel({ ar, currency, cashVoucher = false }: { ar: ArContextFound; currency: string; cashVoucher?: boolean }) {
   const willBreach = ar.risk_flags.includes("would_breach_credit_limit");
   const invoiceDelta = ar.projected_balance_131 - ar.current_balance_131;
   return (
@@ -722,7 +757,7 @@ function ArContextPanel({ ar, currency }: { ar: ArContextFound; currency: string
         </div>
         <div>
           <div className="text-xs text-[var(--color-muted-fg)]">
-            <TrendingUp className="mr-0.5 inline size-3" /> Sau hoá đơn này
+            <TrendingUp className="mr-0.5 inline size-3" /> {cashVoucher ? "Sau chứng từ này" : "Sau hoá đơn này"}
           </div>
           <div className={`font-mono font-bold ${willBreach ? "text-red-700" : ""}`}>
             {fmtMoney(ar.projected_balance_131, currency)}
@@ -736,7 +771,7 @@ function ArContextPanel({ ar, currency }: { ar: ArContextFound; currency: string
           <div className="font-mono">{fmtMoney(ar.credit_limit, currency)}</div>
         </div>
         <div>
-          <div className="text-xs text-[var(--color-muted-fg)]">Dùng sau HĐ</div>
+          <div className="text-xs text-[var(--color-muted-fg)]">{cashVoucher ? "Hạn mức đã dùng" : "Dùng sau HĐ"}</div>
           <div
             className={`font-mono font-bold ${
               ar.projected_credit_used_percent >= 100
@@ -966,12 +1001,20 @@ function ApContextPanel({
   voucherId,
   voucherType,
   voucherStatus,
+  invoiceTotal,
+  invoiceSubtotal,
+  invoiceVatAmount,
+  isAdmin,
 }: {
   ap: ApContextFound;
   currency: string;
   voucherId: string;
   voucherType: string;
   voucherStatus: string;
+  invoiceTotal?: number | null;
+  invoiceSubtotal?: number | null;
+  invoiceVatAmount?: number | null;
+  isAdmin: boolean;
 }) {
   const invoiceDelta = ap.projected_balance_331 - ap.current_balance_331;
   const showBookButton = voucherType === "invoice_vat_in" && voucherStatus !== "verified";
@@ -1103,18 +1146,51 @@ function ApContextPanel({
         </div>
       )}
 
-      {/* Book invoice button — chỉ show cho invoice_vat_in, tăng AP. */}
+      {/* Book invoice button — chỉ show cho invoice_vat_in, tăng AP. Status
+          here is the voucher's own status — "extracted" reads as EXTRACTED,
+          "verified" reads as POSTED (accounting effect created — never
+          PAID; that is a separate, later payment flow). */}
       {showBookButton && (
         <div className="border-t pt-3">
-          <AcceptExpenseButton voucherId={voucherId} voucherType={voucherType} />
+          <div className="mb-1 text-sm font-medium">
+            Trạng thái: {voucherStatus === "extracted" ? "EXTRACTED" : voucherStatus.toUpperCase()}
+          </div>
+          <div className="mb-2 text-xs text-[var(--color-muted-fg)]">
+            Chiều hoá đơn: <b className="text-amber-800">MUA → Phải trả (AP)</b>
+          </div>
+          <p className="mb-1 text-xs text-[var(--color-muted-fg)]">
+            Đối tác: <b>{ap.supplier.name}</b>
+          </p>
+          {invoiceTotal != null && (
+            <div className="mb-2 space-y-0.5 rounded border bg-[var(--color-bg)] px-2 py-1.5 font-mono text-xs">
+              <div>
+                Phải trả {ap.supplier.name}: <b className="text-amber-800">+{fmtMoney(invoiceTotal, currency)}</b>
+              </div>
+              {invoiceSubtotal != null && <div>Hàng hoá/dịch vụ mua vào: {fmtMoney(invoiceSubtotal, currency)}</div>}
+              {invoiceVatAmount != null && <div>VAT đầu vào: {fmtMoney(invoiceVatAmount, currency)}</div>}
+            </div>
+          )}
+          {isAdmin ? (
+            <AcceptExpenseButton voucherId={voucherId} voucherType={voucherType} />
+          ) : (
+            <p className="rounded-[var(--radius)] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Chỉ ADMIN cùng phòng ban mới có thể Duyệt &amp; ghi nhận.
+            </p>
+          )}
           <p className="mt-2 text-[11px] italic text-[var(--color-muted-fg)]">
-            Bấm để ghi HĐ NCC vào sổ AP + tăng công nợ 331 trong hệ thống. Idempotent.
+            Duyệt để ghi nhận HĐ NCC vào sổ AP (Có 331) + tăng công nợ phải trả. Không đồng
+            nghĩa đã thanh toán. Idempotent.
           </p>
         </div>
       )}
       {voucherStatus === "verified" && voucherType === "invoice_vat_in" && (
         <div className="rounded-[var(--radius)] border border-emerald-300 bg-emerald-100 px-3 py-2 text-sm text-emerald-900">
-          ✓ Đã ghi HĐ NCC vào sổ AP. Xem trong <a href="/suppliers" className="underline">/suppliers</a>.
+          <div className="font-medium">Trạng thái: POSTED</div>
+          <div className="mt-1">
+            ✓ Đã ghi nhận phải trả: {fmtMoney(invoiceTotal, currency)} — thanh toán:{" "}
+            <b>Chưa trả (UNPAID)</b>. Xem trong{" "}
+            <a href="/suppliers" className="underline">/suppliers</a>.
+          </div>
         </div>
       )}
     </section>
@@ -1213,13 +1289,11 @@ function PaymentMatchingPanel({
         </div>
       )}
 
-      {voucherStatus !== "verified" && matching.status !== "no_open_payables" && (
-        <div className="border-t pt-3">
-          <AcceptExpenseButton voucherId={voucherId} voucherType={voucherType} />
-          <p className="mt-2 text-[11px] italic text-[var(--color-muted-fg)]">
-            Bấm để ghi debit rows vào sổ AP + giảm công nợ NCC trong hệ thống. Idempotent.
-          </p>
-        </div>
+      {voucherStatus !== "verified" && (
+        <p className="border-t pt-3 text-[11px] italic text-[var(--color-muted-fg)]">
+          Bảng trên là gợi ý FIFO lúc trích xuất (tham khảo). Duyệt &amp; ghi nhận tại khung
+          “Chi tiền · Đối trừ công nợ”.
+        </p>
       )}
       {voucherStatus === "verified" && (
         <div className="rounded-[var(--radius)] border border-emerald-300 bg-emerald-100 px-3 py-2 text-sm text-emerald-900">
@@ -1429,6 +1503,14 @@ export default async function VoucherDetailPage({ params }: PageProps) {
   }
   const detail = (await res.json()) as VoucherDetail;
   const v = detail.voucher;
+  const reviewRes = await gateway.listVoucherDocumentReviews(token, id);
+  const stateRes = await gateway.getVoucherProcessingState(token, id);
+  const processingState = stateRes.ok
+    ? ((await stateRes.json()) as { extractionError: { code: string; stage: string | null; failedAt: string | null } | null; blockingReasons: string[] })
+    : { extractionError: null, blockingReasons: [] as string[] };
+  const documentReview = reviewRes.ok
+    ? ((await reviewRes.json()) as { reviewStatus: string | null; items: DocumentReviewTask[] })
+    : { reviewStatus: null, items: [] as DocumentReviewTask[] };
 
   // Luồng 02 — ADMIN-only confirm/reject actions must not render for a plain
   // USER (backend still enforces this via department_admin, but the task
@@ -1438,6 +1520,17 @@ export default async function VoucherDetailPage({ params }: PageProps) {
   if (meRes.ok) {
     const me = (await meRes.json()) as { roles?: string[] };
     isAdmin = (me.roles ?? []).includes("admin");
+  }
+  const isCashVoucher = v.voucherType === "receipt" || v.voucherType === "payment" || v.voucherType === "bank_transfer";
+  let settlement: { context: SettlementContext; canApprove: boolean } | null = null;
+  let settlementError: string | null = null;
+  if (isCashVoucher) {
+    const settlementRes = await gateway.getSettlement(token, id);
+    if (settlementRes.ok) {
+      settlement = (await settlementRes.json()) as { context: SettlementContext; canApprove: boolean };
+    } else {
+      settlementError = `Không tải được thông tin thu/chi (HTTP ${settlementRes.status}).`;
+    }
   }
   const receiptMatchRes = v.voucherType === "receipt" ? await gateway.getReceiptMatch(token, id) : null;
   const receiptMatch = receiptMatchRes?.ok ? ((await receiptMatchRes.json()) as ReceiptMatchResult) : null;
@@ -1483,6 +1576,48 @@ export default async function VoucherDetailPage({ params }: PageProps) {
     }
   }
 
+  // extracted_fields.ar_context / ap_context are snapshots from extraction
+  // time; after any posting/unapply/reverse they are stale. Re-read the live
+  // receivables/payables report so every panel shows the same balance.
+  if (arContext && arContext.status === "found") {
+    const customerId = snapshotPartyId(arContext.customer as unknown as Record<string, unknown>);
+    const liveRes = customerId ? await gateway.customerReceivables(token, customerId) : null;
+    if (liveRes?.ok) {
+      const snap = arContext;
+      arContext = overlayLiveAr(snap, (await liveRes.json()) as LiveReceivables,
+        pendingBalanceDelta(v.voucherType, v.status, snap.current_balance_131, snap.projected_balance_131)) as ArContextFound;
+    }
+  }
+  if (apContext && apContext.status === "found") {
+    const supplierId = snapshotPartyId(apContext.supplier as unknown as Record<string, unknown>);
+    const liveRes = supplierId ? await gateway.supplierPayables(token, supplierId) : null;
+    if (liveRes?.ok) {
+      const snap = apContext;
+      apContext = overlayLiveAp(snap, (await liveRes.json()) as LivePayables,
+        pendingBalanceDelta(v.voucherType, v.status, snap.current_balance_331, snap.projected_balance_331)) as ApContextFound;
+    }
+  }
+  const partyCards = buildPartyCards(v, settlement?.context.parties ?? null);
+
+  // Bank statement: individual transaction lines + Customer identification.
+  let statement: { transactions: StatementTransactionView[]; canReview: boolean } | null = null;
+  let customerOptions: PartyOption[] = [];
+  let supplierOptions: PartyOption[] = [];
+  let companyAccounts: CompanyAccountOption[] = [];
+  if (v.voucherType === "bank_statement") {
+    const stRes = await gateway.voucherBankTransactions(token, id);
+    if (stRes.ok) statement = (await stRes.json()) as { transactions: StatementTransactionView[]; canReview: boolean };
+    if (statement?.canReview) {
+      const [cRes, sRes] = await Promise.all([gateway.listCustomers(token), gateway.listSuppliers(token)]);
+      type Item = { id: string; customerCode?: string; supplierCode?: string; name: string };
+      if (cRes.ok) customerOptions = ((await cRes.json()) as { items: Item[] }).items.map((c) => ({ id: c.id, code: c.customerCode ?? "", name: c.name }));
+      if (sRes.ok) supplierOptions = ((await sRes.json()) as { items: Item[] }).items.map((c) => ({ id: c.id, code: c.supplierCode ?? "", name: c.name }));
+      const caRes = await gateway.listCompanyBankAccounts(token);
+      if (caRes.ok) companyAccounts = (await caRes.json()) as CompanyAccountOption[];
+    }
+  }
+  const settlementPosted = settlement?.context.posting != null;
+
   // Auto-refresh while the async OCR + extraction pipeline is still running.
   // Once we reach 'extracted' the fields + journal are present and refresh
   // stops. Users who navigated here right after upload see the page update
@@ -1508,7 +1643,7 @@ export default async function VoucherDetailPage({ params }: PageProps) {
         <div className="flex items-center gap-2">
           <Receipt className="size-5 text-[var(--color-muted-fg)]" />
           <h1 className="font-serif text-2xl">
-            {TYPE_LABEL[v.voucherType] ?? v.voucherType} ·{" "}
+            {voucherTypeLabel(v.voucherType)} ·{" "}
             {v.documentSeries ? `${v.documentSeries} · ` : ""}
             {v.documentNumber ?? "(chưa có số)"}
           </h1>
@@ -1531,6 +1666,53 @@ export default async function VoucherDetailPage({ params }: PageProps) {
           )}
         </div>
       </header>
+
+      {/* Voucher type: AIQ detection (type, confidence, evidence) and the
+          ADMIN confirm/correct controls. Shown once extraction has run. */}
+      {!isPipelineRunning && (parseClassification(v.extractedFieldsJson) || v.voucherType === "unclassified") && (
+        <VoucherTypeReview
+          voucherId={v.id}
+          currentType={v.voucherType}
+          classification={parseClassification(v.extractedFieldsJson)}
+          canDecide={isAdmin}
+          posted={v.status === "verified" || settlementPosted}
+        />
+      )}
+
+      {/* Multi-file claim: one item per bill file (renders nothing for a legacy claim). */}
+      {v.voucherType === "expense_claim" && <ExpenseClaimItemsPanel claimId={v.id} />}
+
+      {processingState.extractionError && (
+        <ExtractionFailureBanner
+          voucherId={v.id}
+          voucherType={v.voucherType}
+          code={processingState.extractionError.code}
+          failedAt={processingState.extractionError.failedAt}
+          keptPrevious={v.status !== "extraction_failed"}
+        />
+      )}
+
+      <DocumentReviewPanel
+        voucherId={v.id}
+        reviewStatus={documentReview.reviewStatus}
+        tasks={documentReview.items}
+        canDecide={isAdmin}
+      />
+
+      {(() => {
+        const dp = documentProcessingFrom(v.extractedFieldsJson);
+        if (!dp) return null;
+        return (
+          <p className="text-xs text-[var(--color-muted-fg)]" data-testid="document-provenance">
+            Xử lý bởi {dp.agent_name ?? "trợ lý"}
+            {dp.agent_version != null ? ` v${dp.agent_version}` : ""} · cấu hình:{" "}
+            <span className="font-mono">{dp.config_source}</span>
+            {dp.model ? ` · ${dp.provider}/${dp.model}` : ""}
+            {dp.schema_valid === false ? " · schema chưa hợp lệ" : ""}
+            {dp.unsupported_document_type ? " · loại chứng từ không được trợ lý hỗ trợ" : ""}
+          </p>
+        );
+      })()}
 
       {v.errorMessage && (
         <div className="flex items-start gap-2 rounded-[var(--radius)] border border-red-200 bg-red-50 p-3 text-sm text-red-700">
@@ -1589,66 +1771,106 @@ export default async function VoucherDetailPage({ params }: PageProps) {
         />
       )}
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <section className="space-y-3 rounded-[var(--radius)] border p-5">
-          <h2 className="font-serif text-lg">Bên bán</h2>
-          <dl className="space-y-1 text-sm">
-            <div>
-              <dt className="text-xs text-[var(--color-muted-fg)]">Tên</dt>
-              <dd>{v.sellerName ?? "—"}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-[var(--color-muted-fg)]">MST</dt>
-              <dd className="font-mono">{v.sellerMst ?? "—"}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-[var(--color-muted-fg)]">Địa chỉ</dt>
-              <dd>{v.sellerAddress ?? "—"}</dd>
-            </div>
-          </dl>
-        </section>
+      {/* Party labels follow the voucher type: Bên nộp/nhận tiền for a
+          phiếu thu, Bên trả/nhận tiền for phiếu chi/UNC, Bên bán/mua only
+          for invoices. */}
+      {v.voucherType !== "bank_statement" && <div className="grid gap-4 lg:grid-cols-2">
+        {partyCards.map((card) => (
+          <section key={card.title} className="space-y-3 rounded-[var(--radius)] border p-5">
+            <h2 className="font-serif text-lg">{card.title}</h2>
+            <dl className="space-y-1 text-sm">
+              <div>
+                <dt className="text-xs text-[var(--color-muted-fg)]">Tên</dt>
+                <dd>{card.name ?? "—"}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-[var(--color-muted-fg)]">MST</dt>
+                <dd className="font-mono">{card.taxCode ?? "—"}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-[var(--color-muted-fg)]">Địa chỉ</dt>
+                <dd>{card.address ?? "—"}</dd>
+              </div>
+            </dl>
+          </section>
+        ))}
+      </div>}
 
-        <section className="space-y-3 rounded-[var(--radius)] border p-5">
-          <h2 className="font-serif text-lg">Bên mua</h2>
-          <dl className="space-y-1 text-sm">
-            <div>
-              <dt className="text-xs text-[var(--color-muted-fg)]">Tên</dt>
-              <dd>{v.buyerName ?? "—"}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-[var(--color-muted-fg)]">MST</dt>
-              <dd className="font-mono">{v.buyerMst ?? "—"}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-[var(--color-muted-fg)]">Địa chỉ</dt>
-              <dd>{v.buyerAddress ?? "—"}</dd>
-            </div>
-          </dl>
+      {statement && (
+        <BankStatementPanel
+          voucherId={v.id}
+          transactions={statement.transactions}
+          canReview={statement.canReview}
+          customers={customerOptions}
+          suppliers={supplierOptions}
+          importNote={importNoteFrom(v.extractedFieldsJson)}
+          companyAccounts={companyAccounts}
+        />
+      )}
+
+      {/* Chứng từ THU / CHI → ADMIN duyệt → tài khoản tiền → đối trừ AR/AP. */}
+      {settlement && (
+        <CashSettlementPanel voucherId={v.id} context={settlement.context} canApprove={settlement.canApprove} />
+      )}
+      {settlementError && (
+        <section className="rounded-[var(--radius)] border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          {settlementError}
         </section>
-      </div>
+      )}
 
       {/* UC-ACC-001 §5.9 + BR-5: A/R context panel — full receivables snapshot
           of the buyer so the accountant sees credit-limit impact + risk flags
           before approving the AI-suggested journal. */}
       {arContext && arContext.status === "found" && (
         <>
-          <ArContextPanel ar={arContext} currency={currency} />
-          {/* Sprint 4 gap UC1: Book invoice into AR ledger. */}
+          <ArContextPanel ar={arContext} currency={currency} cashVoucher={isCashVoucher} />
+          {/* Sprint 4 gap UC1 / invoice approval lifecycle: book invoice
+              into AR ledger. Status here is the voucher's own status —
+              "extracted" reads as EXTRACTED (data extracted only, not yet
+              posted), "verified" reads as POSTED (accounting effect
+              created — never PAID; that is a separate, later payment flow). */}
           {(v.voucherType === "invoice_vat_out" || v.voucherType === "invoice_vat") &&
             v.status !== "verified" && (
               <section className="rounded-[var(--radius)] border border-emerald-200 bg-emerald-50/30 p-4">
-                <div className="mb-2 text-sm font-medium">Ghi HĐ vào sổ AR</div>
-                <AcceptInvoiceButton voucherId={v.id} />
+                <div className="mb-1 text-sm font-medium">
+                  Trạng thái: {v.status === "extracted" ? "EXTRACTED" : v.status.toUpperCase()}
+                </div>
+                <div className="mb-2 text-xs text-[var(--color-muted-fg)]">
+                  Chiều hoá đơn: <b className="text-emerald-800">BÁN → Phải thu (AR)</b>
+                </div>
+                <p className="mb-1 text-xs text-[var(--color-muted-fg)]">
+                  Đối tác: <b>{v.buyerName ?? "—"}</b>
+                </p>
+                <div className="mb-2 space-y-0.5 rounded border bg-[var(--color-bg)] px-2 py-1.5 font-mono text-xs">
+                  <div>
+                    Phải thu {v.buyerName ?? "khách hàng"}:{" "}
+                    <b className="text-emerald-800">+{fmtMoney(v.totalAmount, currency)}</b>
+                  </div>
+                  {v.subtotal != null && <div>Doanh thu: {fmtMoney(v.subtotal, currency)}</div>}
+                  {v.vatAmount != null && <div>VAT đầu ra: {fmtMoney(v.vatAmount, currency)}</div>}
+                </div>
+                {isAdmin ? (
+                  <AcceptInvoiceButton voucherId={v.id} />
+                ) : (
+                  <p className="rounded-[var(--radius)] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Chỉ ADMIN cùng phòng ban mới có thể Duyệt &amp; ghi nhận.
+                  </p>
+                )}
                 <p className="mt-2 text-[11px] italic text-[var(--color-muted-fg)]">
-                  Bấm để insert debit row vào sim_ar_ledger + tăng current_ar của khách. Idempotent.
+                  Duyệt để ghi nhận HĐ vào sổ AR (Nợ 131 / Có 511 / Có 33311) + tăng công nợ
+                  phải thu của khách. Không đồng nghĩa đã thu tiền. Idempotent.
                 </p>
               </section>
             )}
           {(v.voucherType === "invoice_vat_out" || v.voucherType === "invoice_vat") &&
             v.status === "verified" && (
               <section className="rounded-[var(--radius)] border border-emerald-300 bg-emerald-100 p-3 text-sm text-emerald-900">
-                ✓ Đã ghi HĐ vào công nợ khách. Xem trong{" "}
-                <a href="/customers" className="underline">/customers</a>.
+                <div className="font-medium">Trạng thái: POSTED</div>
+                <div className="mt-1">
+                  ✓ Đã ghi nhận phải thu: {fmtMoney(v.totalAmount, currency)} — thanh toán:{" "}
+                  <b>Chưa thu (UNPAID)</b>. Xem trong{" "}
+                  <a href="/customers" className="underline">/customers</a>.
+                </div>
               </section>
             )}
         </>
@@ -1674,14 +1896,16 @@ export default async function VoucherDetailPage({ params }: PageProps) {
             <h2 className="font-serif text-lg">Luồng 02 — Kết quả khớp công nợ</h2>
             <span
               className={`rounded-full border px-2 py-0.5 text-xs ${
-                receiptMatch.reviewStatus === "confirmed"
+                settlementPosted || receiptMatch.reviewStatus === "confirmed"
                   ? "border-emerald-300 bg-emerald-50 text-emerald-700"
                   : receiptMatch.reviewStatus === "rejected"
                     ? "border-gray-300 bg-gray-50 text-gray-600"
                     : "border-amber-300 bg-amber-50 text-amber-700"
               }`}
             >
-              {receiptMatch.reviewStatus === "confirmed"
+              {settlementPosted
+                ? "Đã ghi nhận qua Thu/Chi"
+                : receiptMatch.reviewStatus === "confirmed"
                 ? "Đã xác nhận"
                 : receiptMatch.reviewStatus === "rejected"
                   ? "Đã từ chối"
@@ -1700,7 +1924,13 @@ export default async function VoucherDetailPage({ params }: PageProps) {
             <div>Đã khớp: <b className="font-mono">{receiptMatch.matchedAmount.toLocaleString("vi-VN")}</b></div>
             <div>Chưa phân bổ: <b className="font-mono">{receiptMatch.unallocatedAmount.toLocaleString("vi-VN")}</b></div>
           </div>
-          {isAdmin && receiptMatch.reviewStatus === "proposed" && (
+          {settlementPosted && (
+            <p className="mt-2 text-xs text-[var(--color-muted-fg)]">
+              Phân loại lúc trích xuất (tham khảo). Bút toán và phân bổ thực tế đã ghi nhận ở khung
+              “Thu tiền / Chi tiền · Đối trừ công nợ”.
+            </p>
+          )}
+          {isAdmin && !settlementPosted && receiptMatch.reviewStatus === "proposed" && (
             <div className="mt-3">
               <RejectReceiptMatchButton voucherId={v.id} />
             </div>
@@ -1798,14 +2028,21 @@ export default async function VoucherDetailPage({ params }: PageProps) {
           )}
           {isAdmin && expenseClaimResult.reviewStatus === "accounting_reviewed" && (
             <div className="mt-3 flex items-center gap-2">
-              <AcceptExpenseButton voucherId={v.id} voucherType={v.voucherType} />
+              {/* Cash due to the employee -> "Duyệt & chi tiền" below; the
+                  old no-cash final approval only when nothing is to be paid. */}
+              {expenseClaimResult.payableAmount <= 0 && <AcceptExpenseButton voucherId={v.id} voucherType={v.voucherType} />}
               <RejectExpenseClaimButton voucherId={v.id} />
+            </div>
+          )}
+          {v.voucherType === "expense_claim" && (
+            <div className="mt-3">
+              <ExpenseClaimPaymentPanel voucherId={v.id} />
             </div>
           )}
         </section>
       )}
 
-      {receiptMatching && (
+      {receiptMatching && !settlement && (
         <>
           <ReceiptMatchingPanel
             matching={receiptMatching}
@@ -1813,17 +2050,6 @@ export default async function VoucherDetailPage({ params }: PageProps) {
             voucherId={v.id}
             voucherStatus={v.status}
           />
-          {/* Sprint 4 gap UC2: Unapply receipt (rollback). */}
-          {v.voucherType === "receipt" && v.status === "verified" && (
-            <section className="rounded-[var(--radius)] border border-amber-200 bg-amber-50/30 p-4">
-              <div className="mb-2 text-sm font-medium">Rollback (nếu áp thu sai)</div>
-              <UnapplyReceiptButton voucherId={v.id} />
-              <p className="mt-2 text-[11px] italic text-[var(--color-muted-fg)]">
-                Xoá ledger rows đã ghi và khôi phục current_ar. Chỉ dùng khi cần sửa sai — voucher
-                sẽ rollback về status='extracted' để apply lại.
-              </p>
-            </section>
-          )}
         </>
       )}
 
@@ -1835,6 +2061,10 @@ export default async function VoucherDetailPage({ params }: PageProps) {
           voucherId={v.id}
           voucherType={v.voucherType}
           voucherStatus={v.status}
+          invoiceTotal={v.totalAmount}
+          invoiceSubtotal={v.subtotal}
+          invoiceVatAmount={v.vatAmount}
+          isAdmin={isAdmin}
         />
       )}
       {apContext && apContext.status !== "found" && (
@@ -1852,7 +2082,7 @@ export default async function VoucherDetailPage({ params }: PageProps) {
         </section>
       )}
 
-      {paymentMatching && (
+      {paymentMatching && !settlement && (
         <PaymentMatchingPanel
           matching={paymentMatching}
           currency={currency}
@@ -1860,6 +2090,10 @@ export default async function VoucherDetailPage({ params }: PageProps) {
           voucherType={v.voucherType}
           voucherStatus={v.status}
         />
+      )}
+
+      {["invoice_vat_in", "invoice_vat_out", "invoice_vat", "expense_claim"].includes(v.voucherType) && (
+        <TaxVerificationPanel voucherId={v.id} />
       )}
 
       {expenseClaimMatching && expenseClaimMatching.status === "found" && (
@@ -2004,8 +2238,27 @@ export default async function VoucherDetailPage({ params }: PageProps) {
       )}
 
       <section className="space-y-3 rounded-[var(--radius)] border p-5">
-        <h2 className="font-serif text-lg">Bút toán đề xuất (TT200)</h2>
-        {detail.journalSuggestions.length === 0 ? (
+        <h2 className="font-serif text-lg">Bút toán (TT200)</h2>
+        {splitJournal(detail.journalSuggestions).posted.length > 0 && (
+          <div className="space-y-1" data-testid="posted-journal">
+            <div className="text-sm font-medium text-emerald-800">Bút toán đã ghi nhận (ghi sổ)</div>
+            <table className="w-full text-sm">
+              <tbody>
+                {splitJournal(detail.journalSuggestions).posted.map((e) => (
+                  <tr key={e.id} className="border-t">
+                    <td className="px-3 py-1 font-mono">{e.entryNo}</td>
+                    <td className="px-3 py-1 font-mono">Nợ {e.debitAccount}</td>
+                    <td className="px-3 py-1 font-mono">Có {e.creditAccount}</td>
+                    <td className="px-3 py-1 text-right font-mono">{fmtMoney(e.amount, currency)}</td>
+                    <td className="px-3 py-1 text-xs">{e.description ?? "—"}{e.source === "reversal" ? " (đảo)" : ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="text-sm font-medium" data-testid="ai-suggestions-title">Gợi ý AI (chỉ tham khảo — không phải bút toán đã ghi sổ)</div>
+        {splitJournal(detail.journalSuggestions).suggestions.length === 0 ? (
           (() => {
             // BR09 audit fix — the generic "AI will suggest soon" message is
             // actively misleading for outcomes that will NEVER auto-populate
@@ -2055,7 +2308,7 @@ export default async function VoucherDetailPage({ params }: PageProps) {
                 </tr>
               </thead>
               <tbody>
-                {detail.journalSuggestions.map((e) => (
+                {splitJournal(detail.journalSuggestions).suggestions.map((e) => (
                   <tr key={e.id} className="border-t">
                     <td className="px-3 py-2 font-mono">{e.entryNo}</td>
                     <td className="px-3 py-2 font-mono font-bold text-emerald-700">{e.debitAccount}</td>
@@ -2067,9 +2320,11 @@ export default async function VoucherDetailPage({ params }: PageProps) {
                     </td>
                     <td className="px-3 py-2 text-center text-xs">
                       {e.acceptedAt ? (
-                        <span className="text-emerald-700">✓ Đã chấp nhận</span>
+                        <span className="text-emerald-700">✓ Đã chấp nhận (gợi ý)</span>
                       ) : e.rejectedAt ? (
-                        <span className="text-red-700">✗ Đã từ chối</span>
+                        <span className="text-red-700">
+                          {e.rejectReason === "superseded_by_recognition" || e.rejectReason === "superseded_by_posting" ? "Thay bằng bút toán đã ghi sổ" : "✗ Đã từ chối"}
+                        </span>
                       ) : (
                         <span className="text-[var(--color-muted-fg)]">Chờ</span>
                       )}

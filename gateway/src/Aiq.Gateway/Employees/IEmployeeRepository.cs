@@ -90,7 +90,19 @@ public sealed class EmployeeRepository : IEmployeeRepository
     {
         await using var conn = await _factory.OpenAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
+        var result = await ApplyExpenseClaimInTransactionAsync(conn, tx, tenantId, employeeId, totalClaim, advanceTaken, ct);
+        await tx.CommitAsync(ct);
+        return result;
+    }
 
+    /// <summary>
+    /// Same advance/ytd update, inside the CALLER's transaction — the final
+    /// expense-claim approval and its cash payment commit (or roll back) together.
+    /// </summary>
+    internal static async Task<ExpenseClaimApplyResult> ApplyExpenseClaimInTransactionAsync(
+        Npgsql.NpgsqlConnection conn, Npgsql.NpgsqlTransaction tx, Guid tenantId, Guid employeeId,
+        decimal totalClaim, decimal advanceTaken, CancellationToken ct)
+    {
         // Snapshot với row lock để tránh concurrent apply.
         var snapshot = await conn.QueryFirstOrDefaultAsync<(decimal outstanding_advance, decimal ytd_expense)>(
             new CommandDefinition(
@@ -111,8 +123,6 @@ public sealed class EmployeeRepository : IEmployeeRepository
             new { newAdvance, newYtd, tenantId, employeeId },
             transaction: tx,
             cancellationToken: ct));
-
-        await tx.CommitAsync(ct);
 
         return new ExpenseClaimApplyResult(
             PreviousAdvance: prevAdvance,

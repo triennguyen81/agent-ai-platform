@@ -6,6 +6,7 @@ using Aiq.Gateway.Customers;
 using Aiq.Gateway.Employees;
 using Aiq.Gateway.Suppliers;
 using Aiq.Gateway.Vouchers;
+using Aiq.Gateway.Vouchers.DocumentProcessing;
 using Hangfire;
 using Microsoft.Extensions.Options;
 
@@ -28,6 +29,10 @@ public sealed class VoucherExtractJobRunner
     private readonly Aiq.Gateway.Receipts.IReceiptMatchRepository _receiptMatches;
     private readonly IExpenseClaimRepository _expenseClaims;
     private readonly ExpenseRiskOptions _riskOptions;
+    private readonly Aiq.Gateway.Governance.ITenantCompanyProfileRepository _companyProfiles;
+    private readonly Aiq.Gateway.Banking.IBankStatementRepository _bankStatements;
+    private readonly IDocumentProcessingRepository _documents;
+    private readonly IDocumentReviewRepository _reviews;
     private readonly ILogger<VoucherExtractJobRunner> _logger;
 
     public VoucherExtractJobRunner(
@@ -40,8 +45,16 @@ public sealed class VoucherExtractJobRunner
         Aiq.Gateway.Receipts.IReceiptMatchRepository receiptMatches,
         IExpenseClaimRepository expenseClaims,
         IOptions<ExpenseRiskOptions> riskOptions,
+        Aiq.Gateway.Governance.ITenantCompanyProfileRepository companyProfiles,
+        Aiq.Gateway.Banking.IBankStatementRepository bankStatements,
+        IDocumentProcessingRepository documents,
+        IDocumentReviewRepository reviews,
         ILogger<VoucherExtractJobRunner> logger)
     {
+        _reviews = reviews;
+        _bankStatements = bankStatements;
+        _documents = documents;
+        _companyProfiles = companyProfiles;
         _agent = agent;
         _vouchers = vouchers;
         _customers = customers;
@@ -54,18 +67,42 @@ public sealed class VoucherExtractJobRunner
         _logger = logger;
     }
 
+    /// <summary>
+    /// Upload-chained extraction (and jobs queued before requestedBy
+    /// existed): the uploader is both creator and processing actor. Kept with
+    /// its original signature so already-enqueued Hangfire jobs still run.
+    /// </summary>
     [JobDisplayName("Voucher extract · {0}")]
     [AutomaticRetry(Attempts = 2, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
-    public async Task RunAsync(
+    public Task RunAsync(
         Guid voucherId,
         Guid userId,
         Guid? tenantId,
         string voucherType,
         string userToken,
         CancellationToken ct)
+        => RunForActorAsync(voucherId, userId, tenantId, voucherType, userToken, userId, ct);
+
+    /// <summary>
+    /// Extraction requested by a specific principal (manual re-extract, ADMIN
+    /// type correction). <paramref name="userId"/> stays the document's
+    /// creator (row scope); <paramref name="requestedBy"/> is the server-side
+    /// authenticated principal that asked for THIS run — recorded as the run
+    /// actor, never reconstructed from the voucher.
+    /// </summary>
+    [JobDisplayName("Voucher extract · {0}")]
+    [AutomaticRetry(Attempts = 2, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+    public async Task RunForActorAsync(
+        Guid voucherId,
+        Guid userId,
+        Guid? tenantId,
+        string voucherType,
+        string userToken,
+        Guid requestedBy,
+        CancellationToken ct)
     {
         _logger.LogInformation(
-            "Voucher extract job start · id={VoucherId} type={Type}", voucherId, voucherType);
+            "Voucher extract job start · id={VoucherId} type={Type} actor_id={ActorId}", voucherId, voucherType, requestedBy);
 
         // Tenant context required — colleague's IVoucherRepository signatures
         // enforce non-nullable Guid tenantId. If Hangfire enqueue lost tenant
@@ -82,6 +119,16 @@ public sealed class VoucherExtractJobRunner
             _logger.LogWarning("Voucher {VoucherId} not found — extract skipped", voucherId);
             return;
         }
+        // The actor id comes from the enqueueing endpoint's authenticated
+        // principal; still refuse anything that is not an active user of THIS
+        // tenant (defense in depth against a tampered job payload).
+        if (requestedBy != userId && !await _documents.IsActiveTenantUserAsync(tenantIdValue, requestedBy, ct))
+        {
+            _logger.LogError("Voucher {VoucherId}: extraction refused — actor_id={ActorId} is not an active user of tenant {TenantId}",
+                voucherId, requestedBy, tenantIdValue);
+            return;
+        }
+        var actorId = requestedBy;
         if (stub.Voucher.Status is "ocr_unavailable" or "rejected")
         {
             _logger.LogInformation(
@@ -95,37 +142,119 @@ public sealed class VoucherExtractJobRunner
             return;
         }
 
-        // Ask agent for 2 JSON blocks: fields object + entries array.
-        var task = BuildExtractionPrompt(voucherType, rawText);
-        string agentAnswer;
-        try
+        // ---- Voucher type: deterministic evidence BEFORE the LLM ----------
+        // voucherType here is a request: "auto", a user hint, or
+        // "admin:<type>" (an ADMIN correction that must win).
+        var typeRequest = Aiq.Gateway.Vouchers.VoucherTypeRequest.Parse(voucherType);
+        var profile = await _companyProfiles.GetAsync(tenantIdValue, ct);
+        var company = profile is null ? null : new Aiq.Gateway.Payments.CompanyIdentity(profile.TaxCode,
+            new[] { profile.LegalName, profile.ShortName }.Concat(profile.Aliases ?? Array.Empty<string>())
+                .Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n!).ToList());
+        var detection = Aiq.Gateway.Vouchers.VoucherTypeClassifier.Detect(rawText, company);
+
+        // ---- Which Agent / version / configuration processes this -------
+        // The uploader's own capability chain (voucher.processing) picks the
+        // Agent — an upload-time requested agent is only a hint re-validated
+        // there. If that Agent's PUBLISHED version carries document
+        // configuration, it drives the prompt + schema validation
+        // (document_config_source=manifest); otherwise the built-in legacy
+        // extraction runs unchanged (document_config_source=legacy).
+        var candidateType = typeRequest.Forced ?? detection.Type ?? typeRequest.Hint;
+        var forced = typeRequest.Forced is not null;
+        // Re-extraction policy: a document that was already processed with a
+        // manifest is re-run with its RECORDED agent + published version
+        // (reproducibility), authorized by the CURRENT caller's token — never
+        // by the original uploader's present eligibility, and never silently
+        // downgraded to legacy. Documents without manifest provenance keep
+        // the current selection / legacy compatibility behavior.
+        var provenance = await _documents.GetProvenanceAsync(tenantIdValue, voucherId, ct);
+        var reextract = provenance.IsReextract;
+        var triggerKind = reextract ? "reextract" : "initial";
+        DocumentAgentResolution resolution = null!;
+        AgentTaskResult executed = null!;
+        for (var attempt = 1; ; attempt++)
         {
-            // D6: routes through the capability resolver (voucher.processing)
-            // instead of the legacy no-agent-id path — the resolved agent's
-            // own skill/tool grants govern execution now, not this
-            // hard-coded skills list. Authorization is the UPLOADING
-            // user's own tenant/department[/direct-assignment] chain,
-            // exactly as if they had called this interactively.
-            agentAnswer = await _agent.RunAgentTaskAsync(
-                task,
-                userToken,
-                capability: "voucher.processing",
-                maxTurns: 3,
-                ct);
+            resolution = provenance.IsManifest
+                ? await ResolvePinnedDocumentAgentAsync(tenantIdValue, stub.Voucher.DepartmentId, provenance, ct)
+                : await ResolveDocumentAgentAsync(tenantIdValue, stub.Voucher.DepartmentId, userId, voucherId, ct);
+            _logger.LogInformation(
+                "Voucher {VoucherId}: runtime_agent_id={RuntimeAgentId} runtime_agent_version={RuntimeAgentVersion} document_config_source={Source} reextract={Reextract} pinned={Pinned} denial={Denial}",
+                voucherId, resolution.AgentId, resolution.Version, resolution.ConfigSource, reextract, resolution.Pinned, resolution.DenialReason);
+            if (resolution.Pinned && resolution.DenialReason is { } pinnedFailure)
+            {
+                await FailExtractionAsync(tenantIdValue, stub.Voucher.DepartmentId, actorId, voucherId, resolution, null,
+                    pinnedFailure, "agent_resolution", triggerKind, ct);
+                return;
+            }
+            try
+            {
+                if (resolution.Config is { } config)
+                {
+                    // Tool-less extraction pinned to the exact published
+                    // version the prompt/schema were built from.
+                    executed = await _agent.RunDocumentExtractionAsync(
+                        resolution.AgentId!.Value, resolution.AgentVersionId!.Value, test: false,
+                        DocumentExtraction.BuildManifestPrompt(config, candidateType, forced, rawText), userToken, ct,
+                        pinVersion: resolution.Pinned);
+                }
+                else
+                {
+                    // Legacy: byte-for-byte the previous prompt and /agent/run
+                    // call. Ask agent for 2 JSON blocks: fields object +
+                    // entries array. The extractor classifies INDEPENDENTLY
+                    // (the hint is shown as possibly wrong) so its answer is
+                    // real corroboration, not an echo. D6: routes through the
+                    // capability resolver (voucher.processing); authorization
+                    // is the UPLOADING user's own chain. The resolved agent (if
+                    // any) is passed as preferred_agent_id only so provenance
+                    // names the agent that really ran — the Agent re-checks it.
+                    executed = await _agent.RunAgentTaskWithProvenanceAsync(
+                        BuildExtractionPrompt(candidateType, forced, rawText), userToken,
+                        capability: "voucher.processing", preferredAgentId: resolution.AgentId, maxTurns: 3, ct);
+                }
+                break;
+            }
+            catch (AgentRequestException ex) when (resolution.Pinned && ex.UpstreamStatus is 403 or 409)
+            {
+                // The current caller may not run the recorded agent/version
+                // (403), or the Agent could not load it (409): explicit
+                // failure — never legacy.
+                await FailExtractionAsync(tenantIdValue, stub.Voucher.DepartmentId, actorId, voucherId, resolution, null,
+                    ex.UpstreamStatus == 403 ? DocumentProvenanceErrors.AgentUnavailable : DocumentProvenanceErrors.VersionUnavailable,
+                    "agent_resolution", triggerKind, ct);
+                return;
+            }
+            catch (AgentRequestException ex) when (ex.UpstreamStatus == 409 && resolution.Config is not null && attempt == 1)
+            {
+                // A new version was published between resolution and run —
+                // resolve again rather than run a mismatched configuration.
+                _logger.LogWarning("Voucher {VoucherId}: agent version changed during extraction — re-resolving", voucherId);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                // Provider/runtime failure after OCR: explicit, visible,
+                // retryable failed state — never a silent ocr_complete, never
+                // an empty extraction over a previous good one.
+                _logger.LogError(ex, "Agent extract call failed for voucher {VoucherId}", voucherId);
+                await FailExtractionAsync(tenantIdValue, stub.Voucher.DepartmentId, actorId, voucherId, resolution, null,
+                    ExtractionFailures.Classify(ex), "agent_execution", triggerKind, ct);
+                return;
+            }
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Agent extract call failed for voucher {VoucherId}", voucherId);
-            throw;
-        }
+        var agentAnswer = executed.FinalAnswer;
 
         var (fields, entries) = ExtractJsonBlocks(agentAnswer);
         if (fields is null)
         {
+            // A provider can answer 200 with a limit/error message instead of
+            // JSON (e.g. "You've hit your session limit"). Only the safe code
+            // is persisted; the preview stays in server logs.
+            var code = ExtractionFailures.ClassifyAnswer(agentAnswer);
             _logger.LogWarning(
-                "Voucher {VoucherId}: agent returned no valid fields JSON — status stays ocr_complete. Response preview: {Preview}",
-                voucherId,
-                agentAnswer.Length > 800 ? agentAnswer[..800] : agentAnswer);
+                "Voucher {VoucherId}: agent returned no valid fields JSON error_code={ErrorCode} answer_length={Length}",
+                voucherId, code, agentAnswer.Length);
+            await FailExtractionAsync(tenantIdValue, stub.Voucher.DepartmentId, actorId, voucherId, resolution, executed,
+                code, "agent_output", triggerKind, ct);
             return;
         }
 
@@ -140,10 +269,62 @@ public sealed class VoucherExtractJobRunner
         //   payment          → AP context + payment_matching (FIFO oldest)
         //   bank_transfer    → AP context + payment_matching (beneficiary = NCC)
         //   expense_claim    → expense_claim_matching (employee lookup)
+        // Combine deterministic evidence + extractor classification + request
+        // into ONE final type, decided before enrichment/settlement/posting.
+        var classification = Aiq.Gateway.Vouchers.VoucherTypeClassifier.Combine(
+            typeRequest, detection, ReadString(fields, "voucher_type"),
+            ReadStringAny(fields, "seller_mst", "seller_tax_code"), ReadStringAny(fields, "buyer_mst", "buyer_tax_code"),
+            company?.TaxCode);
+        if (typeRequest.Forced is not null)
+        {
+            // Re-extraction after an ADMIN correction: keep who/when.
+            var previous = Aiq.Gateway.Vouchers.VoucherTypeClassification.FromExtractedFields(stub.Voucher.ExtractedFieldsJson);
+            classification = classification with
+            {
+                UploadedAs = previous?.UploadedAs,
+                ConfirmedBy = previous?.ConfirmedBy,
+                ConfirmedAt = previous?.ConfirmedAt,
+            };
+        }
+        // Published document configuration: supported types, schema,
+        // workflow review. Only ever ADDS blockers to the classifier's
+        // decision — never weakens confidence/conflict/hint gates.
+        DocumentPolicyOutcome? policy = null;
+        if (resolution.Config is { } publishedConfig)
+        {
+            policy = DocumentExtraction.ApplyPolicy(publishedConfig, classification, fields,
+                $"Trợ lý {resolution.AgentName} v{resolution.Version}");
+            classification = policy.Classification;
+            if (policy.Unsupported)
+                _logger.LogWarning("Voucher {VoucherId}: unsupported_document_type {Type} for agent {AgentId} v{Version}",
+                    voucherId, classification.VoucherType, resolution.AgentId, resolution.Version);
+        }
+        var unsupportedType = policy?.Unsupported == true;
+        fields["document_processing"] = DocumentExtraction.ProvenanceBlock(resolution, executed, policy, DateTime.UtcNow);
+
+        if (!string.Equals(classification.VoucherType, voucherType, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation("Voucher {VoucherId}: voucher_type {Requested} -> {Final} ({Source}, {Confidence}, {Status})",
+                voucherId, voucherType, classification.VoucherType, classification.Source, classification.Confidence, classification.Status);
+        }
+        var llmType = ReadString(fields, "voucher_type");
+        if (!string.IsNullOrWhiteSpace(llmType) && !string.Equals(llmType, classification.VoucherType, StringComparison.OrdinalIgnoreCase))
+        {
+            fields["voucher_type_extracted"] = llmType;
+        }
+        if (classification.UploadedAs is not null) fields["voucher_type_uploaded_as"] = classification.UploadedAs;
+        fields["voucher_type_classification"] = System.Text.Json.JsonSerializer.SerializeToElement(
+            classification, Aiq.Gateway.Vouchers.VoucherTypeClassification.Json);
+        fields["voucher_type"] = classification.VoucherType;
+        voucherType = classification.VoucherType;
+
         var documentNumber = ReadString(fields, "document_number");
         var vt = voucherType.ToLowerInvariant();
 
-        if (tenantId is Guid t)
+        // An unsupported type gets NO server handler (no AR/AP context,
+        // matching, proposals, statement import, journals or approvals) —
+        // the extraction is stored for an ADMIN decision only.
+        if (tenantId is Guid t && !unsupportedType)
         {
             var d = stub.Voucher.DepartmentId ?? Guid.Empty;
             switch (vt)
@@ -372,10 +553,69 @@ public sealed class VoucherExtractJobRunner
             }
         }
 
-        await _vouchers.ReplaceExtractedAsync(tenantIdValue, userId, voucherId, applyRequest, ct);
+        // Bank statement: one document, MANY transactions. Store each line
+        // (idempotent by fingerprint) and identify the Customer/Supplier —
+        // identification only, no posting/AR/AP effect.
+        if (!unsupportedType
+            && string.Equals(voucherType, Aiq.Gateway.Vouchers.VoucherTypes.BankStatement, StringComparison.OrdinalIgnoreCase)
+            && stub.Voucher.DepartmentId is Guid statementDept)
+        {
+            var parsed = Aiq.Gateway.Banking.BankStatementParser.ParseDelimitedText(rawText);
+            if (parsed.Lines.Count == 0) parsed = Aiq.Gateway.Banking.BankStatementParser.FromExtractedFields(fields);
+            if (parsed.CompanyAccountNumber is null && ReadStringAny(fields, "account_number") is { } ownAccount)
+                parsed = parsed with { CompanyAccountNumber = ownAccount };
+            var summary = await _bankStatements.ImportAsync(tenantIdValue, statementDept, voucherId, parsed, ct);
+            fields["bank_statement_import"] = summary;
+            _logger.LogInformation("Voucher {VoucherId}: bank statement {Source} lines={Lines} inserted={Inserted} duplicates={Dup}",
+                voucherId, summary.Source, summary.Lines, summary.Inserted, summary.Duplicates);
+        }
 
-        // Save journal entries if agent produced valid ones.
-        if (entries is not null && entries.Count > 0)
+        // ---- Durable gates, persisted BEFORE the extraction becomes visible --
+        // Each blocker has ONE owner and lives in its own column — none is
+        // folded into the voucher-type confirmation flag, so an ADMIN type
+        // confirmation can never clear it (see DocumentAccountingGate):
+        //  * require_review → document_review_tasks + document_review_status
+        //    (awaiting / review_task_creation_failed), owned by review;
+        //  * legacy L2 enqueue failure → processing_blockers, owned by this job.
+        Guid? reviewTaskId = null;
+        var reviewRequired = policy is { WorkflowReview: true, Unsupported: false };
+        if (reviewRequired && policy!.TypeConfig?.Workflow is { } reviewWorkflow)
+        {
+            var gate = await OpenReviewGateAsync(_reviews, _logger, tenantIdValue, stub.Voucher.DepartmentId, voucherId,
+                executed.AgentId ?? resolution.AgentId, executed.AgentVersionId ?? resolution.AgentVersionId, reviewWorkflow,
+                classification.VoucherType, actorId, ct);
+            reviewTaskId = gate.TaskId;
+            fields["document_review"] = gate.FieldsBlock;
+        }
+        // Legacy L2 queue (sim_approval_queue): an enqueue failure becomes the
+        // extraction-owned blocker legacy_l2_failure. Only a run that actually
+        // evaluated L2 sets or clears it (re-extraction is the resolution
+        // path). The write throws if it cannot be persisted — fail closed.
+        if (!unsupportedType)
+        {
+            var l2Ok = await TryEnqueueForApprovalAsync(_approvals, _logger, tenantIdValue, voucherId, userId, fields, applyRequest, ct);
+            if (!l2Ok) fields["approval_queue_error"] = "review_queue_unavailable";
+            else fields.Remove("approval_queue_error");
+            await _documents.SetProcessingBlockerAsync(tenantIdValue, voucherId, ProcessingBlockers.LegacyL2Failure, active: !l2Ok, ct);
+        }
+        var blockingReasons = await _reviews.GetBlockingReasonsAsync(tenantIdValue, voucherId, ct);
+        _logger.LogInformation(
+            "Voucher {VoucherId}: tenant={TenantId} department={DepartmentId} operation=extract actor_id={ActorId} runtime_agent_id={RuntimeAgentId} runtime_agent_version={RuntimeAgentVersion} skill_source={SkillSource} workflow_version={WorkflowVersion} document_config_source={Source} review_required={ReviewRequired} review_task_id={ReviewTaskId} review_blocked={ReviewBlocked} blocking_reasons={BlockingReasons} reextract={Reextract}",
+            voucherId, tenantIdValue, stub.Voucher.DepartmentId, actorId, executed.AgentId ?? resolution.AgentId, executed.AgentVersion ?? resolution.Version,
+            string.Join(",", policy?.TypeConfig?.Skills.Select(s => $"{s.Code}:{s.SourceKind}") ?? []),
+            policy?.TypeConfig?.Workflow?.VersionId, resolution.ConfigSource, reviewRequired, reviewTaskId,
+            blockingReasons.Count > 0, string.Join(",", blockingReasons), reextract);
+
+        await _vouchers.ReplaceExtractedAsync(tenantIdValue, userId, voucherId, applyRequest, ct);
+        await RecordProvenanceAsync(tenantIdValue, stub.Voucher.DepartmentId, actorId, voucherId, resolution, executed, policy, classification,
+            triggerKind, reviewTaskId, ct);
+
+        // Save journal entries if agent produced valid ones. Never for a bank
+        // statement: it is N transactions, not one accounting entry, and
+        // statement lines must not lead to journals in this phase (lines are
+        // identified only — see Banking/IBankStatementRepository).
+        if (entries is not null && entries.Count > 0 && !unsupportedType
+            && !string.Equals(voucherType, Aiq.Gateway.Vouchers.VoucherTypes.BankStatement, StringComparison.OrdinalIgnoreCase))
         {
             var normalized = NormalizeEntries(entries);
             if (normalized.Count > 0)
@@ -389,19 +629,136 @@ public sealed class VoucherExtractJobRunner
             }
         }
 
-        // Sprint 5 HITL: check requires_l2_approval trong ar_context / ap_context.
-        // Nếu có → enqueue approval queue để kế toán trưởng duyệt trước khi
-        // apply. Không set voucher status thành 'awaiting_approval' — giữ
-        // 'extracted' để UI vẫn hiển thị. Approval banner sẽ hiện dựa trên
-        // extract fields.
-        await MaybeEnqueueForApprovalAsync(tenantIdValue, voucherId, userId, fields, applyRequest, ct);
-
         _logger.LogInformation(
             "Voucher extract job done · id={VoucherId} fields={FieldCount} entries={EntryCount}",
             voucherId, fields.Count, entries?.Count ?? 0);
     }
 
-    private async Task MaybeEnqueueForApprovalAsync(
+    internal sealed record ReviewGateResult(Guid? TaskId, Dictionary<string, object?> FieldsBlock, string? Blocker);
+
+    /// <summary>
+    /// Workflow require_review: persist ONE open review task and move the
+    /// document to awaiting_review (same transaction). On ANY failure the
+    /// document is marked review_task_creation_failed and a blocker is
+    /// returned; if even that state cannot be written the exception
+    /// propagates, so the job fails and the extraction is never stored.
+    /// </summary>
+    internal static async Task<ReviewGateResult> OpenReviewGateAsync(
+        IDocumentReviewRepository reviews, ILogger logger, Guid tenantId, Guid? departmentId, Guid voucherId,
+        Guid? agentId, Guid? agentVersionId, ManifestDocumentWorkflow workflow, string documentType, Guid actorUserId,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (departmentId is not Guid dept) throw new InvalidOperationException("review_task_creation_failed");
+            var (task, created) = await reviews.OpenAsync(new DocumentReviewOpenRequest(
+                tenantId, dept, voucherId, agentId, agentVersionId, workflow.Id, workflow.VersionId,
+                documentType, ["workflow_require_review"], actorUserId), ct);
+            return new ReviewGateResult(task.Id, new Dictionary<string, object?>
+            {
+                ["status"] = DocumentReviewStatuses.AwaitingReview, ["task_id"] = task.Id.ToString(),
+                ["workflow_id"] = workflow.Id.ToString(), ["workflow_version_id"] = workflow.VersionId?.ToString(),
+                ["workflow_name"] = workflow.Name, ["created"] = created,
+            }, null);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Voucher {VoucherId}: review_task_creation_failed — document blocked", voucherId);
+            await reviews.MarkCreationFailedAsync(tenantId, voucherId, ct);
+            return new ReviewGateResult(null, new Dictionary<string, object?>
+            {
+                ["status"] = DocumentReviewStatuses.CreationFailed, ["error"] = "review_task_creation_failed",
+            }, "review_task_creation_failed");
+        }
+    }
+
+    private async Task<DocumentAgentResolution> ResolvePinnedDocumentAgentAsync(
+        Guid tenantId, Guid? departmentId, DocumentProvenance provenance, CancellationToken ct)
+    {
+        // No catch-and-fallback here: a lookup failure propagates (Hangfire
+        // retries) instead of ever turning into a legacy run.
+        if (departmentId is not Guid dept)
+            return new(provenance.AgentId, provenance.AgentVersionId, null, null, null, DocumentProvenanceErrors.ProvenanceInvalid) { Pinned = true };
+        return await _documents.ResolvePinnedAsync(tenantId, dept, provenance.AgentId, provenance.AgentVersionId, ct);
+    }
+
+    /// <summary>
+    /// Explicit extraction failure (agent resolution, provider/runtime call,
+    /// unusable output). Persists ONLY a safe code + stage + time: an initial
+    /// extraction becomes 'extraction_failed' (retryable); a document that
+    /// already has a successful extraction keeps it untouched as the current
+    /// result. A failed run row is appended with the real actor. Re-throws if
+    /// the failure itself cannot be recorded (Hangfire then retries).
+    /// </summary>
+    private async Task FailExtractionAsync(Guid tenantId, Guid? departmentId, Guid actorUserId, Guid voucherId,
+        DocumentAgentResolution resolution, AgentTaskResult? executed, string errorCode, string errorStage, string triggerKind, CancellationToken ct)
+    {
+        _logger.LogWarning(
+            "Voucher {VoucherId}: extraction_failed tenant={TenantId} department={DepartmentId} actor_id={ActorId} error_stage={ErrorStage} error_code={ErrorCode} agent_id={AgentId} agent_version={AgentVersion} document_config_source={Source} reextract={Reextract}",
+            voucherId, tenantId, departmentId, actorUserId, errorStage, errorCode, resolution.AgentId, resolution.Version,
+            resolution.ConfigSource, triggerKind == "reextract");
+        await _documents.SetExtractionFailureAsync(tenantId, voucherId, errorCode, errorStage, ct);
+        await _documents.RecordRunAsync(new DocumentProcessingRun(
+            "production", voucherId, tenantId, departmentId, actorUserId, executed?.AgentId ?? resolution.AgentId,
+            executed?.AgentVersionId ?? resolution.AgentVersionId, executed?.AgentVersion ?? resolution.Version, resolution.ConfigSource,
+            null, null, null, null, [], executed?.Provider, executed?.Model, null, null, null, null, [], false,
+            TriggerKind: triggerKind, ErrorCode: errorCode, ErrorStage: errorStage), ct);
+    }
+
+    private async Task<DocumentAgentResolution> ResolveDocumentAgentAsync(
+        Guid tenantId, Guid? departmentId, Guid userId, Guid voucherId, CancellationToken ct)
+    {
+        if (departmentId is not Guid dept) return new(null, null, null, null, null, "voucher_has_no_department");
+        try
+        {
+            var requested = await _documents.GetRequestedAgentAsync(voucherId, ct);
+            return await _documents.ResolveForUploaderAsync(tenantId, dept, userId, requested, ct);
+        }
+        catch (Exception ex)
+        {
+            // Resolution trouble must not block extraction: fall back to the
+            // exact legacy call (the Agent resolves the capability itself).
+            _logger.LogWarning(ex, "Voucher {VoucherId}: document agent resolution failed — legacy extraction", voucherId);
+            return new(null, null, null, null, null, "resolution_failed");
+        }
+    }
+
+    private async Task RecordProvenanceAsync(
+        Guid tenantId, Guid? departmentId, Guid actorUserId, Guid voucherId, DocumentAgentResolution resolution,
+        AgentTaskResult executed, DocumentPolicyOutcome? policy, VoucherTypeClassification classification,
+        string triggerKind, Guid? reviewTaskId, CancellationToken ct)
+    {
+        try
+        {
+            var agentId = executed.AgentId ?? resolution.AgentId;
+            var versionId = executed.AgentVersionId ?? resolution.AgentVersionId;
+            await _documents.SetVoucherProvenanceAsync(tenantId, voucherId, agentId, versionId, resolution.ConfigSource, ct);
+            var type = policy?.TypeConfig;
+            await _documents.RecordRunAsync(new DocumentProcessingRun(
+                "production", voucherId, tenantId, departmentId, actorUserId, agentId, versionId,
+                executed.AgentVersion ?? resolution.Version, resolution.ConfigSource, classification.VoucherType,
+                type?.SchemaSha256, type?.Workflow?.Id, type?.Workflow?.VersionId, DocumentExtraction.SkillRefs(type),
+                executed.Provider, executed.Model, classification.Source, classification.Status, classification.Confidence,
+                policy?.Schema?.Valid, policy?.Schema?.MissingRequired ?? [], policy?.Unsupported ?? false,
+                TriggerKind: triggerKind, ReviewTaskId: reviewTaskId), ct);
+        }
+        catch (Exception ex)
+        {
+            // The extraction itself is already saved; a provenance write
+            // failure is logged loudly rather than re-running the LLM.
+            _logger.LogError(ex, "Voucher {VoucherId}: failed to record document processing provenance", voucherId);
+        }
+    }
+
+    /// <summary>
+    /// Sprint 5 HITL: requires_l2_approval in ar_context / ap_context routes
+    /// the voucher to the legacy L2 queue (sim_approval_queue). Returns false
+    /// when there was something to enqueue and it could NOT be persisted —
+    /// the caller then blocks the document instead of continuing silently.
+    /// </summary>
+    internal static async Task<bool> TryEnqueueForApprovalAsync(
+        IApprovalRepository approvals,
+        ILogger logger,
         Guid tenantId,
         Guid voucherId,
         Guid userId,
@@ -441,9 +798,9 @@ public sealed class VoucherExtractJobRunner
                 }
             }
 
-            if (triggers.Count == 0) return;
+            if (triggers.Count == 0) return true;
 
-            await _approvals.EnqueueAsync(
+            await approvals.EnqueueAsync(
                 tenantId,
                 voucherId,
                 applyRequest.VoucherType,
@@ -454,13 +811,15 @@ public sealed class VoucherExtractJobRunner
                 userId,
                 ct);
 
-            _logger.LogInformation(
+            logger.LogInformation(
                 "Voucher {VoucherId} routed to approval queue: {Triggers}",
                 voucherId, string.Join(", ", triggers));
+            return true;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to enqueue voucher {VoucherId} for approval", voucherId);
+            logger.LogError(ex, "Voucher {VoucherId}: review_queue_unavailable — L2 approval could not be enqueued; document blocked", voucherId);
+            return false;
         }
     }
 
@@ -478,25 +837,49 @@ public sealed class VoucherExtractJobRunner
     private static readonly HashSet<string> LegacyInvoiceOnlyTypes = new(StringComparer.OrdinalIgnoreCase) { "invoice_vat" };
 
     // ------------------------------------------------------------------
-    // Prompt construction (mirror of web-tier prompt so extraction behaves
-    // identically whether it runs in web or gateway job).
+    // Prompt construction — hardening phase (docs/ACCOUNTING_AGENT_AUDIT.md
+    // F-04): this used to describe itself as a "mirror of web-tier prompt",
+    // but web/src/app/api/vouchers/upload/route.ts's own copy of this same
+    // 2-block prompt + regex parser was confirmed 100% unreachable dead
+    // code (the P1 async-pipeline rewrite made this Hangfire job the only
+    // caller months ago; the web-tier copy was never removed) and has been
+    // deleted. This is now the SOLE canonical background-extraction
+    // implementation, not one of two.
+    //
+    // Distinct, intentionally NOT merged with agent/src/aiq_agent/agentic/
+    // voucher_tools.py's extract_voucher_fields/suggest_journal_entry MCP
+    // tools: those are thin prompt-wrapper tools for the INTERACTIVE,
+    // manifest-driven chat/tool-calling flow (a user or the agent itself
+    // decides, mid-conversation, to extract/suggest) — a different call
+    // pattern from this synchronous background job, which needs the
+    // extracted fields back as a structured return value in the same
+    // Hangfire step to immediately chain AR/AP context enrichment. Both
+    // ultimately persist through the same save_voucher/save_journal_
+    // suggestions-equivalent repository calls and the same manifest/tool-
+    // grant/HITL governance — this is parallel entry points into one
+    // governed system, not competing business logic.
     // ------------------------------------------------------------------
-    private static string BuildExtractionPrompt(string voucherType, string rawText)
+    private static string BuildExtractionPrompt(string? candidateType, bool forced, string rawText)
     {
         var truncated = rawText.Length > 20_000 ? rawText[..20_000] : rawText;
-        var skillName = LegacyInvoiceOnlyTypes.Contains(voucherType) ? "voucher-invoice-vat" : "voucher-universal-extractor";
+        var voucherType = candidateType ?? "chưa xác định";
+        var skillName = candidateType is not null && LegacyInvoiceOnlyTypes.Contains(candidateType) ? "voucher-invoice-vat" : "voucher-universal-extractor";
+        var typeInstruction = forced
+            ? $"Loại chứng từ đã được ADMIN xác nhận: \"{candidateType}\" — dùng đúng loại này."
+            : $"TỰ XÁC ĐỊNH voucher_type từ nội dung (tiêu đề, các dòng thông tin) trong: invoice_vat_out, invoice_vat_in, receipt, payment, bank_transfer, bank_statement, expense_claim, contract. Gợi ý ban đầu: \"{voucherType}\" — có thể SAI, không được lặp lại gợi ý nếu nội dung cho thấy loại khác.";
         return $$"""
-Bạn là chuyên viên kế toán VN. Xử lý raw OCR text của 1 chứng từ loại "{{voucherType}}" bên dưới.
+Bạn là chuyên viên kế toán VN. Xử lý raw OCR text của 1 chứng từ bên dưới.
+{{typeInstruction}}
 
-**BLOCK 1** — Áp dụng skill `{{skillName}}`, đúng phần mô tả cho voucher_type="{{voucherType}}", để trích xuất fields.
-Trả về JSON object đúng theo schema của skill cho loại chứng từ này — bắt buộc có voucher_type="{{voucherType}}"
+**BLOCK 1** — Áp dụng skill `{{skillName}}`, đúng phần mô tả cho voucher_type đã xác định, để trích xuất fields.
+Trả về JSON object đúng theo schema của skill cho loại chứng từ này — bắt buộc có voucher_type (giá trị bạn xác định)
 và document_number, document_date (YYYY-MM-DD) nếu chứng từ có các trường đó. KHÔNG áp dụng schema hoá đơn GTGT
 cho một loại chứng từ khác (ví dụ: không suy diễn seller/buyer/line_items cho phiếu thu, đề nghị hoàn ứng, hay
 sao kê ngân hàng — dùng đúng field name của loại đó: employee_code/items[] cho expense_claim, payer/payer_mst
 cho receipt, v.v. theo đúng skill).
 
 **BLOCK 2** — Áp dụng skill `journal-entry-formatter` + `accounting-vietnam` để đề xuất bút toán N/C theo TT200
-phù hợp với voucher_type="{{voucherType}}" (không mặc định là hoá đơn mua/bán nếu chứng từ không phải hoá đơn).
+phù hợp với voucher_type đã xác định ở BLOCK 1 (không mặc định là hoá đơn mua/bán nếu chứng từ không phải hoá đơn).
 Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credit_account, amount, description, confidence}.
 
 **QUAN TRỌNG**: chỉ trả 2 code block JSON, KHÔNG kèm markdown khác:
@@ -514,12 +897,13 @@ Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credi
     }
 
     // ------------------------------------------------------------------
-    // JSON block extraction (mirror of web-tier extractJsonBlocks).
+    // JSON block extraction — sole implementation, see BuildExtractionPrompt
+    // above (the former web-tier "mirror" was confirmed dead and removed).
     // ------------------------------------------------------------------
     private static readonly Regex FenceRegex = new(
         @"```(?:json)?\s*([\s\S]*?)```", RegexOptions.Compiled);
 
-    private static (Dictionary<string, object?>? Fields, List<Dictionary<string, object?>>? Entries) ExtractJsonBlocks(string text)
+    internal static (Dictionary<string, object?>? Fields, List<Dictionary<string, object?>>? Entries) ExtractJsonBlocks(string text)
     {
         Dictionary<string, object?>? fields = null;
         List<Dictionary<string, object?>>? entries = null;
@@ -609,7 +993,7 @@ Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credi
     // ------------------------------------------------------------------
     // Field readers
     // ------------------------------------------------------------------
-    private static string? ReadString(Dictionary<string, object?> obj, string key)
+    internal static string? ReadString(Dictionary<string, object?> obj, string key)
         => obj.TryGetValue(key, out var v) && v is string s ? s.Trim() : null;
 
     private static decimal? ReadDecimal(Dictionary<string, object?> obj, string key)
@@ -629,7 +1013,7 @@ Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credi
     // Agent may return numbers as VN-formatted strings like "15.000.000",
     // "15,000,000", "15 000 000" or "15tr". Strip separators + suffix
     // before parsing. Fails soft to null so caller can decide.
-    private static decimal? ParseFlexibleDecimal(string raw)
+    internal static decimal? ParseFlexibleDecimal(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return null;
         var s = raw.Trim();
@@ -711,7 +1095,7 @@ Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credi
     }
 
     // Accept alternate keys the model sometimes returns.
-    private static string? ReadStringAny(Dictionary<string, object?> obj, params string[] keys)
+    internal static string? ReadStringAny(Dictionary<string, object?> obj, params string[] keys)
     {
         foreach (var key in keys)
         {
@@ -721,7 +1105,7 @@ Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credi
         return null;
     }
 
-    private static decimal? ReadDecimalAny(Dictionary<string, object?> obj, params string[] keys)
+    internal static decimal? ReadDecimalAny(Dictionary<string, object?> obj, params string[] keys)
     {
         foreach (var key in keys)
         {
@@ -751,7 +1135,7 @@ Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credi
         return null;
     }
 
-    private static DateOnly? ReadDate(Dictionary<string, object?> obj, string key)
+    internal static DateOnly? ReadDate(Dictionary<string, object?> obj, string key)
     {
         var s = ReadString(obj, key);
         if (string.IsNullOrWhiteSpace(s)) return null;
@@ -786,23 +1170,34 @@ Trả về JSON array các entries. Mỗi entry: {entry_no, debit_account, credi
             ? tagsList.OfType<string>().ToArray()
             : Array.Empty<string>();
 
+        // Receipt / payment / bank_transfer vouchers carry payer/payee/amount
+        // instead of seller/buyer/total_amount. Money flows payer -> payee,
+        // mapped onto the same buyer (pays) -> seller (receives) columns the
+        // invoice types use, so the cash-settlement flow and the voucher list
+        // see one consistent shape. Which side is MY_COMPANY is decided later
+        // from the server-side Company Profile — never from this mapping.
+        var resolvedType = (ReadString(fields, "voucher_type") ?? voucherType).ToLowerInvariant();
+        var isCash = resolvedType is "receipt" or "payment" or "bank_transfer";
+        string? CashOr(string invoiceKey, params string[] cashKeys) =>
+            ReadString(fields, invoiceKey) ?? (isCash ? ReadStringAny(fields, cashKeys) : null);
+
         return new CreateVoucherRequest(
             VoucherType: ReadString(fields, "voucher_type") ?? voucherType,
             DocumentNumber: ReadString(fields, "document_number"),
             DocumentSeries: ReadString(fields, "document_series"),
             DocumentDate: ReadDate(fields, "document_date"),
-            SellerName: ReadString(fields, "seller_name"),
-            SellerMst: ReadString(fields, "seller_mst"),
+            SellerName: CashOr("seller_name", "payee_name", "beneficiary_name", "recipient_name", "payee"),
+            SellerMst: CashOr("seller_mst", "payee_mst", "beneficiary_mst", "recipient_mst"),
             SellerAddress: ReadString(fields, "seller_address"),
-            BuyerName: ReadString(fields, "buyer_name"),
-            BuyerMst: ReadString(fields, "buyer_mst"),
+            BuyerName: CashOr("buyer_name", "payer_name", "payer"),
+            BuyerMst: CashOr("buyer_mst", "payer_mst"),
             BuyerAddress: ReadString(fields, "buyer_address"),
-            PaymentMethod: ReadString(fields, "payment_method"),
+            PaymentMethod: CashOr("payment_method", "method"),
             Subtotal: ReadDecimal(fields, "subtotal"),
             VatRate: ReadDecimal(fields, "vat_rate"),
             VatAmount: ReadDecimal(fields, "vat_amount"),
             DiscountAmount: ReadDecimal(fields, "discount_amount"),
-            TotalAmount: ReadDecimal(fields, "total_amount"),
+            TotalAmount: ReadDecimal(fields, "total_amount") ?? (isCash ? ReadDecimalAny(fields, "amount", "so_tien") : null),
             Currency: ReadString(fields, "currency") ?? "VND",
             AmountInWords: ReadString(fields, "amount_in_words"),
             SourceFilePath: null,
@@ -1435,7 +1830,8 @@ public interface IVoucherExtractJobScheduler
         Guid userId,
         Guid? tenantId,
         string voucherType,
-        string userToken);
+        string userToken,
+        Guid requestedBy);
 }
 
 public sealed class VoucherExtractJobScheduler : IVoucherExtractJobScheduler
@@ -1454,10 +1850,12 @@ public sealed class VoucherExtractJobScheduler : IVoucherExtractJobScheduler
         Guid userId,
         Guid? tenantId,
         string voucherType,
-        string userToken)
+        string userToken,
+        Guid requestedBy)
     {
+        // requestedBy: the endpoint's authenticated principal — never client input.
         var jobId = _hangfire.Enqueue<VoucherExtractJobRunner>(
-            runner => runner.RunAsync(voucherId, userId, tenantId, voucherType, userToken, CancellationToken.None));
+            runner => runner.RunForActorAsync(voucherId, userId, tenantId, voucherType, userToken, requestedBy, CancellationToken.None));
         _logger.LogInformation(
             "Enqueued immediate voucher extract job {JobId} for voucher {VoucherId}",
             jobId, voucherId);

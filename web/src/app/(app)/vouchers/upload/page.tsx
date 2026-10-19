@@ -1,6 +1,14 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { VoucherTypeReview } from "@/components/voucher-type-review";
+import {
+  AUTO_VOUCHER_TYPE,
+  UPLOAD_TYPE_OPTIONS,
+  isPipelineRunning,
+  parseClassification,
+  type VoucherTypeClassificationView,
+} from "@/lib/voucher-type";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, ImageIcon, Loader2, Upload } from "lucide-react";
@@ -8,6 +16,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/input";
+import { fetchCapabilityAgentSelection, type CapabilityAgentSelectionState } from "@/lib/capability";
+import { CapabilityAgentSelector } from "@/components/capability-agent-selector";
 
 interface UploadResponse {
   voucherId: string;
@@ -22,25 +32,41 @@ interface Row {
   status: "pending" | "uploading" | "done" | "error";
   voucherId?: string;
   message?: string;
+  // Filled by polling once background OCR + extraction finish.
+  voucherStatus?: string;
+  voucherType?: string;
+  classification?: VoucherTypeClassificationView | null;
 }
 
-const VOUCHER_TYPES: { value: string; label: string }[] = [
-  { value: "invoice_vat", label: "Hoá đơn VAT điện tử" },
-  { value: "receipt", label: "Phiếu thu" },
-  { value: "payment", label: "Phiếu chi" },
-  { value: "bank_transfer", label: "Uỷ nhiệm chi" },
-  { value: "bank_statement", label: "Sao kê ngân hàng" },
-  { value: "expense_claim", label: "Đề nghị hoàn ứng" },
-];
+// Default = AUTO-DETECT: the type is decided from the document itself (OCR
+// title + fields + Company Profile + extractor). A manual choice is only a
+// hint; if it disagrees with detection the user is asked to confirm.
+const VOUCHER_TYPES = UPLOAD_TYPE_OPTIONS;
 
-const ACCEPTED = "image/jpeg,image/png,image/webp,image/bmp,application/pdf";
+// .csv / .xlsx: bank statement exports, parsed structurally (no OCR).
+const ACCEPTED = "image/jpeg,image/png,image/webp,image/bmp,application/pdf,.csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 export default function VoucherUploadPage() {
   const router = useRouter();
-  const [voucherType, setVoucherType] = useState<string>("invoice_vat");
+  const [voucherType, setVoucherType] = useState<string>(AUTO_VOUCHER_TYPE);
   const [rows, setRows] = useState<Row[]>([]);
   const [running, setRunning] = useState(false);
   const [lastResult, setLastResult] = useState<string | null>(null);
+
+  // "Xử lý bằng trợ lý": only shown when more than one Agent is eligible for
+  // voucher.processing. The choice is a hint — the Gateway re-authorizes it
+  // in the extract job and uses that Agent's PUBLISHED document configuration.
+  const [selection, setSelection] = useState<CapabilityAgentSelectionState>({ status: "loading" });
+  useEffect(() => {
+    let cancelled = false;
+    fetchCapabilityAgentSelection("voucher.processing").then((s) => {
+      if (!cancelled) setSelection(s);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const preferredAgentId = selection.status === "choose" ? selection.selectedAgentId : null;
 
   const onFiles = useCallback((files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -51,7 +77,9 @@ export default function VoucherUploadPage() {
   async function runOne(index: number, row: Row): Promise<Row> {
     const fd = new FormData();
     fd.append("file", row.file, row.file.name);
-    const res = await fetch(`/api/vouchers/upload?voucherType=${encodeURIComponent(voucherType)}`, {
+    const qs = new URLSearchParams({ voucherType });
+    if (preferredAgentId) qs.set("preferredAgentId", preferredAgentId);
+    const res = await fetch(`/api/vouchers/upload?${qs.toString()}`, {
       method: "POST",
       body: fd,
     });
@@ -88,6 +116,22 @@ export default function VoucherUploadPage() {
     };
   }
 
+  // Poll the voucher until background OCR + extraction finish, then show
+  // what AIQ detected (type, confidence, evidence) right in the upload list.
+  async function pollClassification(index: number, voucherId: string) {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await new Promise((r) => setTimeout(r, 4000));
+      const res = await fetch(`/api/vouchers/${voucherId}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const detail = (await res.json()) as { voucher: { status: string; voucherType: string; extractedFieldsJson?: string | null } };
+      const v = detail.voucher;
+      setRows((prev) => prev.map((r, idx) => (idx === index
+        ? { ...r, voucherStatus: v.status, voucherType: v.voucherType, classification: parseClassification(v.extractedFieldsJson) }
+        : r)));
+      if (!isPipelineRunning(v.status)) return;
+    }
+  }
+
   async function runAll() {
     if (running) return;
     setRunning(true);
@@ -98,6 +142,7 @@ export default function VoucherUploadPage() {
         setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, status: "uploading" } : r)));
         const updated = await runOne(i, rows[i]);
         setRows((prev) => prev.map((r, idx) => (idx === i ? updated : r)));
+        if (updated.status === "done" && updated.voucherId) void pollClassification(i, updated.voucherId);
         if (updated.status === "done" && updated.message) {
           setLastResult(updated.message);
         }
@@ -146,6 +191,15 @@ export default function VoucherUploadPage() {
             </select>
           </div>
 
+          {selection.status === "choose" && (
+            <CapabilityAgentSelector
+              agents={selection.agents}
+              selectedAgentId={selection.selectedAgentId}
+              onSelect={(agentId) => setSelection({ ...selection, selectedAgentId: agentId })}
+              disabled={running}
+            />
+          )}
+
           <Button
             onClick={runAll}
             disabled={running || rows.filter((r) => r.status === "pending").length === 0}
@@ -176,7 +230,7 @@ export default function VoucherUploadPage() {
             <ImageIcon className="size-10 text-[var(--color-muted-fg)]" />
             <span className="text-sm font-medium">Kéo thả ảnh vào đây, hoặc bấm để chọn</span>
             <span className="text-xs text-[var(--color-muted-fg)]">
-              Chấp nhận: JPG, PNG, WebP, BMP, PDF (multi-file)
+              Chấp nhận: JPG, PNG, WebP, BMP, PDF, CSV/XLSX sao kê (multi-file)
             </span>
             <input
               id="file-input"
@@ -217,12 +271,32 @@ export default function VoucherUploadPage() {
                       </td>
                       <td className="px-3 py-2">
                         {r.voucherId ? (
+                          <>
                           <Link
                             href={`/vouchers/${r.voucherId}`}
                             className="text-[var(--color-primary)] hover:underline"
                           >
                             {r.voucherId.slice(0, 8)}…
                           </Link>
+                          {r.voucherStatus && isPipelineRunning(r.voucherStatus) && (
+                            <span className="ml-2 inline-flex items-center gap-1 text-[var(--color-muted-fg)]">
+                              <Loader2 className="size-3 animate-spin" /> đang nhận diện…
+                            </span>
+                          )}
+                          {r.voucherStatus && !isPipelineRunning(r.voucherStatus) && r.voucherType && (
+                            <div className="mt-1">
+                              <VoucherTypeReview
+                                voucherId={r.voucherId}
+                                currentType={r.voucherType}
+                                classification={r.classification ?? null}
+                                canDecide
+                                posted={r.voucherStatus === "verified"}
+                                compact
+                                onChanged={() => void pollClassification(idx, r.voucherId!)}
+                              />
+                            </div>
+                          )}
+                          </>
                         ) : (
                           <span className="text-[var(--color-muted-fg)]">
                             {r.message ?? "—"}

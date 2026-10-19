@@ -1,0 +1,51 @@
+                                              CÔNG TY TNHH SÁU TRỰC
+                                      MST: 0123456789 - Địa chỉ: Lạc An, Ninh Thọ
+
+
+
+                   HÓA ĐƠN BÁN HÀNG - PHẢI THU (AR)
+                                                      Số: TEST-SINV-1001
+
+                                                Ngày 02 tháng 10 năm 2026
+
+
+ DỮ LIỆU MẪU KIỂM THỬ AIQ
+
+
+ NGƯỜI BÁN
+   Tên đơn vị                        CÔNG TY TNHH SÁU TRỰC
+
+   MST                               0123456789
+
+   Địa chỉ                           Lạc An, Ninh Thọ
+
+ NGƯỜI MUA
+   Tên đơn vị                        CÔNG TY TNHH VIỆT TÍN
+
+   MST                               0307890123
+
+   Địa chỉ                           125 Nguyễn Văn Trỗi, Phú Nhuận, TP.HCM
+
+ HÀNG HÓA
+      STT    Hàng hóa / Dịch vụ                            ĐVT       SL   Đơn giá            Thành tiền
+
+       1     Máy lọc nước công nghiệp ST-01                 Bộ       2      12.000.000 VND       24.000.000 VND
+
+       2     Bộ lõi lọc thay thế ST-F3                      Bộ       4       1.500.000 VND         6.000.000 VND
+
+
+   Tiền trước VAT                    30.000.000 VND
+
+   VAT 10%                           3.000.000 VND
+
+   Tổng thanh toán                   33.000.000 VND
+
+   Hạn thanh toán                    15/10/2026
+
+   Trạng thái                        CHƯA THANH TOÁN / UNPAID
+
+
+
+
+Dữ liệu mẫu phục vụ kiểm thử AIQ - không dùng làm chứng từ thực tế                                             Trang 1
+

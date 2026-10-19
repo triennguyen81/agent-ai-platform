@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { ArrowLeft, Building2 } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
+import { BankAccountsSection, type BankAccountView } from "@/components/bank-accounts-section";
 import { CustomerForm } from "@/components/customer-form";
 import { CustomerLifecycleActions } from "@/components/customer-lifecycle-actions";
 
@@ -70,6 +71,8 @@ export default async function CustomerDetailPage({ params }: Props) {
   if (!res.ok) redirect("/customers");
   const customer = (await res.json()) as CustomerRecord;
 
+  const bankAccountsRes = await gateway.listBankAccounts(token, "customers", id);
+  const bankAccounts = bankAccountsRes.ok ? ((await bankAccountsRes.json()) as BankAccountView[]) : [];
   const receivablesRes = await gateway.customerReceivables(token, id);
   const receivables = receivablesRes.ok
     ? ((await receivablesRes.json()) as CustomerReceivablesReport)
@@ -117,6 +120,8 @@ export default async function CustomerDetailPage({ params }: Props) {
         <div><span className="text-xs text-[var(--color-muted-fg)]">Hạn mức tín dụng</span><p className="font-mono">{customer.creditLimit.toLocaleString("vi-VN")} VNĐ</p></div>
         {customer.notes && <div className="sm:col-span-2"><span className="text-xs text-[var(--color-muted-fg)]">Ghi chú</span><p>{customer.notes}</p></div>}
       </section>
+
+      <BankAccountsSection owner="customers" ownerId={customer.id} ownerName={customer.name} accounts={bankAccounts} canManage={isAdmin} />
 
       <section className="rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
         <h2 className="mb-3 font-serif text-xl">Công nợ mở (AR)</h2>

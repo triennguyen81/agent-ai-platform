@@ -26,6 +26,8 @@ public static class CustomerEndpoints
         group.MapPost("/", CreateAsync);
         group.MapGet("/by-mst/{mst}", GetByMstAsync);
         group.MapGet("/{id:guid}", GetByIdAsync);
+        // Bank Account Master: read = department member; add/edit/(de)activate = ADMIN only.
+        group.MapBankAccounts(Aiq.Gateway.Banking.BankOwnerTypes.Customer);
         group.MapPatch("/{id:guid}", UpdateAsync);
         group.MapGet("/{id:guid}/receivables", GetReceivablesAsync);
 

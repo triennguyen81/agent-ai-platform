@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { ArrowLeft, Building2 } from "lucide-react";
 import { gateway } from "@/lib/api";
 import { requireSession } from "@/lib/auth";
+import { BankAccountsSection, type BankAccountView } from "@/components/bank-accounts-section";
 import { SupplierForm } from "@/components/supplier-form";
 import { SupplierLifecycleActions } from "@/components/supplier-lifecycle-actions";
 
@@ -71,6 +72,8 @@ export default async function SupplierDetailPage({ params }: Props) {
   if (!res.ok) redirect("/suppliers");
   const supplier = (await res.json()) as SupplierRecord;
 
+  const bankAccountsRes = await gateway.listBankAccounts(token, "suppliers", id);
+  const bankAccounts = bankAccountsRes.ok ? ((await bankAccountsRes.json()) as BankAccountView[]) : [];
   const payablesRes = await gateway.supplierPayables(token, id);
   const payables = payablesRes.ok
     ? ((await payablesRes.json()) as SupplierPayablesReport)
@@ -117,6 +120,8 @@ export default async function SupplierDetailPage({ params }: Props) {
         <div><span className="text-xs text-[var(--color-muted-fg)]">Điều khoản thanh toán</span><p>{supplier.paymentTerms ?? (supplier.paymentTermsDays > 0 ? `Net ${supplier.paymentTermsDays}` : "—")}</p></div>
         {supplier.notes && <div className="sm:col-span-2"><span className="text-xs text-[var(--color-muted-fg)]">Ghi chú</span><p>{supplier.notes}</p></div>}
       </section>
+
+      <BankAccountsSection owner="suppliers" ownerId={supplier.id} ownerName={supplier.name} accounts={bankAccounts} canManage={isAdmin} />
 
       <section className="rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
         <h2 className="mb-3 font-serif text-xl">Công nợ phải trả mở (AP)</h2>

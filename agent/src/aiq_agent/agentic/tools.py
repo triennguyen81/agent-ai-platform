@@ -6,7 +6,9 @@ and return Claude Agent SDK `@tool`-decorated functions that close over it.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -15,12 +17,80 @@ from claude_agent_sdk import tool
 from aiq_agent.agentic.accounting_tools import build_accounting_tools
 from aiq_agent.agentic.contract_tools import build_contract_tools
 from aiq_agent.agentic.voucher_tools import build_voucher_tools
+from aiq_agent.security.ssrf import OutboundUrlError, safe_get
 
 logger = logging.getLogger(__name__)
 
-# Defensive caps so a misbehaving model can't ingest gigabytes.
-_FETCH_MAX_BYTES = 256 * 1024  # 256 KB
-_FETCH_TIMEOUT_S = 15.0
+# Defensive caps so a misbehaving model can't ingest gigabytes. An oversized
+# page is now rejected (response_too_large) rather than silently truncated,
+# so the cap is 1 MB to keep ordinary HTML pages fetchable.
+_FETCH_MAX_BYTES = 1024 * 1024  # 1 MB
+_FETCH_TIMEOUT_S = 15.0  # overall deadline: DNS + every redirect hop + body
+_FETCH_MAX_REDIRECTS = 3
+_FETCH_ALLOWED_PORTS = frozenset({80, 443})
+_FETCH_TEXT_TYPES = frozenset(
+    {
+        "application/xhtml+xml",
+        "application/xml",
+        "application/json",
+        "application/ld+json",
+        "application/rss+xml",
+        "application/atom+xml",
+    }
+)
+
+
+def _is_text_content_type(content_type: str) -> bool:
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    return not media_type or media_type.startswith("text/") or media_type in _FETCH_TEXT_TYPES
+
+
+def _fetch_error(code: str, message: str) -> dict[str, Any]:
+    payload = {"ok": False, "error": code, "message": message}
+    return {"content": [{"type": "text", "text": json.dumps(payload)}], "is_error": True}
+
+
+async def fetch_public_url(url: str) -> dict[str, Any]:
+    """Body of the `fetch_url` tool. Every request — and every redirect hop —
+    goes through the shared SSRF boundary (aiq_agent.security.ssrf); no user
+    JWT, gateway token or cookie is ever sent."""
+    url = url.strip()
+    try:
+        fetched = await safe_get(
+            url,
+            timeout=_FETCH_TIMEOUT_S,
+            max_bytes=_FETCH_MAX_BYTES,
+            max_redirects=_FETCH_MAX_REDIRECTS,
+            allowed_ports=_FETCH_ALLOWED_PORTS,
+            accept_content_type=_is_text_content_type,
+            headers={"User-Agent": "AIQ-Agent/0.1 (+url-ingest)"},
+        )
+    except OutboundUrlError as exc:
+        logger.warning(
+            "fetch_url rejected code=%s url=%r detail=%s", exc.code, url[:500], exc.detail
+        )
+        return _fetch_error(exc.code, exc.message)
+
+    if fetched.status_code >= 400:
+        return _fetch_error(
+            "http_error", f"HTTP {fetched.status_code} fetching {fetched.final_url}"
+        )
+
+    raw = fetched.content.decode("utf-8", errors="replace")
+    # Cheap HTML strip — the model handles the rest. Nothing is executed.
+    text = re.sub(r"<script[\s\S]*?</script>", " ", raw, flags=re.IGNORECASE)
+    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": f"URL: {fetched.final_url}\nLength: {len(text)} chars\n\n{text[:20000]}",
+            }
+        ]
+    }
 
 
 def build_tools(*, token: str, gateway_base: str) -> list[Any]:
@@ -155,66 +225,12 @@ def build_tools(*, token: str, gateway_base: str) -> list[Any]:
 
     @tool(
         "fetch_url",
-        "Fetch a public URL and return its text content (HTML stripped). "
-        f"Max {_FETCH_MAX_BYTES // 1024} KB.",
+        "Fetch a public http(s) web page (ports 80/443 only) and return its text "
+        f"content (HTML stripped). Text content types only. Max {_FETCH_MAX_BYTES // 1024} KB.",
         {"url": str},
     )
     async def fetch_url(args: dict[str, Any]) -> dict[str, Any]:
-        url = str(args.get("url", "")).strip()
-        if not url.startswith(("http://", "https://")):
-            return {
-                "content": [
-                    {"type": "text", "text": "url must start with http:// or https://"}
-                ]
-            }
-        try:
-            async with httpx.AsyncClient(
-                timeout=_FETCH_TIMEOUT_S,
-                follow_redirects=True,
-                headers={"User-Agent": "AIQ-Agent/0.1 (+url-ingest)"},
-            ) as client:
-                async with client.stream("GET", url) as response:
-                    if response.status_code >= 400:
-                        return {
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": f"HTTP {response.status_code} fetching {url}",
-                                }
-                            ]
-                        }
-                    chunks: list[bytes] = []
-                    received = 0
-                    async for chunk in response.aiter_bytes():
-                        received += len(chunk)
-                        if received > _FETCH_MAX_BYTES:
-                            chunks.append(chunk[: _FETCH_MAX_BYTES - (received - len(chunk))])
-                            break
-                        chunks.append(chunk)
-                    raw = b"".join(chunks).decode("utf-8", errors="replace")
-        except httpx.HTTPError as exc:
-            return {
-                "content": [
-                    {"type": "text", "text": f"Fetch error: {exc.__class__.__name__}: {exc}"}
-                ]
-            }
-
-        # Cheap HTML strip — the model handles the rest.
-        import re
-
-        text = re.sub(r"<script[\s\S]*?</script>", " ", raw, flags=re.IGNORECASE)
-        text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = re.sub(r"\s+", " ", text).strip()
-
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": f"URL: {url}\nLength: {len(text)} chars\n\n{text[:20000]}",
-                }
-            ]
-        }
+        return await fetch_public_url(str(args.get("url", "")))
 
     accounting_tools = build_accounting_tools(token=token, gateway_base=gateway_base)
     contract_tools = build_contract_tools(token=token, gateway_base=gateway_base)

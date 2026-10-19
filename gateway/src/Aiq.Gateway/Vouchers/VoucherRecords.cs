@@ -38,6 +38,10 @@ public sealed class VoucherRecord
     public string? TaxVerificationStatus { get; init; }
     public string? TaxVerificationReason { get; init; }
     public DateTime? TaxVerificationCheckedAt { get; init; }
+    // Migration 057 — the ADMIN who attested it and the fingerprint of the
+    // invoice identities it covers (a later edit of those fields invalidates it).
+    public Guid? TaxVerifiedBy { get; init; }
+    public string? TaxVerificationFingerprint { get; init; }
     // R06 — optional, explicitly-set link to the contract/installment this
     // invoice or receipt fulfills. Never auto-inferred (that's the existing
     // tax-code heuristic in ReceiptMatchRepository) — this is a real,
@@ -92,6 +96,8 @@ public sealed class VoucherJournalRecord
     public DateTime? RejectedAt { get; init; }
     public string? RejectReason { get; init; }
     public DateTime CreatedAt { get; init; }
+    /// <summary>suggestion (AI/manual, advisory) | posting | reversal (authoritative).</summary>
+    public string Source { get; init; } = "suggestion";
 }
 
 public sealed record VoucherDetail(

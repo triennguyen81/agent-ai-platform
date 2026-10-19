@@ -12,9 +12,9 @@ namespace Aiq.Gateway.Receipts;
 // AR data (sim_ar_ledger/sim_customers) and reads contract_parties/
 // contract_payment_schedules directly (read-only join, no new Contract
 // concept). The Agent never posts here — ProposeMatchAsync only ever writes
-// this table; settling the receivable/installment happens exclusively via
-// ConfirmMatchAsync, which VoucherEndpoints.ApplyReceiptAsync (ADMIN-only)
-// calls after its own existing, already-idempotent ledger posting.
+// this table. It is an advisory classification: the receivable and the
+// contract installment are settled by the canonical cash settlement
+// (Payments/ + Contracts/ContractScheduleRecompute), never by this table.
 // ============================================================================
 
 public sealed record ReceiptMatchResult(
@@ -42,17 +42,15 @@ public interface IReceiptMatchRepository
     // Deterministic outcome classification + persistence. Idempotent by
     // voucher_id — re-proposing (e.g. a manual "Trích xuất lại") upserts the
     // same row rather than creating a duplicate. Never touches sim_ar_ledger,
-    // sim_customers.current_ar, or contract_payment_schedules.status — those
-    // only change on ConfirmMatchAsync.
+    // sim_customers.current_ar, or contract_payment_schedules.status.
     Task<ReceiptMatchResult> ProposeMatchAsync(
         Guid tenantId, Guid departmentId, Guid voucherId,
         string? payerMst, decimal receiptAmount, string currency, CancellationToken ct);
 
     Task<ReceiptMatchResult?> GetByVoucherIdAsync(Guid tenantId, Guid departmentId, Guid voucherId, CancellationToken ct);
 
-    // ADMIN-only action (enforced by the caller). Idempotent: if already
-    // confirmed, returns the existing row unchanged rather than re-applying
-    // the installment status transition a second time.
+    // ADMIN-only action (enforced by the caller). Marks the classification
+    // reviewed; idempotent. Changes no accounting or contract state.
     Task<ReceiptMatchResult?> ConfirmMatchAsync(Guid tenantId, Guid departmentId, Guid voucherId, Guid reviewerId, CancellationToken ct);
 
     // ADMIN-only action. Only valid while still 'proposed' — nothing to
@@ -325,62 +323,11 @@ public sealed class ReceiptMatchRepository : IReceiptMatchRepository
             return existing; // idempotent — already confirmed, no-op
         }
 
-        // Settle the matched installment (if any). Amount-independent PAID
-        // vs PARTIAL: PAID only for FULL_MATCH/OVERPAYMENT (the installment
-        // itself is fully covered); PARTIAL_PAYMENT/ADVANCE_PAYMENT leave it
-        // PARTIAL since the installment isn't necessarily fully covered.
-        if (existing.InstallmentId is { } instId)
-        {
-            var newStatus = existing.Outcome is "FULL_MATCH" or "OVERPAYMENT" ? "paid" : "partial";
-            await conn.ExecuteAsync(new CommandDefinition(
-                "UPDATE contract_payment_schedules SET status=@newStatus WHERE id=@instId AND tenant_id=@tenantId AND department_id=@departmentId AND status <> 'paid'",
-                new { newStatus, instId, tenantId, departmentId }, tx, cancellationToken: ct));
-
-            // C1/C2 audit fix — recompute contract progress and activate the
-            // next milestone, if any, now that this installment settled.
-            if (existing.ContractId is { } cId)
-            {
-                // Pure recompute (SUM of paid installments' percentage
-                // share), never an increment — idempotent under retry, and a
-                // 'partial' installment (money arrived but not in full)
-                // contributes nothing, so it can never mark full progress.
-                await conn.ExecuteAsync(new CommandDefinition("""
-                    UPDATE contracts SET progress_percent = COALESCE((
-                        SELECT SUM(percentage) FROM contract_payment_schedules
-                        WHERE contract_id=@cId AND tenant_id=@tenantId AND department_id=@departmentId AND status='paid'
-                    ), 0)
-                    WHERE id=@cId AND tenant_id=@tenantId AND department_id=@departmentId
-                    """, new { cId, tenantId, departmentId }, tx, cancellationToken: ct));
-
-                if (newStatus == "paid")
-                {
-                    // Ordinal-based sequencing is the one unambiguous
-                    // correspondence the schema actually supports between an
-                    // installment and a milestone (per the business process
-                    // document's own example: paying đợt 1 activates M2).
-                    // Only ever touches a milestone that is still 'pending',
-                    // trigger_event-based, and has no fixed due_date yet —
-                    // never overwrites a milestone with a real fixed date,
-                    // and never re-fires once already 'active' (idempotent).
-                    var instOrdinal = await conn.QuerySingleOrDefaultAsync<int?>(new CommandDefinition(
-                        "SELECT ordinal FROM contract_payment_schedules WHERE id=@instId", new { instId }, tx, cancellationToken: ct));
-                    if (instOrdinal is { } ord)
-                    {
-                        await conn.ExecuteAsync(new CommandDefinition("""
-                            UPDATE contract_milestones SET
-                                status = 'active',
-                                expected_date = CASE
-                                    WHEN duration_months IS NOT NULL
-                                    THEN (CURRENT_DATE + (duration_months::text || ' months')::interval)::date
-                                    ELSE expected_date
-                                END
-                            WHERE contract_id=@cId AND tenant_id=@tenantId AND department_id=@departmentId
-                              AND ordinal=@nextOrdinal AND status='pending' AND trigger_event IS NOT NULL AND due_date IS NULL
-                            """, new { cId, tenantId, departmentId, nextOrdinal = ord + 1 }, tx, cancellationToken: ct));
-                    }
-                }
-            }
-        }
+        // Contract installment state is NOT changed here. This row's
+        // installment_id is a tax-code heuristic (customer MST -> earliest open
+        // installment) and stays a suggestion only. The authoritative update is
+        // ContractScheduleRecompute, driven by the canonical cash settlement:
+        // payment_application -> invoice -> its explicit contract_payment_schedule_id.
 
         var updated = await conn.QuerySingleAsync<ReceiptMatchResult>(new CommandDefinition($"""
             UPDATE receipt_match_results SET

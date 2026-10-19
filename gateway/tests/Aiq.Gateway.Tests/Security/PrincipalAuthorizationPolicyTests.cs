@@ -50,6 +50,24 @@ public sealed class PrincipalAuthorizationPolicyTests
     }
 
     [Fact]
+    public void ApplyInvoice_OnlyDepartmentAdminPassesTheGateEndpointsRequire()
+    {
+        // POST /vouchers/{id}/apply-invoice and .../apply-expense (the
+        // "Duyệt & ghi nhận" invoice-approval endpoints that create AR/AP)
+        // both require this exact "department_admin" policy — ADMIN has
+        // full operational authority inside its own department (can
+        // approve), USER cannot, and TENANT_OWNER (departmentless — never
+        // gets implicit production execution/operational rights inside a
+        // department it doesn't belong to) cannot either.
+        var admin = Principal("admin", TenantId, DepartmentId, true, true);
+        var user = Principal("user", TenantId, DepartmentId, true, true);
+        var owner = Principal("tenant_owner", TenantId, null, true, null);
+        Assert.True(PrincipalAuthorizationPolicy.IsDepartmentAdmin(admin));
+        Assert.False(PrincipalAuthorizationPolicy.IsDepartmentAdmin(user));
+        Assert.False(PrincipalAuthorizationPolicy.IsDepartmentAdmin(owner));
+    }
+
+    [Fact]
     public void CompanyProfile_OnlyTenantOwnerPassesTheGateEndpointsRequire()
     {
         // GET/PUT /tenant/business-profile ("Hồ sơ doanh nghiệp") requires

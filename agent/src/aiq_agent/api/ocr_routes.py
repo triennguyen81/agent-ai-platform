@@ -5,7 +5,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 
+from aiq_agent.llm.base import LlmUsage
 from aiq_agent.ocr import OcrPipeline, PipelineResult, PipelineStage
+from aiq_agent.ocr.concurrency import OcrBusyError, OcrTimeoutError
 
 router = APIRouter(prefix="/ocr", tags=["ocr"])
 
@@ -17,6 +19,36 @@ class PageReport(BaseModel):
     confidence: float
     similarity: float | None = None
     notes: str | None = None
+    # "ocr" or "text_layer" (the PDF's own embedded text, used verbatim).
+    source: str = "ocr"
+
+
+class LlmUsageReport(BaseModel):
+    """Numbers only — never prompt or document content."""
+
+    llm_call_count: int
+    input_tokens: int
+    output_tokens: int
+    cache_creation_input_tokens: int
+    cache_read_input_tokens: int
+    cost_usd: float | None = None
+    provider: str | None = None
+    model: str | None = None
+
+    @classmethod
+    def from_usage(cls, usage: LlmUsage | None, *, provider: str | None, model: str | None) -> LlmUsageReport | None:
+        if usage is None:
+            return None
+        return cls(
+            llm_call_count=usage.llm_call_count,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_creation_input_tokens=usage.cache_creation_input_tokens,
+            cache_read_input_tokens=usage.cache_read_input_tokens,
+            cost_usd=usage.cost_usd,
+            provider=provider,
+            model=model,
+        )
 
 
 class PipelineResponse(BaseModel):
@@ -25,6 +57,9 @@ class PipelineResponse(BaseModel):
     stage_durations_ms: dict[str, int]
     pages: list[PageReport]
     joined_text: str
+    # OCR-correction LLM usage, for the Gateway to record against the
+    # uploading tenant (the Agent has no tenant context on this route).
+    llm_usage: LlmUsageReport | None = None
 
 
 def _pipeline(request: Request) -> OcrPipeline:
@@ -37,7 +72,18 @@ def _pipeline(request: Request) -> OcrPipeline:
     return pipeline
 
 
-def _to_response(result: PipelineResult) -> PipelineResponse:
+def _capacity_error(exc: OcrBusyError | OcrTimeoutError) -> HTTPException:
+    headers = {"Retry-After": "10"} if isinstance(exc, OcrBusyError) else None
+    return HTTPException(status_code=exc.status_code, detail=str(exc), headers=headers)
+
+
+def _corrector_model(request: Request) -> tuple[str | None, str | None]:
+    llm = getattr(request.app.state, "llm", None)
+    return getattr(llm, "provider", None), getattr(llm, "model", None)
+
+
+def _to_response(result: PipelineResult, request: Request | None = None) -> PipelineResponse:
+    provider, model = _corrector_model(request) if request is not None else (None, None)
     validation_by_page = {v.page_number: v for v in result.validation}
     pages: list[PageReport] = []
     for page, corrected in zip(result.pages, result.corrected_text_by_page, strict=False):
@@ -50,6 +96,7 @@ def _to_response(result: PipelineResult) -> PipelineResponse:
                 confidence=page.confidence,
                 similarity=report.similarity if report else None,
                 notes=report.notes if report else None,
+                source=page.source,
             )
         )
 
@@ -61,6 +108,7 @@ def _to_response(result: PipelineResult) -> PipelineResponse:
         },
         pages=pages,
         joined_text=result.joined_text(),
+        llm_usage=LlmUsageReport.from_usage(result.llm_usage, provider=provider, model=model),
     )
 
 
@@ -69,6 +117,7 @@ _IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".
 
 @router.post("/pdf", response_model=PipelineResponse)
 async def run_pdf(
+    request: Request,
     file: UploadFile = File(...),
     pipeline: OcrPipeline = Depends(_pipeline),
 ) -> PipelineResponse:
@@ -87,17 +136,20 @@ async def run_pdf(
 
     try:
         result = await pipeline.run_pdf(content)
+    except (OcrBusyError, OcrTimeoutError) as exc:
+        raise _capacity_error(exc) from exc
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
 
-    return _to_response(result)
+    return _to_response(result, request)
 
 
 @router.post("/image", response_model=PipelineResponse)
 async def run_image(
+    request: Request,
     file: UploadFile = File(...),
     pipeline: OcrPipeline = Depends(_pipeline),
 ) -> PipelineResponse:
@@ -126,6 +178,8 @@ async def run_image(
 
     try:
         png_bytes = await normalize_image_to_png_async(content)
+    except (OcrBusyError, OcrTimeoutError) as exc:
+        raise _capacity_error(exc) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -139,13 +193,15 @@ async def run_image(
 
     try:
         result = await pipeline.run_pages([png_bytes])
+    except (OcrBusyError, OcrTimeoutError) as exc:
+        raise _capacity_error(exc) from exc
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
 
-    return _to_response(result)
+    return _to_response(result, request)
 
 
-__all__ = ["router", "PipelineResponse", "PageReport", "PipelineStage"]
+__all__ = ["router", "LlmUsageReport", "PipelineResponse", "PageReport", "PipelineStage"]

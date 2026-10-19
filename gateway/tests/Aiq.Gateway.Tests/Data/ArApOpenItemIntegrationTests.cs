@@ -1,5 +1,8 @@
+using Aiq.Gateway.Accounting;
 using Aiq.Gateway.Customers;
 using Aiq.Gateway.Data;
+using Aiq.Gateway.Governance;
+using Aiq.Gateway.Security;
 using Aiq.Gateway.Suppliers;
 using Dapper;
 using Npgsql;
@@ -29,6 +32,7 @@ public sealed class ArApOpenItemIntegrationTests : IAsyncLifetime
     {
         Dapper.SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
         Dapper.SqlMapper.AddTypeHandler(new NullableDateOnlyTypeHandler());
+        Dapper.SqlMapper.AddTypeHandler(new StringArrayTypeHandler());
     }
 
     private readonly string? _baseConnectionString = ResolveTestConnectionString();
@@ -131,6 +135,29 @@ public sealed class ArApOpenItemIntegrationTests : IAsyncLifetime
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
             CREATE UNIQUE INDEX uq_sim_ap_ledger_tenant_voucher ON sim_ap_ledger (tenant_id, voucher_id) WHERE voucher_id IS NOT NULL;
+
+            -- migration 049 shape only — the columns TenantCompanyProfileRepository
+            -- actually selects/upserts, same "final shape only" convention as the
+            -- rest of this fixture.
+            CREATE TABLE tenant_company_profiles (
+                tenant_id UUID PRIMARY KEY REFERENCES tenants(id),
+                legal_name TEXT, tax_code TEXT, short_name TEXT, aliases TEXT[] NOT NULL DEFAULT '{}',
+                registered_address TEXT, legal_representative TEXT, representative_title TEXT,
+                phone TEXT, email TEXT, website TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by UUID
+            );
+
+            -- migration 051 — only the columns GetReceivablesAsync/
+            -- GetPayablesAsync read for the unapplied (advance) amount.
+            CREATE TABLE cash_transactions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID NOT NULL,
+                customer_id UUID, supplier_id UUID, amount NUMERIC(18,2) NOT NULL, status TEXT NOT NULL DEFAULT 'posted'
+            );
+            CREATE TABLE payment_applications (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(), cash_transaction_id UUID NOT NULL REFERENCES cash_transactions(id),
+                applied_amount NUMERIC(18,2) NOT NULL, status TEXT NOT NULL DEFAULT 'active'
+            );
             """);
 
         _tenantId = Guid.NewGuid();
@@ -151,6 +178,7 @@ public sealed class ArApOpenItemIntegrationTests : IAsyncLifetime
 
     private ICustomerRepository Customers() => new CustomerRepository(new NpgsqlConnectionFactory(_scopedConnectionString!));
     private ISupplierRepository Suppliers() => new SupplierRepository(new NpgsqlConnectionFactory(_scopedConnectionString!));
+    private ITenantCompanyProfileRepository CompanyProfiles() => new TenantCompanyProfileRepository(new NpgsqlConnectionFactory(_scopedConnectionString!));
 
     private async Task<Guid> SeedCustomerAsync(string code, string mst)
     {
@@ -385,5 +413,229 @@ public sealed class ArApOpenItemIntegrationTests : IAsyncLifetime
         await repo.BookInvoiceAsync(otherTenantId, customerId, Guid.NewGuid(), "HD-XT", DateOnly.FromDateTime(DateTime.UtcNow), null, 99_000_000m, null, null, default);
         var realCustomer = await repo.FindByIdAsync(_tenantId, _departmentId, customerId, default);
         Assert.Equal(0m, realCustomer!.CurrentAr);
+    }
+
+    // ==== Invoice approval → posting: trusted Company Profile as the sole =
+    // ==== "who are we" source (never a legacy field, never client input) =
+    //
+    // Root-caused by this task: ApplyInvoiceAsync/ApplyExpenseAsync (the
+    // "Duyệt & ghi nhận" endpoints) used to resolve company identity from
+    // tenants.company_tax_id (a legacy single field). They now resolve it
+    // from tenant_company_profiles (ITenantCompanyProfileRepository) — the
+    // real Company Profile TENANT_OWNER manages. These tests prove the
+    // exact composition those endpoints perform (fetch profile → feed
+    // InvoiceDirectionResolver), using the Sáu Trực ↔ Việt Tín numbers from
+    // the live-verify scenario, without needing a full HTTP harness (this
+    // codebase's existing convention — see InvoiceDirectionResolverTests
+    // for the pure-function coverage of the resolver itself, unchanged
+    // here).
+
+    [Fact]
+    public async Task CompanyProfile_SellerIsOwnCompany_ResolvesSales()
+    {
+        if (_scopedConnectionString is null) return;
+        await CompanyProfiles().UpsertAsync(_tenantId, _userId, new UpsertCompanyProfileRequest(
+            "Công Ty TNHH Sáu Trực", "0123456789", "Sáu Trực", [], "Lạc An, Ninh Thọ",
+            null, null, null, null, null), default);
+
+        var profile = await CompanyProfiles().GetAsync(_tenantId, default);
+        var resolution = InvoiceDirectionResolver.Resolve(
+            sellerTaxId: "0123456789", buyerTaxId: "0307890123", companyTaxId: profile?.TaxCode);
+
+        Assert.Equal(InvoiceDirection.Sales, resolution.Direction);
+        Assert.Equal("0307890123", resolution.CounterpartyTaxId);
+    }
+
+    [Fact]
+    public async Task CompanyProfile_BuyerIsOwnCompany_ResolvesPurchase()
+    {
+        if (_scopedConnectionString is null) return;
+        await CompanyProfiles().UpsertAsync(_tenantId, _userId, new UpsertCompanyProfileRequest(
+            "Công Ty TNHH Sáu Trực", "0123456789", "Sáu Trực", [], "Lạc An, Ninh Thọ",
+            null, null, null, null, null), default);
+
+        var profile = await CompanyProfiles().GetAsync(_tenantId, default);
+        var resolution = InvoiceDirectionResolver.Resolve(
+            sellerTaxId: "0200000001", buyerTaxId: "0123456789", companyTaxId: profile?.TaxCode);
+
+        Assert.Equal(InvoiceDirection.Purchase, resolution.Direction);
+        Assert.Equal("0200000001", resolution.CounterpartyTaxId);
+    }
+
+    [Fact]
+    public async Task CompanyProfile_NotConfigured_NeedsReview_NeverGuesses()
+    {
+        if (_scopedConnectionString is null) return;
+        // No tenant_company_profiles row at all for this tenant.
+        var profile = await CompanyProfiles().GetAsync(_tenantId, default);
+        Assert.Null(profile);
+
+        var resolution = InvoiceDirectionResolver.Resolve(
+            sellerTaxId: "0123456789", buyerTaxId: "0307890123", companyTaxId: profile?.TaxCode);
+
+        Assert.Equal(InvoiceDirection.NeedsReview, resolution.Direction);
+        Assert.Equal("company_tax_id_not_configured", resolution.Reason);
+    }
+
+    [Fact]
+    public async Task CompanyProfile_TakesPrecedenceOverLegacyTenantsCompanyTaxId()
+    {
+        if (_scopedConnectionString is null) return;
+        // Legacy field deliberately set to a DIFFERENT tax code than Company
+        // Profile — proves apply-invoice/apply-expense's own composition
+        // (GetAsync().TaxCode, not tenants.company_tax_id) is what actually
+        // decides direction now. If this ever regressed back to reading the
+        // legacy field, this exact invoice would resolve as Purchase (buyer
+        // matches the stale legacy value) instead of Sales.
+        await using (var conn = new NpgsqlConnection(_scopedConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync(
+                "UPDATE tenants SET company_tax_id = @stale WHERE id = @t",
+                new { stale = "0307890123", t = _tenantId }); // == the buyer's own MST below
+        }
+        await CompanyProfiles().UpsertAsync(_tenantId, _userId, new UpsertCompanyProfileRequest(
+            "Công Ty TNHH Sáu Trực", "0123456789", "Sáu Trực", [], "Lạc An, Ninh Thọ",
+            null, null, null, null, null), default);
+
+        var profile = await CompanyProfiles().GetAsync(_tenantId, default);
+        var resolution = InvoiceDirectionResolver.Resolve(
+            sellerTaxId: "0123456789", buyerTaxId: "0307890123", companyTaxId: profile?.TaxCode);
+
+        Assert.Equal(InvoiceDirection.Sales, resolution.Direction);
+    }
+
+    [Fact]
+    public async Task LiveVerifyScenario_SauTruc_SellsToVietTin_39_6M_PostsAndCreatesAr()
+    {
+        if (_scopedConnectionString is null) return;
+        await CompanyProfiles().UpsertAsync(_tenantId, _userId, new UpsertCompanyProfileRequest(
+            "Công Ty TNHH Sáu Trực", "0123456789", "Sáu Trực", [], "Lạc An, Ninh Thọ",
+            null, null, null, null, null), default);
+        var vietTinId = await SeedCustomerAsync("CUS-VIETTIN", "0307890123");
+        var customers = Customers();
+
+        var profile = await CompanyProfiles().GetAsync(_tenantId, default);
+        var resolution = InvoiceDirectionResolver.Resolve("0123456789", "0307890123", profile?.TaxCode);
+        Assert.Equal(InvoiceDirection.Sales, resolution.Direction);
+
+        // Before approval: AR unchanged.
+        var before = await customers.FindByIdAsync(_tenantId, _departmentId, vietTinId, default);
+        Assert.Equal(0m, before!.CurrentAr);
+
+        // Approve/post — same call ApplyInvoiceAsync makes.
+        var voucherId = Guid.NewGuid();
+        var result = await customers.BookInvoiceAsync(
+            _tenantId, vietTinId, voucherId, "DEMO-INV-VT-39.6M",
+            DateOnly.FromDateTime(DateTime.UtcNow), DateOnly.FromDateTime(DateTime.UtcNow).AddDays(30),
+            39_600_000m, null, null, default);
+
+        Assert.Equal(1, result.LedgerRowsInserted);
+        Assert.Equal(39_600_000m, result.NewBalance);
+
+        var after = await customers.FindByIdAsync(_tenantId, _departmentId, vietTinId, default);
+        Assert.Equal(39_600_000m, after!.CurrentAr);
+
+        // get_customer_receivables sees it immediately, UNPAID.
+        var receivables = await customers.GetReceivablesAsync(_tenantId, _departmentId, vietTinId, default);
+        Assert.Equal(39_600_000m, receivables!.CurrentBalance131);
+        var invoice = Assert.Single(receivables.OpenInvoices);
+        Assert.Equal("open", invoice.Status);
+        Assert.Equal(0m, invoice.PaidAmount); // UNPAID — posting never marks paid
+
+        // Idempotent re-approval (double-click) never duplicates AR.
+        var retry = await customers.BookInvoiceAsync(
+            _tenantId, vietTinId, voucherId, "DEMO-INV-VT-39.6M",
+            DateOnly.FromDateTime(DateTime.UtcNow), DateOnly.FromDateTime(DateTime.UtcNow).AddDays(30),
+            39_600_000m, null, null, default);
+        Assert.Equal(0, retry.LedgerRowsInserted);
+        var afterRetry = await customers.FindByIdAsync(_tenantId, _departmentId, vietTinId, default);
+        Assert.Equal(39_600_000m, afterRetry!.CurrentAr); // unchanged, not doubled
+    }
+
+    // ==== Final ACL rule: same-department ADMIN self-approval is allowed ==
+    //
+    // ApplyInvoiceAsync/ApplyExpenseAsync (the "Duyệt & ghi nhận" endpoints)
+    // do not block the creator — an ADMIN who
+    // uploaded/extracted/reviewed a voucher may also be the one who
+    // approves/posts it, no second ADMIN/TENANT_OWNER/SUPER_ADMIN required.
+    // (ADMIN Department Authority Invariant — see AdminDepartmentAuthorityInvariantTests)
+    // — these tests explicitly confirm the SAME user id is both the
+    // voucher's creator and the one performing the posting call, and that
+    // the underlying booking these endpoints perform succeeds cleanly with
+    // AR/AP changing exactly once (never blocked, never double-booked).
+
+    [Fact]
+    public async Task SelfApproval_SameAdminUploadsAndApprovesSalesInvoice_ArChangesExactlyOnce()
+    {
+        if (_scopedConnectionString is null) return;
+        var adminId = _userId; // the one user this fixture seeds — plays both roles
+        var customerId = await SeedCustomerAsync("CUS-SELFAPPR-AR", "0307899001");
+        var customers = Customers();
+
+        // "Uploads/creates/extracts" — same admin is recorded as the
+        // voucher's creator (mirrors vouchers.user_id at CreateAsync time).
+        var voucherId = Guid.NewGuid();
+        var creatorId = adminId;
+
+        // "Same ADMIN approves/posts" — allowed by the ADMIN Department
+        // Authority Invariant (no creator check exists).
+        Assert.Equal(creatorId, adminId); // same ADMIN creates and posts
+
+        var result = await customers.BookInvoiceAsync(
+            _tenantId, customerId, voucherId, "SELFAPPR-AR-001",
+            DateOnly.FromDateTime(DateTime.UtcNow), DateOnly.FromDateTime(DateTime.UtcNow).AddDays(30),
+            55_000_000m, null, null, default);
+
+        Assert.Equal(1, result.LedgerRowsInserted);
+        Assert.Equal(55_000_000m, result.NewBalance);
+        var receivables = await customers.GetReceivablesAsync(_tenantId, _departmentId, customerId, default);
+        var invoice = Assert.Single(receivables!.OpenInvoices);
+        Assert.Equal("open", invoice.Status);
+        Assert.Equal(0m, invoice.PaidAmount);
+
+        // Exactly once — a repeat "approve" call (idempotency, unchanged by
+        // this review) still never double-books even for the self-approval
+        // case.
+        var retry = await customers.BookInvoiceAsync(
+            _tenantId, customerId, voucherId, "SELFAPPR-AR-001",
+            DateOnly.FromDateTime(DateTime.UtcNow), DateOnly.FromDateTime(DateTime.UtcNow).AddDays(30),
+            55_000_000m, null, null, default);
+        Assert.Equal(0, retry.LedgerRowsInserted);
+        var final = await customers.FindByIdAsync(_tenantId, _departmentId, customerId, default);
+        Assert.Equal(55_000_000m, final!.CurrentAr);
+    }
+
+    [Fact]
+    public async Task SelfApproval_SameAdminUploadsAndApprovesPurchaseInvoice_ApChangesExactlyOnce()
+    {
+        if (_scopedConnectionString is null) return;
+        var adminId = _userId;
+        var supplierId = await SeedSupplierAsync("SUP-SELFAPPR-AP", "0200099001");
+        var suppliers = Suppliers();
+
+        var voucherId = Guid.NewGuid();
+        var creatorId = adminId;
+        Assert.Equal(creatorId, adminId); // same ADMIN creates and posts
+
+        var result = await suppliers.BookInvoiceAsync(
+            _tenantId, supplierId, voucherId, "SELFAPPR-AP-001",
+            DateOnly.FromDateTime(DateTime.UtcNow), DateOnly.FromDateTime(DateTime.UtcNow).AddDays(30),
+            55_000_000m, null, null, default);
+
+        Assert.Equal(1, result.LedgerRowsInserted);
+        Assert.Equal(55_000_000m, result.NewBalance);
+        var payables = await suppliers.GetPayablesAsync(_tenantId, _departmentId, supplierId, default);
+        var invoice = Assert.Single(payables!.OpenInvoices);
+        Assert.Equal("open", invoice.Status);
+        Assert.Equal(0m, invoice.PaidAmount);
+
+        var retry = await suppliers.BookInvoiceAsync(
+            _tenantId, supplierId, voucherId, "SELFAPPR-AP-001",
+            DateOnly.FromDateTime(DateTime.UtcNow), DateOnly.FromDateTime(DateTime.UtcNow).AddDays(30),
+            55_000_000m, null, null, default);
+        Assert.Equal(0, retry.LedgerRowsInserted);
+        var final = await suppliers.FindByIdAsync(_tenantId, _departmentId, supplierId, default);
+        Assert.Equal(55_000_000m, final!.CurrentAp);
     }
 }

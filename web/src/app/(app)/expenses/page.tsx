@@ -96,6 +96,9 @@ export default async function ExpensesPage() {
           </Link>
           .
         </p>
+        <Link href="/expenses/claims/new" className="inline-block rounded border px-3 py-1 text-sm" data-testid="new-expense-claim">
+          + Đề nghị hoàn ứng công tác (nhiều chứng từ)
+        </Link>
       </header>
 
       <section className="grid gap-3 md:grid-cols-4">

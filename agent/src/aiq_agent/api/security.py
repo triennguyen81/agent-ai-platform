@@ -69,7 +69,9 @@ async def require_principal(request: Request) -> RuntimePrincipal:
     return principal
 
 
-async def require_agent_execution(principal: RuntimePrincipal, agent_id: str, *, test: bool = False) -> ExecutionManifest:
+async def require_agent_execution(
+    principal: RuntimePrincipal, agent_id: str, *, test: bool = False, version_id: str | None = None,
+) -> ExecutionManifest:
     settings = get_settings()
     try:
         return await fetch_execution_manifest(
@@ -77,6 +79,7 @@ async def require_agent_execution(principal: RuntimePrincipal, agent_id: str, *,
             token=principal.token,
             agent_id=agent_id,
             test=test,
+            version_id=version_id,
         )
     except ManifestLookupError as exc:
         raise HTTPException(status_code=403, detail="Agent execution is not allowed")

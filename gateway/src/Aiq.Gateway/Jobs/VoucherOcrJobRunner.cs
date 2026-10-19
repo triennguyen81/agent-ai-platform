@@ -17,23 +17,27 @@ public sealed class VoucherOcrJobRunner
     private readonly IObjectStorage _storage;
     private readonly S3Options _s3;
     private readonly ILogger<VoucherOcrJobRunner> _logger;
+    private readonly Aiq.Gateway.Governance.IAgentUsageRepository? _usage;
 
     public VoucherOcrJobRunner(
         IAgentClient agent,
         IVoucherRepository vouchers,
         IObjectStorage storage,
         IOptions<S3Options> s3Options,
-        ILogger<VoucherOcrJobRunner> logger)
+        ILogger<VoucherOcrJobRunner> logger,
+        Aiq.Gateway.Governance.IAgentUsageRepository? usage = null)
     {
         _agent = agent;
         _vouchers = vouchers;
         _storage = storage;
         _s3 = s3Options.Value;
         _logger = logger;
+        _usage = usage;
     }
 
     [JobDisplayName("Voucher OCR · {0}")]
-    [AutomaticRetry(Attempts = 2, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+    [AutomaticRetry(Attempts = 2, OnAttemptsExceeded = AttemptsExceededAction.Fail,
+        ExceptOn = new[] { typeof(VoucherOcrSupersededException) })]
     public async Task RunAsync(
         Guid voucherId,
         string s3Key,
@@ -47,13 +51,20 @@ public sealed class VoucherOcrJobRunner
             voucherId, s3Key, isImage);
 
         // Mark as processing so the UI shows the correct state during OCR.
-        await _vouchers.UpdateOcrResultAsync(
-            voucherId,
-            status: "processing",
-            rawText: null,
-            ocrConfidence: null,
-            errorMessage: null,
-            ct);
+        // A retry must not touch a voucher that has moved on meanwhile
+        // (paste-fallback text, extraction, posting) — AG-02.
+        if (!await _vouchers.TryUpdateOcrJobResultAsync(
+                voucherId,
+                status: "processing",
+                rawText: null,
+                ocrConfidence: null,
+                errorMessage: null,
+                ct))
+        {
+            _logger.LogInformation(
+                "Voucher OCR job skipped · id={VoucherId}: voucher is no longer waiting for OCR", voucherId);
+            throw new VoucherOcrSupersededException(voucherId);
+        }
 
         try
         {
@@ -67,25 +78,63 @@ public sealed class VoucherOcrJobRunner
                 bytes = buffer.ToArray();
             }
 
-            await using var ocrStream = new MemoryStream(bytes, writable: false);
-            var ocr = isImage
-                ? await _agent.RunOcrImageAsync(ocrStream, originalFilename, contentType, ct)
-                : await _agent.RunOcrPipelineAsync(ocrStream, originalFilename, ct);
+            string joined;
+            decimal confidence;
+            var lowerName = originalFilename.ToLowerInvariant();
+            if (lowerName.EndsWith(".csv") || contentType is "text/csv" or "text/plain")
+            {
+                // Structured bank export: the file IS the text (no OCR).
+                joined = System.Text.Encoding.UTF8.GetString(bytes).TrimStart('\uFEFF');
+                confidence = 1.0m;
+            }
+            else if (lowerName.EndsWith(".xlsx"))
+            {
+                joined = Aiq.Gateway.Banking.BankStatementParser.XlsxToText(bytes);
+                confidence = 1.0m;
+            }
+            else
+            {
+                await using var ocrStream = new MemoryStream(bytes, writable: false);
+                var ocr = isImage
+                    ? await _agent.RunOcrImageAsync(ocrStream, originalFilename, contentType, ct)
+                    : await _agent.RunOcrPipelineAsync(ocrStream, originalFilename, ct);
+                joined = ocr.JoinedText ?? string.Empty;
+                confidence = (decimal)ocr.AverageConfidence;
+                await RecordOcrUsageAsync(voucherId, ocr.LlmUsage, ct);
+            }
 
-            var joined = ocr.JoinedText ?? string.Empty;
-            var confidence = (decimal)ocr.AverageConfidence;
-
-            await _vouchers.UpdateOcrResultAsync(
-                voucherId,
-                status: "ocr_complete",
-                rawText: joined,
-                ocrConfidence: confidence,
-                errorMessage: null,
-                ct);
+            if (!await _vouchers.TryUpdateOcrJobResultAsync(
+                    voucherId,
+                    status: "ocr_complete",
+                    rawText: joined,
+                    ocrConfidence: confidence,
+                    errorMessage: null,
+                    ct))
+            {
+                _logger.LogInformation(
+                    "Voucher OCR result discarded · id={VoucherId}: voucher moved on during OCR", voucherId);
+                throw new VoucherOcrSupersededException(voucherId);
+            }
 
             _logger.LogInformation(
                 "Voucher OCR job done · id={VoucherId} textLen={Len} confidence={Conf:F2}",
                 voucherId, joined.Length, confidence);
+        }
+        catch (AgentRequestException ex) when (ex.UpstreamStatus is 429 or 504)
+        {
+            // Agent OCR at capacity / timed out (AG-02): transient. Record it
+            // and let the Hangfire retry policy try again with its back-off.
+            _logger.LogWarning(ex,
+                "Voucher OCR job deferred · id={VoucherId} upstream={Upstream}",
+                voucherId, ex.UpstreamStatus);
+            await _vouchers.TryUpdateOcrJobResultAsync(
+                voucherId,
+                status: "ocr_unavailable",
+                rawText: null,
+                ocrConfidence: null,
+                errorMessage: "OCR đang quá tải — hệ thống sẽ tự thử lại.",
+                ct);
+            throw;
         }
         catch (AgentRequestException ex)
         {
@@ -97,7 +146,7 @@ public sealed class VoucherOcrJobRunner
             _logger.LogWarning(ex,
                 "Voucher OCR job soft-failed · id={VoucherId} upstream={Upstream}",
                 voucherId, ex.UpstreamStatus);
-            await _vouchers.UpdateOcrResultAsync(
+            await _vouchers.TryUpdateOcrJobResultAsync(
                 voucherId,
                 status: "ocr_unavailable",
                 rawText: null,
@@ -105,11 +154,11 @@ public sealed class VoucherOcrJobRunner
                 errorMessage: msg,
                 ct);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not VoucherOcrSupersededException)
         {
             _logger.LogError(ex,
                 "Voucher OCR job hard-failed · id={VoucherId}", voucherId);
-            await _vouchers.UpdateOcrResultAsync(
+            await _vouchers.TryUpdateOcrJobResultAsync(
                 voucherId,
                 status: "ocr_unavailable",
                 rawText: null,
@@ -119,7 +168,33 @@ public sealed class VoucherOcrJobRunner
             throw;   // let Hangfire retry policy handle
         }
     }
+
+    // Best effort: a usage-recording failure must never fail OCR. Recorded
+    // as soon as the Agent answered — the LLM cost was spent even if the
+    // voucher moved on and the text is then discarded.
+    private async Task RecordOcrUsageAsync(Guid voucherId, Aiq.Gateway.Governance.LlmUsageReport? usage, CancellationToken ct)
+    {
+        if (_usage is null || usage is null) return;
+        try
+        {
+            await _usage.RecordForVoucherAsync(voucherId,
+                Aiq.Gateway.Governance.AgentUsageEvents.FromOcr(usage, null, null, null), ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "OCR usage not recorded · id={VoucherId}", voucherId);
+        }
+    }
 }
+
+/// <summary>
+/// The voucher left the OCR stage (paste-fallback text, extraction, posting)
+/// before this OCR job could write. Thrown — not returned — so the job ends
+/// Failed without retry and its chained extraction job (ContinueJobWith,
+/// succeeded-only) never runs against a voucher that has moved on.
+/// </summary>
+public sealed class VoucherOcrSupersededException(Guid voucherId)
+    : Exception($"Voucher {voucherId} is no longer waiting for OCR; result not written.");
 
 public interface IVoucherOcrJobScheduler
 {

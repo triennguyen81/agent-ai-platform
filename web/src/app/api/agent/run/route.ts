@@ -65,7 +65,12 @@ export async function POST(request: NextRequest) {
 
   const res = await agent.runTask(token, {
     task,
-    agent_id: body.agent_id,
+    // A capability request is resolved by the Gateway (agent_id and
+    // capability are mutually exclusive). Otherwise send the agent resolved
+    // above — previously body.agent_id was forwarded, so the cookie/first-
+    // assigned fallback was computed but dropped and the request reached the
+    // ungoverned no-agent runtime (token audit Phase 5).
+    agent_id: body.capability ? body.agent_id : agentId,
     capability: body.capability,
     skills: body.skills,
     max_turns: body.max_turns ?? 8,

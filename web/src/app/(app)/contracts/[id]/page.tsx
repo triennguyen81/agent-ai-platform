@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { scheduleStatusLabel } from "@/lib/contract-schedule";
 import { notFound, redirect } from "next/navigation";
 import { AlertTriangle, ArrowLeft, Calendar, FileText, Scale } from "lucide-react";
 import { gateway } from "@/lib/api";
@@ -6,6 +7,7 @@ import { requireSession } from "@/lib/auth";
 import { ContractChecklist } from "@/components/contract-checklist";
 import { ContractDocuments } from "@/components/contract-documents";
 import { ContractReviewActions } from "@/components/contract-review-actions";
+import { ContractPaymentDiscount } from "@/components/contract-payment-discount";
 
 interface ContractRecord {
   id: string;
@@ -221,7 +223,7 @@ export default async function ContractDetailPage({ params }: Props) {
           <div className="space-y-0.5 text-xs text-[var(--color-muted-fg)]">
             {contract.penaltyPercent != null && <div>Phạt chậm: {contract.penaltyPercent}%/ngày</div>}
             {contract.retentionPercent != null && <div>Tiền giữ lại: {contract.retentionPercent}%</div>}
-            <div>Tiến độ thực hiện: {(contract.progressPercent ?? 0)}%</div>
+            <div>Tiến độ thực hiện: <span data-testid="contract-progress">{(contract.progressPercent ?? 0)}</span>%</div>
           </div>
         </section>
 
@@ -284,12 +286,13 @@ export default async function ContractDetailPage({ params }: Props) {
         )}
       </section>
 
-      <section id="payments" className="space-y-3"><h2 className="font-serif text-xl">Thanh toán</h2>{payments.length===0?<p className="text-sm text-[var(--color-muted-fg)]">Chưa tạo lịch thanh toán.</p>:payments.map(p=><div key={p.id} className="rounded border p-3 text-sm"><b>{p.ordinal}. {p.description}</b><span className="float-right">{p.percentage}% · {formatVnd(p.totalAmount,contract.currency)}</span><div className="text-[var(--color-muted-fg)]">{p.triggerEvent?<>Chờ: {p.triggerEvent}{p.offsetDays!=null?` (+${p.offsetDays} ngày)`:""}{p.expectedDate?<> · Dự kiến: {formatDate(p.expectedDate)}</>:null}</>:<>Đến hạn: {formatDate(p.dueDate)}</>} · {p.status}</div>{p.penaltyAmount!=null&&<div className="mt-1 text-xs text-red-700">Quá hạn {p.penaltyOverdueDays} ngày · phạt {p.penaltyRate}%/ngày trên {formatVnd(p.penaltyOverdueAmount,contract.currency)} = {formatVnd(p.penaltyAmount,contract.currency)} (tính lúc {formatDate(p.penaltyCalculatedAt)})</div>}</div>)}</section>
+      <section id="payments" className="space-y-3"><h2 className="font-serif text-xl">Thanh toán</h2>{payments.length===0?<p className="text-sm text-[var(--color-muted-fg)]">Chưa tạo lịch thanh toán.</p>:payments.map(p=><div key={p.id} className="rounded border p-3 text-sm"><b>{p.ordinal}. {p.description}</b><span className="float-right">{p.percentage}% · {formatVnd(p.totalAmount,contract.currency)}</span><div className="text-[var(--color-muted-fg)]">{p.triggerEvent?<>Chờ: {p.triggerEvent}{p.offsetDays!=null?` (+${p.offsetDays} ngày)`:""}{p.expectedDate?<> · Dự kiến: {formatDate(p.expectedDate)}</>:null}</>:<>Đến hạn: {formatDate(p.dueDate)}</>} · <span data-testid="contract-schedule-status" data-schedule-id={p.id} data-status={p.status}>{scheduleStatusLabel(p.status)}</span></div>{p.penaltyAmount!=null&&<div className="mt-1 text-xs text-red-700">Quá hạn {p.penaltyOverdueDays} ngày · phạt {p.penaltyRate}%/ngày trên {formatVnd(p.penaltyOverdueAmount,contract.currency)} = {formatVnd(p.penaltyAmount,contract.currency)} (tính lúc {formatDate(p.penaltyCalculatedAt)})</div>}</div>)}</section>
+      <ContractPaymentDiscount contractId={contract.id} />
       <section id="milestones" className="space-y-3"><h2 className="font-serif text-xl">Mốc theo dõi</h2>{milestones.length===0?<p className="text-sm text-[var(--color-muted-fg)]">Chưa có mốc.</p>:milestones.map(m=><div key={m.id} className="rounded border p-3 text-sm"><b>{m.name}</b><div className="text-[var(--color-muted-fg)]">{m.triggerEvent?<>Chờ: {m.triggerEvent}{m.durationMonths!=null?` (${m.durationMonths} tháng)`:""}{m.expectedDate?<> · Dự kiến: {formatDate(m.expectedDate)}</>:null}</>:<>{formatDate(m.dueDate)} · nhắc trước {m.reminderDays} ngày</>}</div></div>)}</section>
       <section id="alerts" className="space-y-3"><h2 className="font-serif text-xl">Cảnh báo</h2>{alerts.length===0?<p className="text-sm text-emerald-700">Không có sai lệch đang mở.</p>:alerts.map(a=>{const cls=a.severity==="error"?"border-red-300 bg-red-50":a.severity==="warning"?"border-amber-300 bg-amber-50":"border-blue-200 bg-blue-50";const label=a.severity==="error"?"Chặn":a.severity==="warning"?"Cảnh báo":"Thông tin";return <div key={a.id} className={`rounded border p-3 text-sm ${cls}`}><span className="mr-2 rounded-full border px-1.5 py-0.5 text-[10px] uppercase tracking-wide">{label}</span><b>{a.code}</b>: {a.message}</div>;})}</section>
       <section id="counterparty" className="space-y-3"><h2 className="font-serif text-xl">Đối tác</h2>{counterpartyProposals.length===0?<p className="text-sm text-[var(--color-muted-fg)]">Chưa có đề xuất đối tác.</p>:counterpartyProposals.map(p=><div key={p.id} className="rounded border p-3 text-sm"><b>{p.proposedAction}</b><p>{p.rationale}</p></div>)}</section>
       <section id="handoff" className="space-y-3"><h2 className="font-serif text-xl">Bàn giao</h2><p className="text-xs text-[var(--color-muted-fg)]">Chỉ là gói dữ liệu xuất sau phê duyệt; không tạo bút toán, hóa đơn hay tờ khai.</p>{handoffs.map(h=><div key={h.id} className="rounded border p-3 text-sm">{h.status} · {formatDate(h.createdAt)}</div>)}</section>
-      <section id="history" className="space-y-3"><h2 className="font-serif text-xl">Lịch sử</h2>{history.map(h=><div key={h.id} className="border-l-2 pl-3 text-sm">{h.eventType}: {h.fromState??'—'} → {h.toState??'—'} · {formatDate(h.createdAt)}</div>)}</section>
+      <section id="history" className="space-y-3"><h2 className="font-serif text-xl">Lịch sử</h2>{history.map(h=><div key={h.id} className="border-l-2 pl-3 text-sm">{h.eventType==="payment_schedule_status"?"Trạng thái đợt thanh toán (từ đối trừ công nợ)":h.eventType}: {h.fromState??'—'} → {h.toState??'—'} · {formatDate(h.createdAt)}</div>)}</section>
 
       <ContractDocuments contractId={contract.id} initialDocuments={documents} editable={(isAdmin||contract.userId===viewerId)&&!['APPROVED','HANDED_OFF','REJECTED'].includes(contract.workflowState)} />
 

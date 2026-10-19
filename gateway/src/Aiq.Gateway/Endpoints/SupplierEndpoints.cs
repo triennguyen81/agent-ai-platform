@@ -29,6 +29,8 @@ public static class SupplierEndpoints
         group.MapGet("/by-mst/{mst}", GetByMstAsync);
         group.MapGet("/ap-summary", GetApSummaryAsync);
         group.MapGet("/{id:guid}", GetByIdAsync);
+        // Bank Account Master: read = department member; add/edit/(de)activate = ADMIN only.
+        group.MapBankAccounts(Aiq.Gateway.Banking.BankOwnerTypes.Supplier);
         group.MapPatch("/{id:guid}", UpdateAsync);
         group.MapGet("/{id:guid}/payables", GetPayablesAsync);
 

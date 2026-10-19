@@ -39,25 +39,27 @@ public sealed class WeeklySummaryReportRepository : IWeeklySummaryReportReposito
     {
         await using var conn = await _factory.OpenAsync(ct);
 
-        // "Dòng tiền thu" — every receipt confirmed (settled) in the last 7
-        // days, whichever invoice(s) it ended up allocated to. Includes the
-        // unallocated portion of an overpayment too — that cash genuinely
-        // arrived, even if which invoice it belongs to is still pending.
+        // "Dòng tiền thu" — money actually POSTED as received in the last 7
+        // days (cash_transactions, migration 051), whichever invoice(s) it was
+        // allocated to, including any still-unallocated portion — that cash
+        // genuinely arrived. A voided (reversed) posting no longer counts.
         var cashCollected = await conn.ExecuteScalarAsync<decimal>(new CommandDefinition("""
-            SELECT COALESCE(SUM(matched_amount + unallocated_amount), 0)
-            FROM receipt_match_results
-            WHERE tenant_id=@tenantId AND review_status='confirmed' AND updated_at >= NOW() - INTERVAL '7 days'
+            SELECT COALESCE(SUM(amount), 0)
+            FROM cash_transactions
+            WHERE tenant_id=@tenantId AND direction='money_in' AND status='posted'
+              AND posted_at >= NOW() - INTERVAL '7 days'
             """, new { tenantId }, cancellationToken: ct));
 
-        // "Tuổi nợ" / "nhóm khách quá hạn" — open (unpaid) invoices, and how
+        // "Tuổi nợ" / "nhóm khách quá hạn" — open/partial invoices by their
+        // REMAINING amount (settlement moves paid_amount, never credit), and how
         // many distinct customers have at least one past its due_date.
         var receivables = await conn.QuerySingleAsync<(decimal Total, decimal Overdue, int OverdueCustomers)>(new CommandDefinition("""
             SELECT
-                COALESCE(SUM(debit - credit), 0) AS Total,
-                COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE THEN debit - credit ELSE 0 END), 0) AS Overdue,
+                COALESCE(SUM(debit - paid_amount), 0) AS Total,
+                COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE THEN debit - paid_amount ELSE 0 END), 0) AS Overdue,
                 COUNT(DISTINCT CASE WHEN due_date < CURRENT_DATE THEN customer_id END) AS OverdueCustomers
             FROM sim_ar_ledger
-            WHERE tenant_id=@tenantId AND document_type='invoice' AND (debit - credit) > 0
+            WHERE tenant_id=@tenantId AND document_type='invoice' AND status IN ('open','partial')
             """, new { tenantId }, cancellationToken: ct));
 
         // "Chi phí theo bộ phận" — claims that actually completed the full

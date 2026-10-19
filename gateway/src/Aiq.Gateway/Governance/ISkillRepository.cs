@@ -48,12 +48,9 @@ public interface ISkillRepository
     Task<SkillRecord?> UpdateDepartmentSkillMetadataAsync(Guid tenantId, Guid departmentId, Guid skillId, UpdateDepartmentSkillMetadataRequest request, CancellationToken ct);
 
     /// <summary>
-    /// Editing declarative content is blocked (409, via a null return here)
-    /// once the skill's code is referenced by ANY published Agent Version —
-    /// manifest composition reads this content live at request time (there
-    /// is no per-version content snapshot, unlike Workflow's dedicated
-    /// version table), so an unrestricted edit would silently change an
-    /// already-published Agent's runtime behavior.
+    /// Edits declarative content. Published Agent versions are unaffected:
+    /// each carries its own publish-time snapshot (agent_version_skill_snapshots),
+    /// so the edit reaches only drafts and versions published afterwards.
     /// </summary>
     Task<SkillRecord?> UpdateDepartmentSkillContentAsync(Guid tenantId, Guid departmentId, Guid skillId, UpdateDepartmentSkillContentRequest request, CancellationToken ct);
     Task<SkillRecord?> SetDepartmentSkillEnabledAsync(Guid tenantId, Guid departmentId, Guid skillId, bool enabled, CancellationToken ct);
@@ -104,14 +101,9 @@ public sealed class SkillRepository : ISkillRepository
     public async Task<SkillRecord?> UpdatePlatformSkillContentAsync(Guid skillId, UpdateDepartmentSkillContentRequest request, CancellationToken ct)
     {
         await using var conn = await _factory.OpenAsync(ct);
-        var inUseByPublished = await conn.ExecuteScalarAsync<bool>(new CommandDefinition("""
-            SELECT EXISTS (
-                SELECT 1 FROM agent_version_skill_assignments avsa
-                JOIN agent_versions v ON v.id=avsa.agent_version_id AND v.status='published'
-                JOIN skills s ON s.code=avsa.skill_name
-                WHERE s.id=@skillId AND s.scope='platform')
-            """, new { skillId }, cancellationToken: ct));
-        if (inUseByPublished) throw new InvalidOperationException("skill_content_locked");
+        // No published-reference lock: published Agent versions run their
+        // own publish-time snapshot (SkillSnapshotStore), so an edit here only
+        // reaches drafts and versions published afterwards.
         return await conn.QuerySingleOrDefaultAsync<SkillRecord>(new CommandDefinition($"""
             UPDATE skills SET declarative_content=@DeclarativeContent,updated_at=NOW()
             WHERE id=@skillId AND scope='platform' AND source_kind='declarative' RETURNING {Columns}
@@ -173,15 +165,9 @@ public sealed class SkillRepository : ISkillRepository
             $"SELECT EXISTS(SELECT 1 FROM skills WHERE id=@skillId AND {OwnDepartmentSkillWhere})",
             new { skillId, tenantId, departmentId }, cancellationToken: ct));
         if (!owned) return null;
-        var inUseByPublished = await conn.ExecuteScalarAsync<bool>(new CommandDefinition("""
-            SELECT EXISTS (
-                SELECT 1 FROM agent_version_skill_assignments avsa
-                JOIN agent_versions v ON v.id = avsa.agent_version_id
-                JOIN skills s ON s.code = avsa.skill_name
-                WHERE s.id = @skillId AND v.status = 'published'
-            )
-            """, new { skillId }, cancellationToken: ct));
-        if (inUseByPublished) throw new InvalidOperationException("skill_content_locked");
+        // No published-reference lock: published Agent versions run their
+        // own publish-time snapshot (SkillSnapshotStore), so an edit here only
+        // reaches drafts and versions published afterwards.
         return await conn.QuerySingleOrDefaultAsync<SkillRecord>(new CommandDefinition($"""
             UPDATE skills SET declarative_content = @DeclarativeContent, updated_at = NOW()
             WHERE id=@skillId AND {OwnDepartmentSkillWhere}

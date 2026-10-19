@@ -30,8 +30,9 @@ from __future__ import annotations
 import asyncio
 import io
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
+from aiq_agent.ocr.concurrency import OcrBusyError, OcrTimeoutError
 from aiq_agent.ocr.pdf import extract_pdf_text_layer_async, render_pdf_pages_async
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
@@ -56,6 +57,7 @@ class DocumentExtractionResult:
     text: str
     mime_type: str
     extraction_method: str  # pdf_text_layer | pdf_ocr | docx_text | image_ocr | xml_text
+    llm_usage: Any = None  # LlmUsage of OCR correction, when OCR ran
 
     @property
     def char_count(self) -> int:
@@ -143,6 +145,7 @@ async def extract_document_text(
     """
 
     name = filename.lower()
+    llm_usage = None
 
     if name.endswith(".doc") and not name.endswith(".docx"):
         raise DocumentExtractionError(
@@ -164,6 +167,7 @@ async def extract_document_text(
                 png_pages = await render_pdf_pages_async(data, dpi=200, max_pages=_MAX_PDF_PAGES)
                 result = await pipeline.run_pages(png_pages)
                 text, method = result.joined_text(), "pdf_ocr"  # type: ignore[attr-defined]
+                llm_usage = getattr(result, "llm_usage", None)
         elif name.endswith(".docx") or data.startswith(b"PK\x03\x04"):
             mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             text = await asyncio.to_thread(_extract_docx_text, data)
@@ -181,12 +185,16 @@ async def extract_document_text(
             png_bytes = await normalize_image_to_png_async(data)
             result = await pipeline.run_pages([png_bytes])
             text, method = result.joined_text(), "image_ocr"  # type: ignore[attr-defined]
+            llm_usage = getattr(result, "llm_usage", None)
         else:
             raise DocumentExtractionError(
                 "Chỉ hỗ trợ PDF, DOCX, PNG, JPG/JPEG, XML.", status_code=415,
             )
     except DocumentExtractionError:
         raise
+    except (OcrBusyError, OcrTimeoutError) as exc:
+        # Capacity/timeout, not a bad file: keep the retryable status.
+        raise DocumentExtractionError(str(exc), status_code=exc.status_code) from exc
     except ValueError as exc:
         raise DocumentExtractionError(f"Không đọc được tệp: {exc}") from exc
     except Exception as exc:  # noqa: BLE001 — never leak internal parser errors verbatim
@@ -204,7 +212,7 @@ async def extract_document_text(
     if not text:
         raise DocumentExtractionError("Không trích xuất được nội dung từ tệp này.")
 
-    return DocumentExtractionResult(text=text, mime_type=mime, extraction_method=method)
+    return DocumentExtractionResult(text=text, mime_type=mime, extraction_method=method, llm_usage=llm_usage)
 
 
 __all__ = [

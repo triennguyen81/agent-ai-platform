@@ -271,7 +271,7 @@ Ba luồng này chạm vào các điểm mà cơ quan thuế và kiểm toán ha
 | Không ghi nhận trùng chứng từ | Nguyên tắc kế toán | Đối chiếu với chứng từ đã claim và đã ghi sổ trước khi đề xuất |
 | Chi phí không hoá đơn phải tách riêng | Quyết toán thuế TNDN | Gắn cờ không được trừ ngay từ lúc ghi nhận, không đợi cuối năm |
 | Mọi bút toán truy được về chứng từ gốc | Yêu cầu kiểm toán | Mỗi dòng bút toán gắn với file chứng từ gốc bất biến |
-| Người duyệt và người thực hiện tách bạch | Kiểm soát nội bộ | Người nộp claim không thể tự duyệt; người ghép công nợ không tự duyệt chi |
+| Người duyệt và người thực hiện tách bạch | Kiểm soát nội bộ | Người nộp claim không thể tự duyệt; người ghép công nợ không tự duyệt chi — **ĐÃ THAY THẾ cho ADMIN** bởi ADMIN Department Authority Invariant (docs/ACL_V2_RESOURCE_VISIBILITY_RULES.md §15): ADMIN cùng phòng ban được tự hoàn tất; chỉ USER không tự duyệt |
 | Lưu vết mọi hiệu chỉnh | Yêu cầu kiểm toán | Mọi lần sửa đề xuất của agent đều ghi ai sửa, sửa gì, khi nào |
 
 ---

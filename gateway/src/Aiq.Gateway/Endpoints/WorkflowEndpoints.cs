@@ -80,8 +80,12 @@ public static class WorkflowEndpoints
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
         if (!TryScope(ctx, out var tenantId, out var departmentId, out var actorId)) return Results.Forbid();
-        if (request.Definition is { } def && !ValidateStepTypes(def, out var stepError))
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["definition"] = [stepError!] });
+        if (request.Definition is { } def)
+        {
+            if (!WorkflowDefinitions.TryCanonicalize(def, out var canonical, out var stepError))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["definition"] = [stepError!] });
+            request = request with { Definition = canonical };
+        }
         var w = await repo.CreateDepartmentWorkflowAsync(tenantId, departmentId, actorId, request, ct);
         return Results.Created($"/department/workflows/{w.Id}", w);
     }
@@ -115,11 +119,16 @@ public static class WorkflowEndpoints
     private static async Task<IResult> CreateOwnDraftVersionAsync(Guid workflowId, CreateWorkflowDraftVersionRequest request, IWorkflowRepository repo, HttpContext ctx, CancellationToken ct)
     {
         if (!TryScope(ctx, out var tenantId, out var departmentId, out var actorId)) return Results.Forbid();
-        if (request.Definition is { } def && !ValidateStepTypes(def, out var stepError))
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["definition"] = [stepError!] });
+        JsonElement? definition = null;
+        if (request.Definition is { } def)
+        {
+            if (!WorkflowDefinitions.TryCanonicalize(def, out var canonical, out var stepError))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["definition"] = [stepError!] });
+            definition = canonical;
+        }
         try
         {
-            var version = await repo.CreateDepartmentWorkflowDraftVersionAsync(tenantId, departmentId, workflowId, actorId, request.Definition, ct);
+            var version = await repo.CreateDepartmentWorkflowDraftVersionAsync(tenantId, departmentId, workflowId, actorId, definition, ct);
             return version is null ? Results.NotFound() : Results.Created($"/department/workflows/{workflowId}/versions/{version.Id}", version);
         }
         catch (InvalidOperationException ex) when (ex.Message == "workflow_already_has_draft")
@@ -132,9 +141,9 @@ public static class WorkflowEndpoints
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
         if (!TryScope(ctx, out var tenantId, out var departmentId, out _)) return Results.Forbid();
-        if (!ValidateStepTypes(request.Definition, out var stepError))
+        if (!WorkflowDefinitions.TryCanonicalize(request.Definition, out var canonical, out var stepError))
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["definition"] = [stepError!] });
-        var version = await repo.UpdateDepartmentWorkflowDraftVersionAsync(tenantId, departmentId, workflowId, versionId, request.Definition, ct);
+        var version = await repo.UpdateDepartmentWorkflowDraftVersionAsync(tenantId, departmentId, workflowId, versionId, canonical, ct);
         return version is null ? Results.NotFound() : Results.Ok(version);
     }
 
@@ -168,41 +177,26 @@ public static class WorkflowEndpoints
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
         if (!TryGetUserId(ctx, out var actorId)) return Results.Unauthorized();
-        if (request.Definition is { } def && !ValidateStepTypes(def, out var stepError))
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["definition"] = [stepError!] });
+        if (request.Definition is { } def)
+        {
+            if (!WorkflowDefinitions.TryCanonicalize(def, out var canonical, out var stepError))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["definition"] = [stepError!] });
+            request = request with { Definition = canonical };
+        }
         var w = await repo.CreateAsync(actorId, request, ct);
         return Results.Created($"/workflows/{w.Id}", w);
     }
 
     private static async Task<IResult> UpdateAsync(Guid id, UpdateWorkflowRequest request, IWorkflowRepository repo, CancellationToken ct)
     {
-        if (request.Definition is { } def && !ValidateStepTypes(def, out var stepError))
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["definition"] = [stepError!] });
+        if (request.Definition is { } def)
+        {
+            if (!WorkflowDefinitions.TryCanonicalize(def, out var canonical, out var stepError))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["definition"] = [stepError!] });
+            request = request with { Definition = canonical };
+        }
         var w = await repo.UpdateAsync(id, request, ct);
         return w is null ? Results.NotFound() : Results.Ok(w);
-    }
-
-    /// <summary>Gateway-side shape check, mirrored (defense in depth) by the
-    /// runtime's own fail-closed check at manifest-resolution time.</summary>
-    private static bool ValidateStepTypes(JsonElement definition, out string? error)
-    {
-        error = null;
-        if (definition.ValueKind != JsonValueKind.Object || !definition.TryGetProperty("steps", out var steps)
-            || steps.ValueKind != JsonValueKind.Array)
-        {
-            error = "definition must be an object with a 'steps' array";
-            return false;
-        }
-        foreach (var step in steps.EnumerateArray())
-        {
-            if (!step.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String
-                || !WorkflowStepTypes.Known.Contains(type.GetString()!))
-            {
-                error = $"unknown or missing step type (allowed: {string.Join(", ", WorkflowStepTypes.Known)})";
-                return false;
-            }
-        }
-        return true;
     }
 
     private static bool TryGetUserId(HttpContext ctx, out Guid userId)

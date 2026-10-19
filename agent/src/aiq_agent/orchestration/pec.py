@@ -11,7 +11,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from aiq_agent.llm.base import ChatMessage, LlmService
+from aiq_agent.llm.base import ChatMessage, LlmService, LlmUsage
+from aiq_agent.observability.llm_usage import merge_usage
 from aiq_agent.tools.registry import ToolRegistry, ToolResult
 
 
@@ -27,6 +28,7 @@ class AgentStep:
 class AgentRun:
     final_answer: str
     steps: list[AgentStep] = field(default_factory=list)
+    usage: LlmUsage | None = None  # planner + critic LLM calls
 
 
 _PLANNER_SYSTEM = (
@@ -105,7 +107,7 @@ class PlannerExecutorCritic:
         steps.append(AgentStep(role="critic", content=critique.content))
 
         final_answer = _extract_final_answer(critique.content)
-        return AgentRun(final_answer=final_answer, steps=steps)
+        return AgentRun(final_answer=final_answer, steps=steps, usage=merge_usage([plan.usage, critique.usage]))
 
 
 def _extract_final_answer(critique: str) -> str:

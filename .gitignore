@@ -72,3 +72,4 @@ test-*.jpg
 
 # TypeScript incremental build info
 *.tsbuildinfo
+/demo-output/

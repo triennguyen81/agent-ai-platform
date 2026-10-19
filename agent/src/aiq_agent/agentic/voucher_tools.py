@@ -1,19 +1,19 @@
 """Voucher domain MCP tools for /agent/run.
 
-Seven tools:
+Seven tools (none of them can mark a voucher tax-verified):
 - extract_voucher_fields(raw_text, voucher_type) — LLM-driven extract, pattern
   identical to contract_tools.extract_contract_fields (echo raw + prompt the
   model to apply the right skill).
 - save_voucher(fields, raw_text?, source_path?) — POST to Gateway.
 - verify_einvoice_tct(invoice_no, seller_mst, ...) — call hoadondientu.gdt.gov.vn
   lookup. Falls back to a local heuristic check if TCT unreachable.
-- confirm_tax_verified(voucher_id) — persist a genuine positive TCT result
-  onto the voucher row (vouchers.tct_verified). Only ever a one-way flip to
-  true; never called for an ambiguous/negative/unavailable result.
-- reject_tax_verified(voucher_id, reason, provider_unavailable) — persist a
-  genuine NEGATIVE or unavailable TCT result. This is what lets the Gateway's
-  Luồng 03 approval gate (IExpenseClaimRepository.ConfirmAsync) tell "never
-  checked" apart from "checked and blocked" — never silently left unverified.
+- propose_tax_verification(voucher_id, ...) — record the lookup as a PROPOSAL
+  (status 'pending_review'). The agent can never mark a voucher verified: only
+  a department ADMIN does, in the UI, with evidence the Gateway matches to
+  the voucher's current invoice data.
+- reject_tax_verified(voucher_id, reason, provider_unavailable) — kept for
+  compatibility, but only PROPOSES 'invalid'/'unavailable'. The authoritative
+  negative result is a department ADMIN decision with evidence.
 - suggest_journal_entry(voucher_id) — read the voucher and ask the LLM to
   output N/C entries per TT200 accounting rules.
 - save_journal_suggestions(voucher_id, entries) — persist proposed entries;
@@ -315,38 +315,44 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
         return {"content": [{"type": "text", "text": "\n".join(summary_lines)}]}
 
     @tool(
-        "confirm_tax_verified",
-        "Đánh dấu 1 voucher đã có trong DB là ĐÃ xác thực hợp lệ qua TCT "
-        "(hoadondientu.gdt.gov.vn). CHỈ gọi tool này sau khi verify_einvoice_tct "
-        "trả HTTP 200 VÀ bạn đã tự đọc response body xác nhận hoá đơn thực sự "
-        "tồn tại/còn hiệu lực — một HTTP 200 một mình KHÔNG đủ. Không có cách "
-        "revert — chỉ set true, không bao giờ set false (chưa xác thực = false, "
-        "không phải giá trị hợp lệ để agent tự gán).",
-        {"voucher_id": str},
+        "propose_tax_verification",
+        "Ghi nhận kết quả tra cứu hoá đơn (verify_einvoice_tct) như một ĐỀ XUẤT "
+        "cho ADMIN xem xét (trạng thái 'pending_review'). Tool này KHÔNG xác thực "
+        "hoá đơn — chỉ ADMIN phòng ban xác nhận được, kèm bằng chứng, trên giao diện. "
+        "Truyền nguyên văn tct_status và đoạn phản hồi, không diễn giải thành 'hợp lệ'.",
+        {"voucher_id": str, "tct_status": str, "response_snippet": str, "note": str, "recommendation": str},
     )
-    async def confirm_tax_verified(args: dict[str, Any]) -> dict[str, Any]:
+    async def propose_tax_verification(args: dict[str, Any]) -> dict[str, Any]:
         vid = str(args.get("voucher_id", "")).strip()
         if not vid:
             return {"content": [{"type": "text", "text": "voucher_id required"}]}
+        evidence = {
+            "tool": "verify_einvoice_tct",
+            "tct_status": str(args.get("tct_status", ""))[:100],
+            "response_snippet": str(args.get("response_snippet", ""))[:500],
+            "note": str(args.get("note", ""))[:500],
+        }
         async with httpx.AsyncClient(timeout=10) as client:
             res = await client.post(
-                f"{gateway_base}/vouchers/{vid}/tax-verification/confirm",
-                headers=auth_headers,
+                f"{gateway_base}/vouchers/{vid}/tax-verification/propose",
+                headers={**auth_headers, "X-AIQ-Actor": "agent"},
+                json={
+                    "reason": "Agent đề xuất sau khi tra cứu — chờ ADMIN quyết định",
+                    "recommendation": _recommendation(args.get("recommendation")),
+                    "evidence": evidence,
+                },
             )
         if res.status_code == 404:
             return {"content": [{"type": "text", "text": "Voucher not found"}]}
         if res.status_code != 200:
-            return {"content": [{"type": "text", "text": f"Gateway returned {res.status_code}"}]}
-        return {"content": [{"type": "text", "text": f"Voucher {vid} marked tax-verified."}]}
+            return {"content": [{"type": "text", "text": f"Gateway returned {res.status_code}: {res.text[:200]}"}]}
+        return {"content": [{"type": "text", "text": f"Đã ghi đề xuất xác thực cho voucher {vid} — chờ ADMIN xác nhận kèm bằng chứng."}]}
 
     @tool(
         "reject_tax_verified",
-        "Ghi nhận 1 kết quả xác thực TIÊU CỰC hoặc KHÔNG THỂ xác thực cho voucher "
-        "(P1 audit fix — không được để 'chưa xác thực' im lặng, phải ghi rõ lý do). "
-        "Gọi với provider_unavailable=true nếu verify_einvoice_tct không kết nối được "
-        "cổng thuế (network_error) — không bao giờ coi im lặng/lỗi mạng là đã xác "
-        "thực thành công. Gọi với provider_unavailable=false nếu cổng thuế trả lời "
-        "rõ ràng hoá đơn không tồn tại/đã huỷ/đã thay thế.",
+        "ĐỀ XUẤT (không phải kết luận) rằng hoá đơn KHÔNG hợp lệ, hoặc không tra cứu được "
+        "(provider_unavailable=true khi verify_einvoice_tct báo network_error). Trạng thái chính "
+        "thức vẫn là 'pending_review' — chỉ ADMIN phòng ban kết luận, kèm bằng chứng.",
         {"voucher_id": str, "reason": str, "provider_unavailable": bool},
     )
     async def reject_tax_verified(args: dict[str, Any]) -> dict[str, Any]:
@@ -357,15 +363,19 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
             return {"content": [{"type": "text", "text": "voucher_id and reason required"}]}
         async with httpx.AsyncClient(timeout=10) as client:
             res = await client.post(
-                f"{gateway_base}/vouchers/{vid}/tax-verification/reject",
-                headers=auth_headers,
-                json={"reason": reason, "providerUnavailable": provider_unavailable},
+                f"{gateway_base}/vouchers/{vid}/tax-verification/propose",
+                headers={**auth_headers, "X-AIQ-Actor": "agent"},
+                json={
+                    "reason": reason[:500],
+                    "recommendation": "unavailable" if provider_unavailable else "invalid",
+                    "evidence": {"tool": "verify_einvoice_tct", "note": reason[:500]},
+                },
             )
         if res.status_code == 404:
             return {"content": [{"type": "text", "text": "Voucher not found"}]}
         if res.status_code != 200:
-            return {"content": [{"type": "text", "text": f"Gateway returned {res.status_code}"}]}
-        return {"content": [{"type": "text", "text": f"Voucher {vid} tax-verification recorded as rejected/unavailable."}]}
+            return {"content": [{"type": "text", "text": f"Gateway returned {res.status_code}: {res.text[:200]}"}]}
+        return {"content": [{"type": "text", "text": f"Đã ghi đề xuất cho voucher {vid} — chờ ADMIN kết luận."}]}
 
     @tool(
         "suggest_journal_entry",
@@ -497,11 +507,17 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
         extract_voucher_fields,
         save_voucher,
         verify_einvoice_tct,
-        confirm_tax_verified,
+        propose_tax_verification,
         reject_tax_verified,
         suggest_journal_entry,
         save_journal_suggestions,
     ]
+
+
+def _recommendation(value: Any) -> str | None:
+    """Only the Gateway's recommendation vocabulary; anything else is dropped."""
+    v = str(value or "").strip().lower()
+    return v if v in {"verified", "invalid", "unavailable"} else None
 
 
 def _to_number(value: Any) -> float | int | None:

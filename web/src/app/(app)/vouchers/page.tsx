@@ -36,6 +36,7 @@ const STATUS_LABEL: Record<string, string> = {
   processing: "Đang OCR",
   ocr_complete: "OCR xong",
   ocr_unavailable: "OCR lỗi",
+  extraction_failed: "Trích xuất thất bại",
   extracted: "Đã trích xuất",
   journalized: "Đã định khoản",
   verified: "Đã xác thực",
@@ -58,6 +59,7 @@ const STATUS_TABS: Array<{ value: string | "all"; label: string; tone: string }>
   { value: "processing", label: "Đang OCR", tone: "border-amber-400 text-amber-700" },
   { value: "ocr_complete", label: "Chờ AI trích", tone: "border-amber-400 text-amber-700" },
   { value: "ocr_unavailable", label: "OCR lỗi", tone: "border-red-400 text-red-700" },
+  { value: "extraction_failed", label: "Trích xuất thất bại", tone: "border-red-400 text-red-700" },
   { value: "rejected", label: "Từ chối", tone: "border-red-400 text-red-700" },
 ];
 
@@ -89,6 +91,7 @@ function statusBadge(status: string): string {
       return "bg-amber-100 text-amber-700";
     case "rejected":
     case "ocr_unavailable":
+    case "extraction_failed":
       return "bg-red-100 text-red-700";
     default:
       return "border text-[var(--color-muted-fg)]";

@@ -143,6 +143,39 @@ class AgentRunResponse(BaseModel):
     # the caller can confirm which agentic thread this exchange was
     # persisted under.
     thread_id: str | None = None
+    # Provenance of what actually executed (manifest-driven path only; None
+    # on the legacy no-manifest path) — lets the Gateway record which agent
+    # and version processed a document instead of assuming it.
+    agent_id: str | None = None
+    agent_version_id: str | None = None
+    agent_version: int | None = None
+    provider: str | None = None
+    model: str | None = None
+
+
+class DocumentExtractRequest(BaseModel):
+    """Tool-less document extraction under an agent's own manifest. The
+    Gateway builds `task` from that SAME version's document configuration and
+    pins it with expected_version_id."""
+
+    model_config = ConfigDict(extra="forbid")
+    agent_id: str = Field(min_length=1, max_length=64)
+    expected_version_id: str = Field(min_length=1, max_length=64)
+    task: str = Field(min_length=1, max_length=60_000)
+    test: bool = False
+    # Re-extraction: run exactly expected_version_id (published/superseded)
+    # rather than the agent's current published version.
+    pin_version: bool = False
+
+
+class DocumentExtractResponse(BaseModel):
+    final_answer: str
+    agent_id: str
+    agent_version_id: str
+    agent_version: int
+    provider: str
+    model: str
+    draft: bool
 
 
 class SkillSummary(BaseModel):

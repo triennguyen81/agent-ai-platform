@@ -73,6 +73,7 @@ public sealed class DepartmentAgentOwnershipIntegrationTests : IAsyncLifetime
         await scoped.ExecuteAsync(await ReadMigrationAsync("021_agent_department_assignments.sql"));
         await scoped.ExecuteAsync(await ReadMigrationAsync("022_business_capabilities.sql"));
         await scoped.ExecuteAsync(await ReadMigrationAsync("024_acl_v2_scope_foundations.sql"));
+        await scoped.ExecuteAsync(await ReadMigrationAsync("060_agent_version_document_processing.sql"));
 
         await AssignDepartmentsAsync(scoped);
 
@@ -453,5 +454,110 @@ public sealed class DepartmentAgentOwnershipIntegrationTests : IAsyncLifetime
         Assert.Equal(2, v2!.Version);
         var v1Reloaded = await _repo.FindDepartmentAgentVersionAsync(_tenantA, _accounting, agent.Id, version.Id, default);
         Assert.Equal("sonnet", v1Reloaded!.Model);
+    }
+
+    // ------------------------------------------------------------------
+    // Hardening phase (docs/ACCOUNTING_AGENT_AUDIT.md, Section 9 Test H):
+    // the live audit could only reproduce a disabled-agent denial through a
+    // FOREIGN tenant's agent, so the returned reason was "agent_not_owned_
+    // by_department" (the tenant check runs first) — never proving the
+    // disabled-specific branch fires in isolation for an agent the caller
+    // otherwise fully owns. This closes that gap with an automated,
+    // repeatable same-tenant/same-department case for both roles.
+    // ------------------------------------------------------------------
+    [Fact]
+    public async Task DisabledDepartmentAgent_AdminAndUserExecutionDenied_WithIsolatedReason()
+    {
+        if (_scopedConnectionString is null) return;
+        var agent = await _repo.CreateDepartmentAgentAsync(_tenantA, _accounting, _adminAccounting, NewAgentRequest("disable-me", "Disable Me"), default);
+        var version = await _repo.CreateDepartmentAgentVersionAsync(_tenantA, _accounting, agent.Id, _adminAccounting, NewVersionRequest(), default);
+        await _repo.PublishDepartmentAgentVersionAsync(_tenantA, _accounting, agent.Id, version!.Id, _adminAccounting, default);
+        Assert.True(await _repo.AssignUserToDepartmentAgentAsync(_tenantA, _accounting, agent.Id, _userAccounting, _adminAccounting, default));
+
+        // Sanity: both roles execute fine while the agent is enabled — the
+        // failure mode this test isolates only exists once disabled below.
+        Assert.NotNull((await _repo.GetDepartmentAgentManifestAsync(_adminAccounting, _tenantA, _accounting, agent.Id, isAdmin: true, default)).Manifest);
+        Assert.NotNull((await _repo.GetDepartmentAgentManifestAsync(_userAccounting, _tenantA, _accounting, agent.Id, isAdmin: false, default)).Manifest);
+
+        var disabled = await _repo.SetDepartmentAgentEnabledAsync(_tenantA, _accounting, agent.Id, _adminAccounting, enabled: false, default);
+        Assert.NotNull(disabled);
+
+        var adminResult = await _repo.GetDepartmentAgentManifestAsync(_adminAccounting, _tenantA, _accounting, agent.Id, isAdmin: true, default);
+        Assert.Null(adminResult.Manifest);
+        Assert.Equal("agent_disabled", adminResult.DenialReason);
+
+        var userResult = await _repo.GetDepartmentAgentManifestAsync(_userAccounting, _tenantA, _accounting, agent.Id, isAdmin: false, default);
+        Assert.Null(userResult.Manifest);
+        Assert.Equal("agent_disabled", userResult.DenialReason);
+
+        // Re-enabling restores execution — disabled_at is a live toggle, not
+        // a one-way/terminal state.
+        var reEnabled = await _repo.SetDepartmentAgentEnabledAsync(_tenantA, _accounting, agent.Id, _adminAccounting, enabled: true, default);
+        Assert.NotNull(reEnabled);
+        Assert.NotNull((await _repo.GetDepartmentAgentManifestAsync(_userAccounting, _tenantA, _accounting, agent.Id, isAdmin: false, default)).Manifest);
+    }
+
+    // ------------------------------------------------------------------
+    // Hardening phase (docs/ACCOUNTING_AGENT_AUDIT.md, Section 9 Test G):
+    // the live audit could only prove "invalid tool" behaviorally (the LLM
+    // self-reported it had no fetch_url/save_note tool — consistent with,
+    // but not direct proof of, why). This exercises the actual repository-
+    // level enforcement directly, at BOTH points it turns out to exist:
+    // (1) a tool whose min_action_tier exceeds the agent's own action_tier
+    // cannot even be GRANTED at version-create time (EnsureToolsEligibleAsync
+    // fails the whole call — stricter than the audit assumed: this is not a
+    // "grant it, then silently drop it from the manifest" design, it is
+    // "refuse the grant outright"), and (2) a tool that was never granted at
+    // all correctly never appears in the published manifest's Tools list.
+    // ------------------------------------------------------------------
+    [Fact]
+    public async Task ToolAboveAgentsActionTier_CannotBeGranted_AndUngrantedToolNeverAppearsInManifest()
+    {
+        if (_scopedConnectionString is null) return;
+        var withinTierToolId = Guid.NewGuid();
+        var aboveTierToolId = Guid.NewGuid();
+        var ungrantedToolId = Guid.NewGuid();
+
+        await using (var conn = new NpgsqlConnection(_scopedConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("""
+                INSERT INTO tools(id,code,name,min_action_tier) VALUES
+                    (@withinTierToolId,'mcp__aiq__within_tier','Within Tier','suggest'),
+                    (@aboveTierToolId,'mcp__aiq__above_tier','Above Tier','autonomous'),
+                    (@ungrantedToolId,'mcp__aiq__ungranted','Ungranted','suggest');
+                """, new { withinTierToolId, aboveTierToolId, ungrantedToolId });
+        }
+
+        // NewAgentRequest never sets action_tier, so the agent keeps the
+        // table default 'suggest' — 'autonomous' is strictly above it.
+        var agent = await _repo.CreateDepartmentAgentAsync(_tenantA, _accounting, _adminAccounting, NewAgentRequest("tiered-tools", "Tiered Tools"), default);
+
+        // (1) Attempting to grant the above-tier tool at all fails closed —
+        // the whole version-create call is rejected, not silently partial.
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _repo.CreateDepartmentAgentVersionAsync(
+                _tenantA, _accounting, agent.Id, _adminAccounting,
+                NewVersionRequest() with { ToolIds = [withinTierToolId, aboveTierToolId] },
+                default));
+        Assert.Equal("tool_not_eligible", ex.Message);
+
+        // (2) A version granting only the within-tier tool succeeds and
+        // publishes; the manifest carries exactly that tool — never the
+        // above-tier one (impossible to grant, per (1)), never the
+        // never-granted one either.
+        var version = await _repo.CreateDepartmentAgentVersionAsync(
+            _tenantA, _accounting, agent.Id, _adminAccounting,
+            NewVersionRequest() with { ToolIds = [withinTierToolId] },
+            default);
+        await _repo.PublishDepartmentAgentVersionAsync(_tenantA, _accounting, agent.Id, version!.Id, _adminAccounting, default);
+
+        var result = await _repo.GetDepartmentAgentManifestAsync(_adminAccounting, _tenantA, _accounting, agent.Id, isAdmin: true, default);
+        Assert.NotNull(result.Manifest);
+        var toolCodes = result.Manifest!.Tools.Select(t => t.Code).ToHashSet();
+
+        Assert.Contains("mcp__aiq__within_tier", toolCodes);
+        Assert.DoesNotContain("mcp__aiq__above_tier", toolCodes);
+        Assert.DoesNotContain("mcp__aiq__ungranted", toolCodes);
     }
 }

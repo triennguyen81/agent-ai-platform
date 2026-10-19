@@ -55,7 +55,7 @@ public sealed class AccountsReceivableOverdueJob
             SELECT
                 al.id             AS LedgerId,
                 al.document_number AS DocumentNumber,
-                al.debit          AS Amount,
+                al.debit - al.paid_amount AS Amount,
                 al.due_date       AS DueDate,
                 c.name            AS CustomerName,
                 c.tenant_id       AS TenantId,
@@ -66,7 +66,10 @@ public sealed class AccountsReceivableOverdueJob
             JOIN users u ON u.tenant_id = c.tenant_id AND u.department_id = c.department_id
             JOIN user_roles ur ON ur.user_id = u.id
             JOIN roles r ON r.id = ur.role_id AND r.name = 'admin'
-            WHERE al.document_type = 'invoice' AND al.credit = 0 AND al.debit > 0
+            -- Settlement moves paid_amount/status on the invoice row (never
+            -- credit), so a PAID invoice must be excluded by status — the old
+            -- "credit = 0" test was always true for invoice rows.
+            WHERE al.document_type = 'invoice' AND al.status IN ('open','partial') AND al.debit > al.paid_amount
               AND al.due_date IS NOT NULL
               AND (CURRENT_DATE - al.due_date) >= @reminderDays
             """;

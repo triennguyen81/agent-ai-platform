@@ -90,7 +90,14 @@ public sealed record ArLedgerRow(
     decimal PaidAmount,
     string Status,
     Guid? ContractId,
-    Guid? ContractPaymentScheduleId);
+    Guid? ContractPaymentScheduleId)
+{
+    // Settlement view (UNPAID/PARTIAL/PAID/OVERDUE) — independent of the
+    // accounting POSTED state; derived from the open item itself.
+    public decimal Outstanding => Debit - PaidAmount;
+    public string SettlementStatus => Aiq.Gateway.Payments.CashSettlementRules.SettlementStatus(
+        Debit, PaidAmount, DueDate, DateOnly.FromDateTime(DateTime.UtcNow.AddHours(7)));
+}
 
 // UC-ACC-001 §9.2: fields the agent must see to score credit risk.
 public sealed record CustomerReceivablesReport(
@@ -102,7 +109,10 @@ public sealed record CustomerReceivablesReport(
     ArAgingBuckets Aging,
     decimal OverdueAmount,
     DateOnly? LastPaymentDate,
-    int PaymentTermDefault);
+    int PaymentTermDefault,
+    // Posted receipts/payments not yet allocated to any invoice (customer
+    // advance / supplier prepayment) — never netted into the balance above.
+    decimal UnappliedAmount);
 
 public sealed record ArAgingBuckets(
     decimal Current,      // not yet due
@@ -497,6 +507,13 @@ public sealed class CustomerRepository : ICustomerRepository
             """;
         var lastPayment = await conn.QueryFirstOrDefaultAsync<DateOnly?>(lastPaymentSql, new { customerId });
 
+        var unapplied = await conn.ExecuteScalarAsync<decimal>(new CommandDefinition("""
+            SELECT COALESCE(SUM(c.amount - COALESCE((SELECT SUM(a.applied_amount) FROM payment_applications a
+                                                     WHERE a.cash_transaction_id = c.id AND a.status = 'active'), 0)), 0)
+            FROM cash_transactions c
+            WHERE c.tenant_id = @tenantId AND c.customer_id = @id AND c.status = 'posted'
+            """, new { tenantId, id = customerId }, cancellationToken: ct));
+
         var creditUsed = customer.CreditLimit > 0
             ? Math.Round((customer.CurrentAr / customer.CreditLimit) * 100m, 1)
             : 0m;
@@ -510,7 +527,8 @@ public sealed class CustomerRepository : ICustomerRepository
             Aging: new ArAgingBuckets(bucketCurrent, b30, b60, b90, over90),
             OverdueAmount: overdue,
             LastPaymentDate: lastPayment,
-            PaymentTermDefault: customer.CreditTermsDays);
+            PaymentTermDefault: customer.CreditTermsDays,
+            UnappliedAmount: unapplied);
     }
 
     public async Task<SalesOrderMatch?> MatchInvoiceToSalesOrderAsync(
@@ -843,7 +861,7 @@ public sealed class CustomerRepository : ICustomerRepository
     // that can change an invoice's paid_amount/status (book, apply, unapply)
     // so sim_customers.current_ar is always provably a function of the AR
     // rows themselves, never a hand-maintained running total that can drift.
-    private static async Task<decimal> RecomputeCurrentArAsync(
+    internal static async Task<decimal> RecomputeCurrentArAsync(
         Npgsql.NpgsqlConnection conn, Npgsql.NpgsqlTransaction tx, Guid tenantId, Guid customerId, CancellationToken ct)
     {
         var newBalance = await conn.ExecuteScalarAsync<decimal>(new CommandDefinition("""

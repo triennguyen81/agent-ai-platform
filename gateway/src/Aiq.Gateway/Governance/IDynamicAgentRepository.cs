@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using Aiq.Gateway.Data;
+using Aiq.Gateway.Vouchers.DocumentProcessing;
 using Dapper;
 using Npgsql;
 
@@ -126,7 +127,16 @@ public sealed record AgentExecutionManifest(
     // delegate) gets it from that one place rather than five separate
     // repository methods each re-implementing the same tenant-keyed lookup.
     // Null means the tenant has no Company Profile configured yet.
-    ManifestCompanyProfile? CompanyProfile = null);
+    ManifestCompanyProfile? CompanyProfile = null,
+    // Document-processing configuration of exactly this version (published
+    // snapshots; the current draft only on test manifests). Null = the
+    // version has none and the legacy built-in extraction applies.
+    ManifestDocumentProcessing? DocumentProcessing = null,
+    // Content of every ASSIGNED skill as this version runs it: immutable
+    // publish-time snapshots for published versions (declarative skills
+    // carry content + SHA-256; image skills are name-only), current content
+    // only on draft test manifests. See SkillSnapshotStore.
+    IReadOnlyList<ManifestDocumentSkill>? SkillSnapshots = null);
 public sealed record ManifestResult(AgentExecutionManifest? Manifest, string? DenialReason);
 
 /// <summary>
@@ -261,7 +271,7 @@ public interface IDynamicAgentRepository
     /// server-derived department (AuthenticatedPrincipalContext), never
     /// client-supplied.
     /// </summary>
-    Task<ManifestResult> GetManifestAsync(Guid userId, Guid tenantId, Guid departmentId, Guid agentId, CancellationToken ct);
+    Task<ManifestResult> GetManifestAsync(Guid userId, Guid tenantId, Guid departmentId, Guid agentId, CancellationToken ct, Guid? pinnedVersionId = null);
 
     /// <summary>
     /// D3 ADMIN production execution: tenant entitlement + department
@@ -271,7 +281,7 @@ public interface IDynamicAgentRepository
     /// Any existing direct ADMIN assignment is ignored here, never required
     /// and never revoked.
     /// </summary>
-    Task<ManifestResult> GetAdminManifestAsync(Guid actorId, Guid tenantId, Guid departmentId, Guid agentId, CancellationToken ct);
+    Task<ManifestResult> GetAdminManifestAsync(Guid actorId, Guid tenantId, Guid departmentId, Guid agentId, CancellationToken ct, Guid? pinnedVersionId = null);
 
     /// <summary>
     /// Resolves a SPECIALIST's manifest for an authorized in-flight delegation
@@ -390,7 +400,13 @@ public interface IDynamicAgentRepository
     /// needs an active agent_assignments row from AssignUserToDepartmentAgentAsync.
     /// Published-only for both — draft execution is GetDepartmentAgentTestManifestAsync's job.
     /// </summary>
-    Task<ManifestResult> GetDepartmentAgentManifestAsync(Guid userId, Guid tenantId, Guid departmentId, Guid agentId, bool isAdmin, CancellationToken ct);
+    /// <remarks>
+    /// <paramref name="pinnedVersionId"/>: re-extraction of a document that
+    /// was processed by a specific PUBLISHED version runs that same version
+    /// (published or superseded — never a draft). Every other authorization
+    /// check (ownership/entitlement chain, enabled, production) is unchanged.
+    /// </remarks>
+    Task<ManifestResult> GetDepartmentAgentManifestAsync(Guid userId, Guid tenantId, Guid departmentId, Guid agentId, bool isAdmin, CancellationToken ct, Guid? pinnedVersionId = null);
 
     /// <summary>
     /// ADMIN-only draft-or-published test resolution for a Department Agent
@@ -516,6 +532,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
             """, new { agentId, actorId, request.Provider, request.Model, request.SystemPrompt, request.Temperature,
                 request.MaxTurns, request.TimeoutSeconds, request.MaxTokens, memory, request.WorkflowId }, tx, cancellationToken: ct));
         await ReplaceCapabilitiesAsync(conn, tx, agentId, row.Id, actorId, request.ToolIds, request.Skills, request.DelegateAgentIds, request.CapabilityIds, ct);
+        await DocumentProcessingStore.CopyFromPublishedAsync(conn, tx, agentId, row.Id, ct);
         await conn.ExecuteAsync(new CommandDefinition(
             "UPDATE agents SET current_draft_version_id=@versionId, updated_by=@actorId WHERE id=@agentId",
             new { agentId, actorId, versionId = row.Id }, tx, cancellationToken: ct));
@@ -580,6 +597,8 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         }
         if (!row.WorkflowValid) errors.Add("inactive_or_missing_workflow");
         if (row.CapabilityCount != row.ValidCapabilityCount) errors.Add("inactive_capability");
+        errors.AddRange(await SkillSnapshotStore.ValidateAssignedAsync(conn, null, versionId, ct));
+        errors.AddRange(await DocumentProcessingStore.ValidateAsync(conn, null, versionId, ct));
         return new AgentVersionValidation(errors.Count == 0, errors.ToArray());
     }
 
@@ -610,6 +629,15 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
             )
             """, new { agentId, versionId }, tx, cancellationToken: ct));
         if (!stillValid)
+        {
+            await tx.RollbackAsync(ct);
+            return null;
+        }
+        // Freeze document configuration (workflow + skill snapshots) while
+        // the version is still a draft; the immutability trigger takes over
+        // after the status flip below.
+        try { await DocumentProcessingStore.PinForPublishAsync(conn, tx, versionId, ct); }
+        catch (InvalidOperationException)
         {
             await tx.RollbackAsync(ct);
             return null;
@@ -1144,6 +1172,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         // Agent methods must keep calling it exactly as before).
         await ReplaceCapabilitiesAsync(conn, tx, agentId, row.Id, actorId, request.ToolIds, request.Skills, request.DelegateAgentIds, null, ct);
         await ReplaceDepartmentAgentCapabilitiesAsync(conn, tx, tenantId, departmentId, row.Id, actorId, request.CapabilityIds, ct);
+        await DocumentProcessingStore.CopyFromPublishedAsync(conn, tx, agentId, row.Id, ct);
         await conn.ExecuteAsync(new CommandDefinition(
             "UPDATE agents SET current_draft_version_id=@versionId, updated_by=@actorId WHERE id=@agentId",
             new { agentId, actorId, versionId = row.Id }, tx, cancellationToken: ct));
@@ -1210,6 +1239,8 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         }
         if (!row.WorkflowValid) errors.Add("inactive_or_missing_workflow");
         if (row.CapabilityCount != row.ValidCapabilityCount) errors.Add("inactive_capability");
+        errors.AddRange(await SkillSnapshotStore.ValidateAssignedAsync(conn, null, versionId, ct));
+        errors.AddRange(await DocumentProcessingStore.ValidateAsync(conn, null, versionId, ct));
         return new AgentVersionValidation(errors.Count == 0, errors.ToArray());
     }
 
@@ -1240,6 +1271,15 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
             )
             """, new { agentId, versionId, tenantId, departmentId }, tx, cancellationToken: ct));
         if (!stillValid)
+        {
+            await tx.RollbackAsync(ct);
+            return null;
+        }
+        // Freeze document configuration (workflow + skill snapshots) while
+        // the version is still a draft; the immutability trigger takes over
+        // after the status flip below.
+        try { await DocumentProcessingStore.PinForPublishAsync(conn, tx, versionId, ct); }
+        catch (InvalidOperationException)
         {
             await tx.RollbackAsync(ct);
             return null;
@@ -1309,7 +1349,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
             new { agentId }, cancellationToken: ct));
     }
 
-    public async Task<ManifestResult> GetDepartmentAgentManifestAsync(Guid userId, Guid tenantId, Guid departmentId, Guid agentId, bool isAdmin, CancellationToken ct)
+    public async Task<ManifestResult> GetDepartmentAgentManifestAsync(Guid userId, Guid tenantId, Guid departmentId, Guid agentId, bool isAdmin, CancellationToken ct, Guid? pinnedVersionId = null)
     {
         await using var conn = await _factory.OpenAsync(ct);
         var row = await conn.QuerySingleOrDefaultAsync<ManifestRow>(new CommandDefinition("""
@@ -1323,9 +1363,9 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
               v.temperature,v.max_turns AS MaxTurns,v.timeout_seconds AS TimeoutSeconds,v.max_tokens AS MaxTokens,v.memory_config::text AS MemoryConfigJson,
               v.workflow_id AS WorkflowId
             FROM users u JOIN tenants t ON t.id=@tenantId
-            CROSS JOIN agents a LEFT JOIN agent_versions v ON v.id=a.published_version_id AND v.agent_id=a.id
+            CROSS JOIN agents a LEFT JOIN agent_versions v ON v.id=COALESCE(@pinnedVersionId, a.published_version_id) AND v.agent_id=a.id
             WHERE u.id=@userId AND u.tenant_id=@tenantId AND a.id=@agentId
-            """, new { userId, tenantId, departmentId, agentId, isAdmin }, cancellationToken: ct));
+            """, new { userId, tenantId, departmentId, agentId, isAdmin, pinnedVersionId }, cancellationToken: ct));
         if (row is null) return new(null, "not_found_or_cross_tenant");
         // TenantAssigned/DepartmentAssigned both collapse to the same
         // structural-ownership boolean here (there is no separate
@@ -1337,7 +1377,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
             : !row.DepartmentAssigned ? "agent_not_owned_by_department"
             : !row.UserAssigned ? "agent_not_assigned"
             : !row.AgentEnabled ? "agent_disabled" : row.LifecycleState != "production" ? "agent_not_production"
-            : row.VersionId is null || row.VersionStatus != "published" ? "agent_not_published" : null;
+            : !IsRunnableVersion(row.VersionId, row.VersionStatus, pinnedVersionId) ? (pinnedVersionId is null ? "agent_not_published" : "pinned_version_not_published") : null;
         if (denial is not null) return new(null, denial);
         var tools = (await conn.QueryAsync<ManifestTool>(new CommandDefinition("""
             SELECT t.id AS Id,t.code AS Code,t.name AS Name,t.description AS Description,t.category AS Category,t.risk_tier AS RiskTier
@@ -1362,11 +1402,13 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         var (workflowOk, workflow) = await TryResolveWorkflowAsync(conn, row.WorkflowId, ct);
         if (!workflowOk) return new(null, "inactive_or_missing_workflow");
         var delegates = await ResolveDelegatesAsync(conn, row.VersionId!.Value, ct);
+        var documentProcessing = await DocumentProcessingStore.ResolveForManifestAsync(conn, row.VersionId!.Value, ct);
+        var skillSnapshots = await SkillSnapshotStore.ResolveAssignedForManifestAsync(conn, row.VersionId!.Value, ct);
         return new(new AgentExecutionManifest(userId, tenantId,
             new ManifestAgent(row.AgentId,row.Slug,row.Name,row.Description,ParseJson(row.IconMetadataJson)),
             row.VersionId!.Value,row.Version!.Value,row.Provider!,row.Model!,row.SystemPrompt!,row.Temperature!.Value,
             row.MaxTurns!.Value,row.TimeoutSeconds!.Value,row.MaxTokens!.Value,ParseJson(row.MemoryConfigJson!),tools,skills,knowledge,workflow,delegates,
-            DepartmentId: departmentId), null);
+            DepartmentId: departmentId, DocumentProcessing: documentProcessing, SkillSnapshots: skillSnapshots), null);
     }
 
     public async Task<ManifestResult> GetDepartmentAgentTestManifestAsync(Guid actorId, Guid tenantId, Guid departmentId, Guid agentId, CancellationToken ct)
@@ -1410,11 +1452,13 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         var (workflowOk2, workflow) = await TryResolveWorkflowAsync(conn, version.WorkflowId, ct);
         if (!workflowOk2) return new(null, "inactive_or_missing_workflow");
         var delegates = await ResolveDelegatesAsync(conn, version.VersionId, ct);
+        var documentProcessing = await DocumentProcessingStore.ResolveForManifestAsync(conn, version.VersionId, ct);
+        var skillSnapshots = await SkillSnapshotStore.ResolveAssignedForManifestAsync(conn, version.VersionId, ct);
         return new(new AgentExecutionManifest(actorId, tenantId,
             new ManifestAgent(agentRow.AgentId, agentRow.Slug, agentRow.Name, agentRow.Description, ParseJson(agentRow.IconMetadataJson)),
             version.VersionId, version.Version, version.Provider, version.Model, version.SystemPrompt, version.Temperature,
             version.MaxTurns, version.TimeoutSeconds, version.MaxTokens, ParseJson(version.MemoryConfigJson), tools, skills, knowledge, workflow, delegates,
-            DepartmentId: departmentId), null);
+            DepartmentId: departmentId, DocumentProcessing: documentProcessing, SkillSnapshots: skillSnapshots), null);
     }
 
     public async Task<IReadOnlyList<AgentUserAssignmentRecord>?> ListAssignedUsersAsync(Guid tenantId, Guid agentId, CancellationToken ct)
@@ -1502,7 +1546,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         return n > 0;
     }
 
-    public async Task<ManifestResult> GetManifestAsync(Guid userId, Guid tenantId, Guid departmentId, Guid agentId, CancellationToken ct)
+    public async Task<ManifestResult> GetManifestAsync(Guid userId, Guid tenantId, Guid departmentId, Guid agentId, CancellationToken ct, Guid? pinnedVersionId = null)
     {
         await using var conn = await _factory.OpenAsync(ct);
         var row = await conn.QuerySingleOrDefaultAsync<ManifestRow>(new CommandDefinition("""
@@ -1516,9 +1560,9 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
               v.temperature,v.max_turns AS MaxTurns,v.timeout_seconds AS TimeoutSeconds,v.max_tokens AS MaxTokens,v.memory_config::text AS MemoryConfigJson,
               v.workflow_id AS WorkflowId
             FROM users u JOIN tenants t ON t.id=@tenantId
-            CROSS JOIN agents a LEFT JOIN agent_versions v ON v.id=a.published_version_id AND v.agent_id=a.id
+            CROSS JOIN agents a LEFT JOIN agent_versions v ON v.id=COALESCE(@pinnedVersionId, a.published_version_id) AND v.agent_id=a.id
             WHERE u.id=@userId AND u.tenant_id=@tenantId AND a.id=@agentId
-            """, new { userId, tenantId, departmentId, agentId }, cancellationToken: ct));
+            """, new { userId, tenantId, departmentId, agentId, pinnedVersionId }, cancellationToken: ct));
         if (row is null) return new(null, "not_found_or_cross_tenant");
         // D3 canonical USER chain: tenant entitlement -> department
         // assignment -> direct user assignment, all active, in that order.
@@ -1526,7 +1570,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
             : !row.TenantAssigned ? "agent_not_assigned_to_tenant" : !row.DepartmentAssigned ? "agent_not_assigned_to_department"
             : !row.UserAssigned ? "agent_not_assigned"
             : !row.AgentEnabled ? "agent_disabled" : row.LifecycleState != "production" ? "agent_not_production"
-            : row.VersionId is null || row.VersionStatus != "published" ? "agent_not_published" : null;
+            : !IsRunnableVersion(row.VersionId, row.VersionStatus, pinnedVersionId) ? (pinnedVersionId is null ? "agent_not_published" : "pinned_version_not_published") : null;
         if (denial is not null) return new(null, denial);
         var tools = (await conn.QueryAsync<ManifestTool>(new CommandDefinition("""
             SELECT t.id AS Id,t.code AS Code,t.name AS Name,t.description AS Description,t.category AS Category,t.risk_tier AS RiskTier
@@ -1549,11 +1593,13 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         var (workflowOk, workflow) = await TryResolveWorkflowAsync(conn, row.WorkflowId, ct);
         if (!workflowOk) return new(null, "inactive_or_missing_workflow");
         var delegates = await ResolveDelegatesAsync(conn, row.VersionId!.Value, ct);
+        var documentProcessing = await DocumentProcessingStore.ResolveForManifestAsync(conn, row.VersionId!.Value, ct);
+        var skillSnapshots = await SkillSnapshotStore.ResolveAssignedForManifestAsync(conn, row.VersionId!.Value, ct);
         return new(new AgentExecutionManifest(userId, tenantId,
             new ManifestAgent(row.AgentId,row.Slug,row.Name,row.Description,ParseJson(row.IconMetadataJson)),
             row.VersionId!.Value,row.Version!.Value,row.Provider!,row.Model!,row.SystemPrompt!,row.Temperature!.Value,
             row.MaxTurns!.Value,row.TimeoutSeconds!.Value,row.MaxTokens!.Value,ParseJson(row.MemoryConfigJson!),tools,skills,knowledge,workflow,delegates,
-            DepartmentId: departmentId), null);
+            DepartmentId: departmentId, DocumentProcessing: documentProcessing, SkillSnapshots: skillSnapshots), null);
     }
 
     /// <summary>
@@ -1566,7 +1612,7 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
     /// independent methods is clearer than one method with a branch buried
     /// inside a long SQL/denial-ladder block.
     /// </summary>
-    public async Task<ManifestResult> GetAdminManifestAsync(Guid actorId, Guid tenantId, Guid departmentId, Guid agentId, CancellationToken ct)
+    public async Task<ManifestResult> GetAdminManifestAsync(Guid actorId, Guid tenantId, Guid departmentId, Guid agentId, CancellationToken ct, Guid? pinnedVersionId = null)
     {
         await using var conn = await _factory.OpenAsync(ct);
         var row = await conn.QuerySingleOrDefaultAsync<ManifestRow>(new CommandDefinition("""
@@ -1580,14 +1626,14 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
               v.temperature,v.max_turns AS MaxTurns,v.timeout_seconds AS TimeoutSeconds,v.max_tokens AS MaxTokens,v.memory_config::text AS MemoryConfigJson,
               v.workflow_id AS WorkflowId
             FROM users u JOIN tenants t ON t.id=@tenantId
-            CROSS JOIN agents a LEFT JOIN agent_versions v ON v.id=a.published_version_id AND v.agent_id=a.id
+            CROSS JOIN agents a LEFT JOIN agent_versions v ON v.id=COALESCE(@pinnedVersionId, a.published_version_id) AND v.agent_id=a.id
             WHERE u.id=@actorId AND u.tenant_id=@tenantId AND a.id=@agentId
-            """, new { actorId, tenantId, departmentId, agentId }, cancellationToken: ct));
+            """, new { actorId, tenantId, departmentId, agentId, pinnedVersionId }, cancellationToken: ct));
         if (row is null) return new(null, "not_found_or_cross_tenant");
         var denial = !row.UserActive ? "user_disabled" : !row.TenantActive ? "tenant_disabled"
             : !row.TenantAssigned ? "agent_not_assigned_to_tenant" : !row.DepartmentAssigned ? "agent_not_assigned_to_department"
             : !row.AgentEnabled ? "agent_disabled" : row.LifecycleState != "production" ? "agent_not_production"
-            : row.VersionId is null || row.VersionStatus != "published" ? "agent_not_published" : null;
+            : !IsRunnableVersion(row.VersionId, row.VersionStatus, pinnedVersionId) ? (pinnedVersionId is null ? "agent_not_published" : "pinned_version_not_published") : null;
         if (denial is not null) return new(null, denial);
         var tools = (await conn.QueryAsync<ManifestTool>(new CommandDefinition("""
             SELECT t.id AS Id,t.code AS Code,t.name AS Name,t.description AS Description,t.category AS Category,t.risk_tier AS RiskTier
@@ -1610,11 +1656,13 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         var (workflowOk, workflow) = await TryResolveWorkflowAsync(conn, row.WorkflowId, ct);
         if (!workflowOk) return new(null, "inactive_or_missing_workflow");
         var delegates = await ResolveDelegatesAsync(conn, row.VersionId!.Value, ct);
+        var documentProcessing = await DocumentProcessingStore.ResolveForManifestAsync(conn, row.VersionId!.Value, ct);
+        var skillSnapshots = await SkillSnapshotStore.ResolveAssignedForManifestAsync(conn, row.VersionId!.Value, ct);
         return new(new AgentExecutionManifest(actorId, tenantId,
             new ManifestAgent(row.AgentId,row.Slug,row.Name,row.Description,ParseJson(row.IconMetadataJson)),
             row.VersionId!.Value,row.Version!.Value,row.Provider!,row.Model!,row.SystemPrompt!,row.Temperature!.Value,
             row.MaxTurns!.Value,row.TimeoutSeconds!.Value,row.MaxTokens!.Value,ParseJson(row.MemoryConfigJson!),tools,skills,knowledge,workflow,delegates,
-            DepartmentId: departmentId), null);
+            DepartmentId: departmentId, DocumentProcessing: documentProcessing, SkillSnapshots: skillSnapshots), null);
     }
 
     /// <summary>
@@ -1689,10 +1737,12 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         var (workflowOk2, workflow) = await TryResolveWorkflowAsync(conn, version.WorkflowId, ct);
         if (!workflowOk2) return new(null, "inactive_or_missing_workflow");
         var delegates = await ResolveDelegatesAsync(conn, version.VersionId, ct);
+        var documentProcessing = await DocumentProcessingStore.ResolveForManifestAsync(conn, version.VersionId, ct);
+        var skillSnapshots = await SkillSnapshotStore.ResolveAssignedForManifestAsync(conn, version.VersionId, ct);
         return new(new AgentExecutionManifest(actorId, Guid.Empty,
             new ManifestAgent(agentRow.AgentId, agentRow.Slug, agentRow.Name, agentRow.Description, ParseJson(agentRow.IconMetadataJson)),
             version.VersionId, version.Version, version.Provider, version.Model, version.SystemPrompt, version.Temperature,
-            version.MaxTurns, version.TimeoutSeconds, version.MaxTokens, ParseJson(version.MemoryConfigJson), tools, skills, [], workflow, delegates), null);
+            version.MaxTurns, version.TimeoutSeconds, version.MaxTokens, ParseJson(version.MemoryConfigJson), tools, skills, [], workflow, delegates, DocumentProcessing: documentProcessing, SkillSnapshots: skillSnapshots), null);
     }
 
     public async Task<ManifestResult> GetDelegateManifestAsync(Guid userId, Guid tenantId, Guid departmentId, Guid routerAgentId, Guid specialistAgentId, CancellationToken ct)
@@ -1757,12 +1807,19 @@ public sealed class DynamicAgentRepository : IDynamicAgentRepository
         // exposes further delegation, so a chain can't form even if the
         // specialist's own version has delegates configured (single-hop,
         // enforced here at the Gateway — not just left to Python).
+        var documentProcessing = await DocumentProcessingStore.ResolveForManifestAsync(conn, row.VersionId!.Value, ct);
+        var skillSnapshots = await SkillSnapshotStore.ResolveAssignedForManifestAsync(conn, row.VersionId!.Value, ct);
         return new(new AgentExecutionManifest(userId, tenantId,
             new ManifestAgent(row.AgentId, row.Slug, row.Name, row.Description, ParseJson(row.IconMetadataJson)),
             row.VersionId!.Value, row.Version!.Value, row.Provider!, row.Model!, row.SystemPrompt!, row.Temperature!.Value,
             row.MaxTurns!.Value, row.TimeoutSeconds!.Value, row.MaxTokens!.Value, ParseJson(row.MemoryConfigJson!),
-            tools, skills, knowledge, workflow, [], DepartmentId: departmentId), null);
+            tools, skills, knowledge, workflow, [], DepartmentId: departmentId, DocumentProcessing: documentProcessing, SkillSnapshots: skillSnapshots), null);
     }
+
+    // Production runs the published version; a pinned re-extraction may also
+    // run an older version that was published (now superseded) — never a draft.
+    private static bool IsRunnableVersion(Guid? versionId, string? status, Guid? pinnedVersionId) =>
+        versionId is not null && (status == "published" || (pinnedVersionId is not null && status == "superseded"));
 
     private sealed record TestAgentRow(Guid AgentId, string Slug, string Name, string? Description, string IconMetadataJson, string ActionTier, Guid? VersionId);
     private sealed record TestVersionRow(Guid VersionId, int Version, string Provider, string Model, string SystemPrompt, decimal Temperature, int MaxTurns, int TimeoutSeconds, int MaxTokens, string MemoryConfigJson, Guid? WorkflowId);

@@ -18,14 +18,15 @@ public static class BusinessModuleAuthorization
         return true;
     }
 
-    // R16 — separation of duties. A reviewer may never approve/reject/settle
-    // a record they themselves created, regardless of role. Backend-enforced
-    // (never trust a frontend-only restriction) — every ADMIN-decision
-    // endpoint that settles a business consequence (receipt confirm/reject,
-    // expense confirm/reject/grant-exception, invoice apply) must call this
-    // before acting. Not gated by role: an ADMIN who happens to be the
-    // creator is still blocked — "creator" is the disqualifier, not "USER".
-    public static bool IsSelfApproval(Guid creatorUserId, Guid reviewerUserId) => creatorUserId == reviewerUserId;
+    // ADMIN Department Authority Invariant (docs/ACL_V2_RESOURCE_VISIBILITY_RULES.md §15):
+    // a same-department ADMIN has full operational authority — create, review,
+    // approve every stage, recognize, pay — INCLUDING on records they created or
+    // reviewed themselves. There is deliberately NO creator/claimant/previous-
+    // reviewer check for ADMIN (the former R16 IsSelfApproval was removed).
+    // USER never reaches a decision endpoint (route policy department_admin);
+    // TENANT_OWNER / SUPER_ADMIN fail TryScope; other departments/tenants are
+    // not found. A future ADMIN separation-of-duties rule needs an explicit
+    // product decision first.
 
     public static async Task<bool> CanUseAnyAsync(HttpContext context, ICapabilityRepository capabilities, CancellationToken ct, params string[] codes)
     {

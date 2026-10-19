@@ -806,6 +806,36 @@ export const gateway = {
       body: JSON.stringify(payload),
     });
   },
+  // Configurable document processing (versioned with the Agent). Edits only
+  // ever target a DRAFT version; the Gateway rejects edits to published ones.
+  listDepartmentDocumentTypes(token: string) {
+    return call(GATEWAY_BASE, `/department/document-types`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  getDepartmentAgentDocumentProcessing(token: string, agentId: string, versionId: string) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/versions/${versionId}/document-processing`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  replaceDepartmentAgentDocumentProcessing(token: string, agentId: string, versionId: string, types: unknown[]) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/versions/${versionId}/document-processing`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ types }),
+    });
+  },
+  testDepartmentAgentDocumentProcessing(
+    token: string,
+    agentId: string,
+    payload: { rawText?: string; voucherId?: string; voucherTypeHint?: string },
+  ) {
+    return call(GATEWAY_BASE, `/department/agents/${agentId}/document-processing/test`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  },
   validateDepartmentAgentVersion(token: string, agentId: string, versionId: string) {
     return call(GATEWAY_BASE, `/department/agents/${agentId}/versions/${versionId}/validate`, {
       method: "POST",
@@ -1325,8 +1355,25 @@ export const gateway = {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
+  getVoucherProcessingState(token: string, id: string) {
+    return call(GATEWAY_BASE, `/vouchers/${id}/processing-state`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  listVoucherDocumentReviews(token: string, id: string) {
+    return call(GATEWAY_BASE, `/vouchers/${id}/document-review`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
   getVoucher(token: string, id: string) {
     return call(GATEWAY_BASE, `/vouchers/${id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // Chứng từ THU / CHI — direction, counterparty, open AR/AP candidates,
+  // suggested match and current posting (GET /vouchers/{id}/settlement).
+  getSettlement(token: string, id: string) {
+    return call(GATEWAY_BASE, `/vouchers/${id}/settlement`, {
       headers: { Authorization: `Bearer ${token}` },
     });
   },
@@ -1405,9 +1452,12 @@ export const gateway = {
       },
     );
   },
-  uploadVoucher(token: string, formData: FormData, voucherType: string) {
-    // multipart — do not set Content-Type manually.
-    const qs = new URLSearchParams({ voucherType }).toString();
+  uploadVoucher(token: string, formData: FormData, voucherType: string, preferredAgentId?: string) {
+    // multipart — do not set Content-Type manually. preferredAgentId is a
+    // hint only: the Gateway re-authorizes it in the extract job.
+    const params: Record<string, string> = { voucherType };
+    if (preferredAgentId) params.preferredAgentId = preferredAgentId;
+    const qs = new URLSearchParams(params).toString();
     return fetch(`${GATEWAY_BASE}/vouchers/upload?${qs}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
@@ -1440,6 +1490,24 @@ export const gateway = {
   customerByMst(token: string, mst: string) {
     return call(GATEWAY_BASE, `/customers/by-mst/${encodeURIComponent(mst)}`, {
       method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // Bank Account Master (owner = "customers" | "suppliers").
+  listBankAccounts(token: string, owner: "customers" | "suppliers", ownerId: string) {
+    return call(GATEWAY_BASE, `/${owner}/${ownerId}/bank-accounts`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // MY_COMPANY's own bank accounts (existing sim_bank_accounts), read-only.
+  listCompanyBankAccounts(token: string) {
+    return call(GATEWAY_BASE, `/vouchers/company-bank-accounts`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+  // Bank statement lines + Customer identification for a bank_statement voucher.
+  voucherBankTransactions(token: string, voucherId: string) {
+    return call(GATEWAY_BASE, `/vouchers/${voucherId}/bank-transactions`, {
       headers: { Authorization: `Bearer ${token}` },
     });
   },

@@ -1,14 +1,71 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import { FileText, Loader2, Trash2, Upload, Wand2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { CheckCircle2, ExternalLink, FileText, Loader2, Trash2, Upload, Wand2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { SaveToKbButton } from "@/components/save-to-kb-button";
+import { AcceptInvoiceButton } from "@/components/accept-invoice-button";
+import { AcceptExpenseButton } from "@/components/accept-expense-button";
 import { CapabilityError, executeCapability } from "@/lib/capability";
 import { isImageFilename, uploadAndExtract } from "@/lib/upload-extract";
+
+// Real posting flow (Duyệt & ghi nhận → AR/AP) — mirrors what
+// /vouchers/[id] already does, wired into this "Accounting → Hoá đơn" entry
+// point too so the flow works from here instead of dead-ending at
+// AI-scratchpad extraction (Trích xuất trường / Đề xuất bút toán / Lưu vào
+// KB never persisted a voucher or touched AR/AP at all). Gateway only OCRs
+// real image/PDF bytes, so this path requires an uploaded file — pasted
+// text alone (the primary input above) has nothing to persist a voucher
+// from.
+type PostVoucherType = "invoice_vat_out" | "invoice_vat_in";
+
+interface PostedVoucherLite {
+  id: string;
+  status: string;
+  voucherType: string;
+  totalAmount?: number | null;
+  subtotal?: number | null;
+  vatAmount?: number | null;
+  currency?: string | null;
+  buyerName?: string | null;
+  sellerName?: string | null;
+  extractedFieldsJson?: string | null;
+}
+
+interface PartnerContext {
+  status: string;
+  name?: string;
+}
+
+function readPartnerContext(json: string | null | undefined, key: "ar_context" | "ap_context"): PartnerContext | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+    const ctx = parsed[key] as Record<string, unknown> | undefined;
+    if (!ctx) return null;
+    const status = String(ctx.status ?? "");
+    const partner = (ctx.customer ?? ctx.supplier) as Record<string, unknown> | undefined;
+    return { status, name: partner?.name as string | undefined };
+  } catch {
+    return null;
+  }
+}
+
+type PostingState =
+  | { phase: "idle" }
+  | { phase: "uploading" }
+  | { phase: "polling"; voucherId: string }
+  | { phase: "ready"; voucherId: string; voucher: PostedVoucherLite }
+  | { phase: "error"; message: string };
+
+const POST_ACCEPTED = new Set(["image/jpeg", "image/png", "image/webp", "image/bmp", "application/pdf"]);
+const POLL_INTERVAL_MS = 2500;
+const POLL_MAX_ATTEMPTS = 30;
+const PENDING_STATUSES = new Set(["processing", "ocr_complete", "ocr_unavailable"]);
 
 type FileStatus = "idle" | "uploading" | "reading" | "ocr" | "done" | "error";
 
@@ -42,6 +99,118 @@ Tổng tiền thanh toán: 6.380.000 đ
 (Bằng chữ: Sáu triệu ba trăm tám mươi nghìn đồng chẵn)
 Phương thức thanh toán: Chuyển khoản`;
 
+function fmtMoney(n: number | null | undefined, currency = "VND"): string {
+  return n == null ? "—" : `${Number(n).toLocaleString("vi-VN")} ${currency}`;
+}
+
+// The 5-point required posting UI (Trạng thái / Chiều hoá đơn / Đối tác /
+// Accounting impact preview / Duyệt & ghi nhận), reusing the exact same
+// AcceptInvoiceButton/AcceptExpenseButton the voucher detail page uses —
+// same idempotent gateway endpoints, same POSTED/UNPAID wording, same
+// ADMIN-only gating.
+function PostingPanel({
+  voucherId,
+  voucher,
+  postVoucherType,
+  isAdmin,
+  onApplied,
+}: {
+  voucherId: string;
+  voucher: PostedVoucherLite;
+  postVoucherType: PostVoucherType;
+  isAdmin: boolean | null;
+  onApplied: () => void;
+}) {
+  const currency = voucher.currency ?? "VND";
+  const isSale = postVoucherType === "invoice_vat_out";
+  const partner = readPartnerContext(voucher.extractedFieldsJson, isSale ? "ar_context" : "ap_context");
+  const partnerName = partner?.name ?? (isSale ? voucher.buyerName : voucher.sellerName) ?? "—";
+  const isPosted = voucher.status === "verified";
+  const statusLabel = isPosted ? "POSTED" : voucher.status === "extracted" ? "EXTRACTED" : voucher.status.toUpperCase();
+
+  if (voucher.status === "rejected" || voucher.status === "failed") {
+    return (
+      <div className="rounded-[var(--radius)] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        Chứng từ #{voucherId.slice(0, 8)}… xử lý thất bại (trạng thái: {voucher.status}).{" "}
+        <Link href={`/vouchers/${voucherId}`} className="underline">Xem chi tiết</Link>
+      </div>
+    );
+  }
+
+  return (
+    <section
+      className={`space-y-2 rounded-[var(--radius)] border p-4 ${
+        isPosted ? "border-emerald-300 bg-emerald-50/40" : isSale ? "border-emerald-200 bg-emerald-50/20" : "border-amber-200 bg-amber-50/20"
+      }`}
+    >
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium">Trạng thái: {statusLabel}</div>
+        <Link
+          href={`/vouchers/${voucherId}`}
+          className="inline-flex items-center gap-1 text-xs text-[var(--color-primary)] hover:underline"
+        >
+          Xem chi tiết <ExternalLink className="size-3" />
+        </Link>
+      </div>
+      <div className="text-xs text-[var(--color-muted-fg)]">
+        Chiều hoá đơn:{" "}
+        <b className={isSale ? "text-emerald-800" : "text-amber-800"}>
+          {isSale ? "BÁN → Phải thu (AR)" : "MUA → Phải trả (AP)"}
+        </b>
+      </div>
+      <div className="text-xs text-[var(--color-muted-fg)]">
+        Đối tác: <b>{partnerName}</b>
+      </div>
+
+      {partner && partner.status !== "found" && (
+        <p className="rounded-[var(--radius)] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          {isSale ? "Khách hàng" : "Nhà cung cấp"} chưa có trong hệ thống — không thể ghi
+          {isSale ? " AR" : " AP"} cho tới khi tạo hồ sơ {isSale ? "khách hàng" : "NCC"}.
+        </p>
+      )}
+
+      <div className="space-y-0.5 rounded border bg-[var(--color-bg)] px-2 py-1.5 font-mono text-xs">
+        <div>
+          {isSale ? "Phải thu" : "Phải trả"} {partnerName}:{" "}
+          <b className={isSale ? "text-emerald-800" : "text-amber-800"}>
+            +{fmtMoney(voucher.totalAmount, currency)}
+          </b>
+        </div>
+        {voucher.subtotal != null && (
+          <div>{isSale ? "Doanh thu" : "Hàng hoá/dịch vụ mua vào"}: {fmtMoney(voucher.subtotal, currency)}</div>
+        )}
+        {voucher.vatAmount != null && (
+          <div>{isSale ? "VAT đầu ra" : "VAT đầu vào"}: {fmtMoney(voucher.vatAmount, currency)}</div>
+        )}
+      </div>
+
+      {isPosted ? (
+        <div className="flex items-center gap-2 rounded-[var(--radius)] border border-emerald-300 bg-emerald-100 px-3 py-2 text-sm text-emerald-900">
+          <CheckCircle2 className="size-4 shrink-0" />
+          <div>
+            Đã ghi nhận {isSale ? "phải thu" : "phải trả"}: <b>{fmtMoney(voucher.totalAmount, currency)}</b> — Thanh
+            toán: <b>CHƯA THANH TOÁN</b>.
+          </div>
+        </div>
+      ) : isAdmin === false ? (
+        <p className="rounded-[var(--radius)] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Chỉ ADMIN cùng phòng ban mới có thể Duyệt &amp; ghi nhận.
+        </p>
+      ) : isAdmin === null ? (
+        <p className="text-xs text-[var(--color-muted-fg)]">Đang kiểm tra quyền…</p>
+      ) : partner?.status === "found" || (partner === null && voucher.status === "extracted") ? (
+        isSale ? (
+          <AcceptInvoiceButton voucherId={voucherId} onApplied={onApplied} />
+        ) : (
+          <AcceptExpenseButton voucherId={voucherId} voucherType="invoice_vat_in" onApplied={onApplied} />
+        )
+      ) : (
+        <p className="text-xs text-[var(--color-muted-fg)]">Đang chờ trích xuất hoàn tất…</p>
+      )}
+    </section>
+  );
+}
+
 export default function InvoicePage() {
   const [rawText, setRawText] = useState(SAMPLE);
   const [extracted, setExtracted] = useState("");
@@ -67,6 +236,81 @@ export default function InvoicePage() {
   // removing the file ("Xóa file") or picking a different one does.
   const [sourceObjectKey, setSourceObjectKey] = useState<string | null>(null);
 
+  const [postVoucherType, setPostVoucherType] = useState<PostVoucherType>("invoice_vat_out");
+  const [posting, setPosting] = useState<PostingState>({ phase: "idle" });
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/me")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((me: { roles?: string[] } | null) => {
+        if (!cancelled) setIsAdmin((me?.roles ?? []).includes("admin"));
+      })
+      .catch(() => {
+        if (!cancelled) setIsAdmin(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const pollVoucher = useCallback(async (voucherId: string, attempt: number) => {
+    try {
+      const res = await fetch(`/api/vouchers/${voucherId}`, { cache: "no-store" });
+      if (!res.ok) {
+        setPosting({ phase: "error", message: `Không tải được chứng từ (HTTP ${res.status})` });
+        return;
+      }
+      const detail = (await res.json()) as { voucher: PostedVoucherLite };
+      const status = detail.voucher.status;
+      if (PENDING_STATUSES.has(status) && attempt < POLL_MAX_ATTEMPTS) {
+        setPosting({ phase: "polling", voucherId });
+        setTimeout(() => void pollVoucher(voucherId, attempt + 1), POLL_INTERVAL_MS);
+        return;
+      }
+      setPosting({ phase: "ready", voucherId, voucher: detail.voucher });
+    } catch (err) {
+      setPosting({
+        phase: "error",
+        message: err instanceof Error ? err.message : "Network error khi kiểm tra chứng từ",
+      });
+    }
+  }, []);
+
+  const postToLedger = useCallback(async () => {
+    if (!file) {
+      setPosting({ phase: "error", message: "Cần chọn file ảnh/PDF hoá đơn — không dùng được với văn bản dán tay." });
+      return;
+    }
+    if (!POST_ACCEPTED.has(file.type)) {
+      setPosting({
+        phase: "error",
+        message: "Ghi sổ thật chỉ nhận ảnh (JPG/PNG/WebP/BMP) hoặc PDF — không nhận Word/XML.",
+      });
+      return;
+    }
+    setPosting({ phase: "uploading" });
+    try {
+      const fd = new FormData();
+      fd.append("file", file, file.name);
+      const res = await fetch(`/api/vouchers/upload?voucherType=${postVoucherType}`, {
+        method: "POST",
+        body: fd,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        setPosting({ phase: "error", message: text.slice(0, 300) || `HTTP ${res.status}` });
+        return;
+      }
+      const body = (await res.json()) as { voucherId: string };
+      setPosting({ phase: "polling", voucherId: body.voucherId });
+      void pollVoucher(body.voucherId, 0);
+    } catch (err) {
+      setPosting({ phase: "error", message: err instanceof Error ? err.message : "Network error" });
+    }
+  }, [file, postVoucherType, pollVoucher]);
+
   function pickFile() {
     fileInputRef.current?.click();
   }
@@ -80,6 +324,7 @@ export default function InvoicePage() {
     setFileError(null);
     setExtractedFileInfo(null);
     setSourceObjectKey(null);
+    setPosting({ phase: "idle" });
   }
 
   function clearFile() {
@@ -88,6 +333,7 @@ export default function InvoicePage() {
     setFileError(null);
     setExtractedFileInfo(null);
     setSourceObjectKey(null);
+    setPosting({ phase: "idle" });
     // rawText is deliberately left untouched — manual input stays available.
   }
 
@@ -273,9 +519,69 @@ Trả về bút toán đầy đủ kèm cơ sở TT200.`;
                   <Trash2 className="size-3.5" /> Xóa file
                 </Button>
               </div>
+
+              {/* Real posting flow — ghi một chứng từ thật (voucher) vào hệ
+                  thống rồi mở ra Duyệt & ghi nhận, khác hẳn "Trích xuất
+                  trường"/"Đề xuất bút toán" phía dưới (chỉ chạy AI, không
+                  lưu gì). Chỉ nhận ảnh/PDF — giống /vouchers/upload. */}
+              <div className="mt-2 space-y-2 border-t pt-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="text-xs font-medium text-[var(--color-muted-fg)]">Chiều hoá đơn:</label>
+                  <select
+                    value={postVoucherType}
+                    onChange={(e) => setPostVoucherType(e.target.value as PostVoucherType)}
+                    disabled={posting.phase === "uploading" || posting.phase === "polling"}
+                    className="rounded-[var(--radius)] border px-2 py-1 text-xs"
+                  >
+                    <option value="invoice_vat_out">BÁN → Phải thu (AR)</option>
+                    <option value="invoice_vat_in">MUA → Phải trả (AP)</option>
+                  </select>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void postToLedger()}
+                    disabled={posting.phase === "uploading" || posting.phase === "polling"}
+                  >
+                    {posting.phase === "uploading" || posting.phase === "polling" ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Upload className="size-3.5" />
+                    )}
+                    Ghi vào hệ thống &amp; duyệt
+                  </Button>
+                </div>
+                <p className="text-[10px] text-[var(--color-muted-fg)]">
+                  Tạo chứng từ thật trong hệ thống (OCR + trích xuất chạy nền), sau đó cho phép
+                  ADMIN cùng phòng ban Duyệt &amp; ghi nhận vào AR/AP — khác với "Trích xuất
+                  trường"/"Đề xuất bút toán" bên dưới (chỉ để tham khảo, không lưu).
+                </p>
+              </div>
             </div>
           )}
         </div>
+
+        {posting.phase === "error" && (
+          <p className="rounded-[var(--radius)] border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            Lỗi: {posting.message}
+          </p>
+        )}
+        {(posting.phase === "uploading" || posting.phase === "polling") && (
+          <p className="flex items-center gap-2 rounded-[var(--radius)] border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+            <Loader2 className="size-3.5 animate-spin" />
+            {posting.phase === "uploading"
+              ? "Đang tải chứng từ lên hệ thống…"
+              : "OCR + trích xuất đang chạy nền — tự kiểm tra lại mỗi vài giây…"}
+          </p>
+        )}
+        {posting.phase === "ready" && (
+          <PostingPanel
+            voucherId={posting.voucherId}
+            voucher={posting.voucher}
+            postVoucherType={postVoucherType}
+            isAdmin={isAdmin}
+            onApplied={() => void pollVoucher(posting.voucherId, 0)}
+          />
+        )}
 
         <label className="text-sm font-medium">Nội dung hoá đơn</label>
         <Textarea

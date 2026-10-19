@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import logging
 from contextlib import suppress
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -19,6 +20,7 @@ from aiq_agent.audit import build_audit_store
 from aiq_agent.config import get_settings
 from aiq_agent.embeddings import build_embedding_service
 from aiq_agent.llm import build_llm_service
+from aiq_agent.llm.claude_cli import ClaudeCliLlmService
 from aiq_agent.memory import build_memory_store
 from aiq_agent.observability import RecordedLlmService, configure_tracing, instrument_fastapi
 from aiq_agent.ocr import (
@@ -28,6 +30,7 @@ from aiq_agent.ocr import (
     PaddleOcrExtractor,
     RapidOcrExtractor,
 )
+from aiq_agent.ocr.concurrency import get_ocr_gate
 from aiq_agent.skills import build_registry as build_skill_registry
 from aiq_agent.tools import default_registry
 
@@ -48,9 +51,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         extractor = PaddleOcrExtractor(lang="vi")
     else:
         extractor = RapidOcrExtractor()
-    corrector = DiacriticCorrector(llm)
+    # OCR correction gets its own LLM client so it can run without extended
+    # thinking (chat keeps the provider default).
+    correction_llm = llm
+    if settings.llm_provider == "claude_cli" and settings.ocr_correction_disable_thinking:
+        correction_llm = RecordedLlmService(ClaudeCliLlmService(
+            model=settings.anthropic_model, max_turns=1, disable_thinking=True))
+    corrector = DiacriticCorrector(correction_llm)
     validator = PassthroughValidator()
-    pipeline = OcrPipeline(extractor=extractor, corrector=corrector, validator=validator)
+    pipeline = OcrPipeline(extractor=extractor, corrector=corrector, validator=validator,
+                           correction_batch_chars=settings.ocr_correction_batch_chars,
+                           text_layer_first=settings.ocr_pdf_text_layer_first)
+    # Native OCR admission (AG-02) — built at startup so a bad OCR_* setting
+    # fails the boot instead of the first upload.
+    ocr_gate = get_ocr_gate()
 
     # SKILL.md packages live at:
     # - Dev:    <repo>/agent/skills/<skill>/SKILL.md
@@ -113,10 +127,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await kb_worker
         if kb_pool:
             await kb_pool.close()
+        ocr_gate.shutdown()
         await memory.aclose()
         await validator.aclose()
         await llm.aclose()
 
+
+def _configure_app_logging() -> None:
+    """Emit aiq_agent.* logs (runtime provenance: agent/version/skill
+    sources/workflow) at the configured LOG_LEVEL. Without a handler only
+    WARNING+ reached stderr via Python's last-resort handler. Idempotent."""
+    app_logger = logging.getLogger("aiq_agent")
+    if any(getattr(h, "_aiq_handler", False) for h in app_logger.handlers):
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    handler._aiq_handler = True  # type: ignore[attr-defined]
+    app_logger.addHandler(handler)
+    app_logger.setLevel(get_settings().log_level.upper())
+    app_logger.propagate = False
+
+
+_configure_app_logging()
 
 app = FastAPI(
     title="AIQ Agent",

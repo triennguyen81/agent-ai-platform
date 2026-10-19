@@ -74,9 +74,9 @@ public sealed record ExpenseClaimResult(
     // R14 — 3-stage sequence: proposed -> dept_reviewed -> accounting_reviewed
     // -> confirmed (or rejected from any of the first three). ReviewedBy/At
     // is the FINAL (payment-approval) actor+timestamp; DeptReviewedBy/At and
-    // AccountingReviewedBy/At are the two earlier stages. A different actor
-    // is required at every stage (enforced in the repository, never the
-    // claim's own creator at any stage — R16).
+    // AccountingReviewedBy/At are the two earlier stages. The same
+    // department ADMIN may perform every stage, including on a claim they
+    // created (ADMIN Department Authority Invariant).
     string ReviewStatus,
     Guid? DeptReviewedBy,
     DateTime? DeptReviewedAt,
@@ -85,7 +85,17 @@ public sealed record ExpenseClaimResult(
     Guid? ReviewedBy,
     DateTime? ReviewedAt,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt,
+    // Migration 058 — payment is separate from approval: unpaid / paid /
+    // not_due, and the canonical cash posting that paid it.
+    string PaymentStatus,
+    Guid? PaidCashTransactionId,
+    Guid? PaidBy,
+    DateTime? PaidAt,
+    // Migration 059 — authoritative expense recognition (accounting approval).
+    string RecognitionStatus,
+    Guid? RecognizedBy,
+    DateTime? RecognizedAt);
 
 public interface IExpenseClaimRepository
 {
@@ -99,12 +109,10 @@ public interface IExpenseClaimRepository
 
     Task<ExpenseClaimResult?> GetByVoucherIdAsync(Guid tenantId, Guid departmentId, Guid voucherId, CancellationToken ct);
 
-    // R14 — 3 sequential stages, each requiring ADMIN authority (the only
-    // real authority tier this system's RBAC has — see
-    // docs/BUSINESS_FLOW_GAP_ANALYSIS.md §15/§20) AND a different actor
-    // than every stage before it AND never the claim's own creator (R16,
-    // enforced by the caller via BusinessModuleAuthorization.IsSelfApproval
-    // before calling any of these). Skipping a stage is impossible — each
+    // R14 — 3 sequential stages, each requiring department ADMIN authority
+    // (route policy department_admin). ADMIN Department Authority Invariant:
+    // NO different-actor or not-the-creator rule — one ADMIN may run every
+    // stage on a claim they created. Skipping a stage is impossible — each
     // method's own WHERE clause only matches the exact prior review_status.
     //
     // Stage 1 — "Bộ phận" (department review): claim reasonableness. Only
@@ -114,18 +122,16 @@ public interface IExpenseClaimRepository
     Task<ExpenseClaimResult?> DepartmentReviewAsync(Guid tenantId, Guid departmentId, Guid voucherId, Guid reviewerId, CancellationToken ct);
 
     // Stage 2 — "Kế toán" (accounting review): tax/account validity. Only
-    // valid from review_status='dept_reviewed', and the actor must differ
-    // from the stage-1 reviewer.
+    // valid from review_status='dept_reviewed'.
     Task<ExpenseClaimResult?> AccountingReviewAsync(Guid tenantId, Guid departmentId, Guid voucherId, Guid reviewerId, CancellationToken ct);
 
     // Stage 3 — "Duyệt chi" (payment approval): the only stage that ever
     // touches the ledger (sim_employees). Only valid from
-    // review_status='accounting_reviewed', and the actor must differ from
-    // both prior reviewers. Idempotent: already-confirmed returns the
+    // review_status='accounting_reviewed'. Idempotent: already-confirmed returns the
     // existing row unchanged rather than re-applying.
     Task<ExpenseClaimResult?> ConfirmAsync(Guid tenantId, Guid departmentId, Guid voucherId, Guid reviewerId, CancellationToken ct);
 
-    // ADMIN-only, different actor than the creator. Only valid when
+    // ADMIN-only. Only valid when
     // outcome=WAITING_EXCEPTION_APPROVAL and review_status='proposed' —
     // grants the exception (recomputes approved_amount up to
     // requested_amount minus only genuinely blocked/duplicate lines,
@@ -133,9 +139,7 @@ public interface IExpenseClaimRepository
     // document ("...sau đó quay lại nhánh duyệt", the exception decision
     // returns the claim to the normal approval branch), it resets
     // review_status back to 'proposed' so the full 3-stage chain still
-    // has to happen before anything touches the ledger. This also means
-    // the exception-granter can never be the one who later gives final
-    // payment approval on their own exception.
+    // has to happen before anything touches the ledger.
     Task<ExpenseClaimResult?> GrantExceptionAsync(Guid tenantId, Guid departmentId, Guid voucherId, Guid reviewerId, CancellationToken ct);
 
     // ADMIN-only. Valid from any pre-settlement stage (proposed/
@@ -209,7 +213,14 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
             reviewed_by            AS ReviewedBy,
             reviewed_at            AS ReviewedAt,
             created_at             AS CreatedAt,
-            updated_at             AS UpdatedAt
+            updated_at             AS UpdatedAt,
+            payment_status         AS PaymentStatus,
+            paid_cash_transaction_id AS PaidCashTransactionId,
+            paid_by                AS PaidBy,
+            paid_at                AS PaidAt,
+            recognition_status     AS RecognitionStatus,
+            recognized_by          AS RecognizedBy,
+            recognized_at          AS RecognizedAt
         """;
 
     public async Task<ExpenseClaimResult?> GetByVoucherIdAsync(Guid tenantId, Guid departmentId, Guid voucherId, CancellationToken ct)
@@ -288,6 +299,11 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
         // pass or re-querying policies.
         var approvedByCategory = new Dictionary<string, decimal>();
         var categoryDebitAccounts = new Dictionary<string, string>();
+        // Per-category deductible VAT and un-capped values — persisted as the
+        // recognition basis (the split exists nowhere else).
+        var vatDeductibleByCategory = new Dictionary<string, decimal>();
+        var uncappedByCategory = new Dictionary<string, decimal>();
+        var vatUncappedByCategory = new Dictionary<string, decimal>();
 
         foreach (var item in input.Items)
         {
@@ -362,6 +378,7 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
                 }
             }
             approvedByCategory[item.Category] = approvedByCategory.GetValueOrDefault(item.Category) + itemApproved;
+            uncappedByCategory[item.Category] = uncappedByCategory.GetValueOrDefault(item.Category) + item.Amount;
 
             // R15 — VAT/CIT are separate flags, not one combined value.
             // vatTotal is the RAW VAT identified on the source document
@@ -385,6 +402,8 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
                 // Has a real invoice — the (capped-prorated) VAT on this
                 // line qualifies for input-VAT credit.
                 vatDeductibleTotal += itemVatAfterCap;
+                vatDeductibleByCategory[item.Category] = vatDeductibleByCategory.GetValueOrDefault(item.Category) + itemVatAfterCap;
+                vatUncappedByCategory[item.Category] = vatUncappedByCategory.GetValueOrDefault(item.Category) + itemVat;
             }
 
             approvedTotal += itemApproved;
@@ -411,6 +430,10 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
             foreach (var cat in approvedByCategory.Keys.ToArray())
             {
                 approvedByCategory[cat] *= claimCapRatio;
+            }
+            foreach (var cat in vatDeductibleByCategory.Keys.ToArray())
+            {
+                vatDeductibleByCategory[cat] *= claimCapRatio;
             }
             policyFlags.Add(new
             {
@@ -458,9 +481,12 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
             ? "Thiếu chứng từ cho: " + string.Join("; ", missingItems)
             : null;
 
+        var basis = ExpenseRecognition.BuildBasis(approvedByCategory, vatDeductibleByCategory, uncappedByCategory, vatUncappedByCategory,
+            approvedTotal, vatDeductibleTotal);
         var result = await UpsertAsync(conn, tenantId, departmentId, voucherId, emp.Id,
             requested, approvedTotal, blockedTotal, cappedTotal, nonDeductibleTotal, vatTotal, vatDeductibleTotal,
-            advanceApplied, payable, currency, duplicateFlags, policyFlags, resolvedVendors, missingDocs, outcome, requiresTaxVerification, ct);
+            advanceApplied, payable, currency, duplicateFlags, policyFlags, resolvedVendors, missingDocs, outcome, requiresTaxVerification, ct,
+            System.Text.Json.JsonSerializer.Serialize(basis));
 
         // J1 fix — deterministic journal-entry proposal from the outcome
         // just computed (never from an LLM). Only for outcomes that will
@@ -469,8 +495,11 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
         // exactly as they were (no invented entry, no cleared entry).
         if (IsApprovableOutcome(outcome))
         {
+            // Category amounts are VAT-inclusive (R15: VAT is a portion of the
+            // item amount) — the router expects them NET of deductible VAT,
+            // otherwise the VAT is debited twice and 334 over-credited.
             var routing = Aiq.Gateway.Accounting.JournalRoutingRules.ForExpenseSettlement(
-                approvedByCategory, categoryDebitAccounts, vatDeductibleTotal, advanceApplied, payable);
+                ExpenseRecognition.NetByCategory(basis), categoryDebitAccounts, basis.Sum(b => b.VatDeductible), advanceApplied, payable);
             if (routing.Outcome == Aiq.Gateway.Accounting.JournalRoutingOutcome.Proposed)
             {
                 try
@@ -495,7 +524,7 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
         decimal vat, decimal vatDeductible,
         decimal advance, decimal payable, string currency,
         List<object> duplicateFlags, List<object> policyFlags, List<object> resolvedVendors, string? missingDocuments,
-        string outcome, bool requiresTaxVerification, CancellationToken ct)
+        string outcome, bool requiresTaxVerification, CancellationToken ct, string? recognitionBasisJson = null)
     {
         var duplicateFlagsJson = System.Text.Json.JsonSerializer.Serialize(duplicateFlags);
         var policyFlagsJson = System.Text.Json.JsonSerializer.Serialize(policyFlags);
@@ -512,13 +541,15 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
                 requested_amount, approved_amount, blocked_amount, capped_amount, non_deductible_amount,
                 vat_amount, vat_deductible_amount,
                 advance_amount, payable_amount, currency,
-                duplicate_flags, policy_flags, resolved_vendors, missing_documents, outcome, requires_tax_verification
+                duplicate_flags, policy_flags, resolved_vendors, missing_documents, outcome, requires_tax_verification,
+                recognition_basis
             ) VALUES (
                 @tenantId, @departmentId, @voucherId, @employeeId,
                 @requested, @approved, @blocked, @capped, @nonDeductible,
                 @vat, @vatDeductible,
                 @advance, @payable, @currency,
-                @duplicateFlagsJson::jsonb, @policyFlagsJson::jsonb, @resolvedVendorsJson::jsonb, @missingDocuments, @outcome, @requiresTaxVerification
+                @duplicateFlagsJson::jsonb, @policyFlagsJson::jsonb, @resolvedVendorsJson::jsonb, @missingDocuments, @outcome, @requiresTaxVerification,
+                @recognitionBasisJson::jsonb
             )
             ON CONFLICT (voucher_id) DO UPDATE SET
                 employee_id = EXCLUDED.employee_id,
@@ -538,6 +569,7 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
                 missing_documents = EXCLUDED.missing_documents,
                 outcome = EXCLUDED.outcome,
                 requires_tax_verification = EXCLUDED.requires_tax_verification,
+                recognition_basis = EXCLUDED.recognition_basis,
                 review_status = 'proposed',
                 dept_reviewed_by = NULL,
                 dept_reviewed_at = NULL,
@@ -547,6 +579,7 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
                 reviewed_at = NULL,
                 updated_at = NOW()
             WHERE expense_claim_results.review_status <> 'confirmed'
+              AND expense_claim_results.recognition_status <> 'recognized'
             RETURNING {Cols};
             """,
             new
@@ -556,7 +589,7 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
                 vat, vatDeductible,
                 advance, payable, currency,
                 duplicateFlagsJson, policyFlagsJson, resolvedVendorsJson, missingDocuments, outcome,
-                requiresTaxVerification,
+                requiresTaxVerification, recognitionBasisJson,
             }, cancellationToken: ct));
 
         if (row is not null)
@@ -609,6 +642,15 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
             """, new { id = existing.Id, reviewerId }, cancellationToken: ct));
     }
 
+    /// <summary>
+    /// Stage 2 "Duyệt kế toán" = accounting approval + AUTHORITATIVE expense
+    /// recognition (ExpenseRecognition), atomically. Any department ADMIN —
+    /// including the stage-1 reviewer and the claimant (ADMIN Department
+    /// Authority Invariant).
+    /// Recognition blockers (tax not verified, missing account mapping,
+    /// unsupported refund, ...) throw ExpenseRecognitionException — nothing
+    /// is written then.
+    /// </summary>
     public async Task<ExpenseClaimResult?> AccountingReviewAsync(Guid tenantId, Guid departmentId, Guid voucherId, Guid reviewerId, CancellationToken ct)
     {
         await using var conn = await _factory.OpenAsync(ct);
@@ -616,16 +658,15 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
             $"SELECT {Cols} FROM expense_claim_results WHERE tenant_id=@tenantId AND department_id=@departmentId AND voucher_id=@voucherId",
             new { tenantId, departmentId, voucherId }, cancellationToken: ct));
         if (existing is null) return null;
-        if (existing.ReviewStatus == "accounting_reviewed" && existing.AccountingReviewedBy == reviewerId) return existing; // idempotent retry
+        if (existing.ReviewStatus is "accounting_reviewed" or "confirmed" && existing.AccountingReviewedBy == reviewerId) return existing; // idempotent retry
         if (existing.ReviewStatus != "dept_reviewed") return null;
-        if (existing.DeptReviewedBy == reviewerId) return null; // separation of duties — different actor than stage 1
 
-        return await conn.QuerySingleAsync<ExpenseClaimResult>(new CommandDefinition($"""
-            UPDATE expense_claim_results SET
-                review_status='accounting_reviewed', accounting_reviewed_by=@reviewerId, accounting_reviewed_at=NOW(), updated_at=NOW()
-            WHERE id=@id
-            RETURNING {Cols};
-            """, new { id = existing.Id, reviewerId }, cancellationToken: ct));
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var done = await ExpenseRecognition.RecognizeAsync(conn, tx, tenantId, departmentId, voucherId, reviewerId, ct);
+        if (done is null) { await tx.RollbackAsync(ct); return null; }
+        await tx.CommitAsync(ct);
+        return await conn.QuerySingleAsync<ExpenseClaimResult>(new CommandDefinition(
+            $"SELECT {Cols} FROM expense_claim_results WHERE id=@id", new { id = done.Value.ClaimId }, cancellationToken: ct));
     }
 
     public async Task<ExpenseClaimResult?> ConfirmAsync(Guid tenantId, Guid departmentId, Guid voucherId, Guid reviewerId, CancellationToken ct)
@@ -640,22 +681,27 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
         if (existing.ReviewStatus == "confirmed") { await tx.RollbackAsync(ct); return existing; }
         // Stage 3 only reachable after stage 1 + 2 — never skips the chain.
         if (existing.ReviewStatus != "accounting_reviewed") { await tx.RollbackAsync(ct); return null; }
-        // Separation of duties — payment approver must differ from both
-        // earlier reviewers.
-        if (existing.DeptReviewedBy == reviewerId || existing.AccountingReviewedBy == reviewerId)
+        // Cash is due to the employee: approval and payment are ONE action
+        // (CashSettlementRepository.PayExpenseClaimAsync) — never approve
+        // without paying.
+        if (existing.PayableAmount > 0m)
         {
             await tx.RollbackAsync(ct);
             return null;
         }
 
-        if (existing.EmployeeId is { } empId && existing.ApprovedAmount > 0m)
+        // The expense (and the employee advance / YTD) was recognized at stage 2;
+        // the final no-cash approval only closes the chain — never re-applies it.
+        if (existing.RecognitionStatus != ExpenseRecognition.Recognized)
         {
-            await _employees.ApplyExpenseClaimAsync(tenantId, empId, existing.ApprovedAmount, existing.AdvanceAmount, ct);
+            await tx.RollbackAsync(ct);
+            return null;
         }
 
         var updated = await conn.QuerySingleAsync<ExpenseClaimResult>(new CommandDefinition($"""
             UPDATE expense_claim_results SET
-                review_status='confirmed', reviewed_by=@reviewerId, reviewed_at=NOW(), updated_at=NOW()
+                review_status='confirmed', reviewed_by=@reviewerId, reviewed_at=NOW(), updated_at=NOW(),
+                payment_status='not_due'
             WHERE id=@id
             RETURNING {Cols};
             """, new { id = existing.Id, reviewerId }, tx, cancellationToken: ct));
@@ -685,14 +731,23 @@ public sealed class ExpenseClaimRepository : IExpenseClaimRepository
         var newApproved = existing.RequestedAmount - existing.BlockedAmount;
         var newPayable = newApproved - existing.AdvanceAmount;
         var newOutcome = existing.BlockedAmount > 0m ? "PARTIALLY_APPROVED" : "APPROVED";
+        // The recognition basis follows the grant: un-capped per category
+        // (and the deductible VAT on it), so recognition stays consistent.
+        var basisJson = await conn.ExecuteScalarAsync<string?>(new CommandDefinition(
+            "SELECT recognition_basis::text FROM expense_claim_results WHERE id=@id", new { id = existing.Id }, cancellationToken: ct));
+        var uncapped = ExpenseRecognition.Uncap(ExpenseRecognition.ParseBasis(basisJson));
+        var newVatDeductible = uncapped?.Sum(b => b.VatDeductible);
 
         return await conn.QuerySingleAsync<ExpenseClaimResult>(new CommandDefinition($"""
             UPDATE expense_claim_results SET
                 approved_amount=@newApproved, capped_amount=0, payable_amount=@newPayable,
+                vat_deductible_amount=COALESCE(@newVatDeductible, vat_deductible_amount),
+                recognition_basis=@newBasis::jsonb,
                 outcome=@newOutcome, review_status='proposed', updated_at=NOW()
             WHERE id=@id
             RETURNING {Cols};
-            """, new { id = existing.Id, newApproved, newPayable, newOutcome }, cancellationToken: ct));
+            """, new { id = existing.Id, newApproved, newPayable, newOutcome, newVatDeductible,
+                       newBasis = uncapped is null ? null : System.Text.Json.JsonSerializer.Serialize(uncapped) }, cancellationToken: ct));
     }
 
     public async Task<ExpenseClaimResult?> RejectAsync(Guid tenantId, Guid departmentId, Guid voucherId, Guid reviewerId, CancellationToken ct)

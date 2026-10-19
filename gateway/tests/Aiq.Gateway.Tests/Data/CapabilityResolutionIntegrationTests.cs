@@ -84,6 +84,7 @@ public sealed class CapabilityResolutionIntegrationTests : IAsyncLifetime
         // branch) — these columns must exist even though every agent in
         // this D4-era fixture stays scope='system'/v2_scope=NULL.
         await scoped.ExecuteAsync(await ReadMigrationAsync("024_acl_v2_scope_foundations.sql"));
+        await scoped.ExecuteAsync(await ReadMigrationAsync("060_agent_version_document_processing.sql"));
 
         await AssignDepartmentsAsync(scoped);
         await SeedAgentsAsync(scoped);

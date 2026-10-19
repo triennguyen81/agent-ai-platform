@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
+
+from aiq_agent.ocr.concurrency import run_ocr_native
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,6 +14,9 @@ class OcrPage:
     page_number: int
     text: str
     confidence: float
+    # "ocr" (image recognised by the OCR engine) or "text_layer" (the PDF's
+    # own embedded text, used verbatim — exact, so confidence 1.0).
+    source: str = "ocr"
 
 
 class OcrExtractor(ABC):
@@ -72,7 +76,7 @@ class PaddleOcrExtractor(OcrExtractor):
 
     async def extract(self, pages: Sequence[bytes]) -> list[OcrPage]:
         engine = self._ensure_engine()
-        return await asyncio.to_thread(_run_paddle, engine, list(pages))
+        return await run_ocr_native(_run_paddle, engine, list(pages))
 
 
 def _run_paddle(engine: object, pages: list[bytes]) -> list[OcrPage]:
@@ -141,7 +145,7 @@ class RapidOcrExtractor(OcrExtractor):
 
     async def extract(self, pages: Sequence[bytes]) -> list[OcrPage]:
         engine = self._ensure_engine()
-        return await asyncio.to_thread(_run_rapid, engine, list(pages))
+        return await run_ocr_native(_run_rapid, engine, list(pages))
 
 
 def _run_rapid(engine: object, pages: list[bytes]) -> list[OcrPage]:

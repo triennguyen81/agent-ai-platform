@@ -24,7 +24,10 @@ import { Input, Label } from "@/components/ui/input";
 // step "value" is always plain text bound to one of these three fixed
 // shapes, never executed client- or server-side, just persisted as data.
 
-export type WorkflowStepType = "prompt" | "require_knowledge" | "require_tool";
+// "require_review" is a document-processing gate: the Gateway document
+// pipeline forces human (ADMIN) confirmation for that document type. It can
+// only make processing stricter — never post, verify or skip a gate.
+export type WorkflowStepType = "prompt" | "require_knowledge" | "require_tool" | "require_review";
 
 export interface WorkflowStepValue {
   id: string;
@@ -48,13 +51,15 @@ export function parseWorkflowDefinition(definitionJson: string | undefined | nul
   if (!definitionJson) return { steps: [], requiresApproval: false };
   try {
     const parsed = JSON.parse(definitionJson) as {
-      steps?: Array<{ type: string; prompt?: string; tool?: string }>;
+      steps?: Array<{ type: string; prompt?: string; text?: string; tool?: string }>;
       requiresApproval?: boolean;
     };
     const steps = (parsed.steps ?? []).map((step) => ({
       id: nextStepId(),
       type: (step.type as WorkflowStepType) ?? "prompt",
-      value: step.prompt ?? step.tool ?? "",
+      // Canonical key is "prompt"; "text" is the legacy key older API rows
+      // still carry — read it so re-saving never silently erases a step.
+      value: step.prompt ?? step.text ?? step.tool ?? "",
     }));
     return { steps, requiresApproval: Boolean(parsed.requiresApproval) };
   } catch {
@@ -78,11 +83,13 @@ const STEP_TYPE_LABELS: Record<WorkflowStepType, string> = {
   prompt: "Prompt",
   require_knowledge: "Yêu cầu knowledge",
   require_tool: "Yêu cầu tool",
+  require_review: "Yêu cầu duyệt thủ công",
 };
 
 function stepPlaceholder(type: WorkflowStepType): string {
   if (type === "prompt") return "Nội dung hướng dẫn cho bước này";
   if (type === "require_tool") return "Mã tool đã cài đặt (tool code)";
+  if (type === "require_review") return "Không cần cấu hình — chứng từ phải được ADMIN xác nhận trước khi xử lý tiếp";
   return "Không cần cấu hình — dùng knowledge được uỷ quyền của Agent gọi workflow";
 }
 
@@ -142,10 +149,11 @@ export function WorkflowStepEditor({
                 <option value="prompt">{STEP_TYPE_LABELS.prompt}</option>
                 <option value="require_knowledge">{STEP_TYPE_LABELS.require_knowledge}</option>
                 <option value="require_tool">{STEP_TYPE_LABELS.require_tool}</option>
+                <option value="require_review">{STEP_TYPE_LABELS.require_review}</option>
               </select>
               <Input
                 aria-label={`Nội dung bước ${index + 1}`}
-                disabled={step.type === "require_knowledge"}
+                disabled={step.type === "require_knowledge" || step.type === "require_review"}
                 value={step.value}
                 placeholder={stepPlaceholder(step.type)}
                 onChange={(event) => updateStep(step.id, { value: event.target.value })}

@@ -47,6 +47,33 @@ public interface IAgentClient
         string capability,
         int maxTurns,
         CancellationToken ct);
+
+    /// <summary>
+    /// Same /agent/run call as RunAgentTaskAsync, but optionally pinned to a
+    /// Gateway-resolved agent (sent as preferred_agent_id, which the Agent
+    /// re-authorizes through /me/capabilities) and returning what actually
+    /// executed (agent/version/provider/model) for provenance.
+    /// </summary>
+    async Task<Aiq.Gateway.Vouchers.DocumentProcessing.AgentTaskResult> RunAgentTaskWithProvenanceAsync(
+        string task, string userToken, string capability, Guid? preferredAgentId, int maxTurns, CancellationToken ct)
+        => new(await RunAgentTaskAsync(task, userToken, capability, maxTurns, ct), null, null, null, null, null);
+
+    /// <summary>
+    /// POST /agent/document-extract — tool-less, single-purpose extraction
+    /// run under the agent's own manifest (published, or the current draft
+    /// when <paramref name="test"/> is true). The Agent rejects with HTTP 409
+    /// if the manifest it resolves is not <paramref name="expectedVersionId"/>,
+    /// so the configuration the Gateway built the prompt from is exactly the
+    /// version that executes.
+    /// </summary>
+    /// <remarks>
+    /// pinVersion: ask for exactly expectedVersionId (published or superseded)
+    /// instead of the agent's current published version — re-extracting a
+    /// document with the version that originally processed it.
+    /// </remarks>
+    Task<Aiq.Gateway.Vouchers.DocumentProcessing.AgentTaskResult> RunDocumentExtractionAsync(
+        Guid agentId, Guid expectedVersionId, bool test, string task, string userToken, CancellationToken ct, bool pinVersion = false)
+        => throw new NotSupportedException("document extraction is not supported by this agent client");
 }
 
 public sealed class AgentClient : IAgentClient
@@ -60,7 +87,32 @@ public sealed class AgentClient : IAgentClient
         _logger = logger;
     }
 
-    public async Task<AgentOcrResponse> RunOcrPipelineAsync(
+    /// <summary>
+    /// Client-side throttle for the voucher / expense-claim OCR jobs: one
+    /// OCR request in flight from this Gateway process. The Agent enforces
+    /// its own process-wide limits for every OCR route (AG-02:
+    /// aiq_agent.ocr.concurrency — PDFium serialised, bounded queue,
+    /// 429 when full), so this gate is not what keeps the Agent alive; it
+    /// keeps batch uploads from filling the Agent's queue and starving
+    /// interactive /documents/extract and /knowledge/extract calls.
+    /// </summary>
+    private static readonly SemaphoreSlim OcrGate = new(1, 1);
+
+    public async Task<AgentOcrResponse> RunOcrPipelineAsync(Stream pdfStream, string filename, CancellationToken ct)
+    {
+        await OcrGate.WaitAsync(ct);
+        try { return await RunOcrPipelineCoreAsync(pdfStream, filename, ct); }
+        finally { OcrGate.Release(); }
+    }
+
+    public async Task<AgentOcrResponse> RunOcrImageAsync(Stream imageStream, string filename, string contentType, CancellationToken ct)
+    {
+        await OcrGate.WaitAsync(ct);
+        try { return await RunOcrImageCoreAsync(imageStream, filename, contentType, ct); }
+        finally { OcrGate.Release(); }
+    }
+
+    private async Task<AgentOcrResponse> RunOcrPipelineCoreAsync(
         Stream pdfStream,
         string filename,
         CancellationToken ct)
@@ -89,7 +141,7 @@ public sealed class AgentClient : IAgentClient
         return payload;
     }
 
-    public async Task<AgentOcrResponse> RunOcrImageAsync(
+    private async Task<AgentOcrResponse> RunOcrImageCoreAsync(
         Stream imageStream,
         string filename,
         string contentType,
@@ -192,10 +244,58 @@ public sealed class AgentClient : IAgentClient
             ?? throw new AgentRequestException("Agent returned empty run body.", 502);
         return doc.FinalAnswer ?? string.Empty;
     }
+
+    public async Task<Aiq.Gateway.Vouchers.DocumentProcessing.AgentTaskResult> RunAgentTaskWithProvenanceAsync(
+        string task, string userToken, string capability, Guid? preferredAgentId, int maxTurns, CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?> { ["task"] = task, ["capability"] = capability, ["max_turns"] = maxTurns };
+        if (preferredAgentId is { } preferred) payload["preferred_agent_id"] = preferred.ToString();
+        var doc = await PostAsync<AgentRunResult>("/agent/run", payload, userToken, "runTask", ct);
+        return doc.ToTaskResult();
+    }
+
+    public async Task<Aiq.Gateway.Vouchers.DocumentProcessing.AgentTaskResult> RunDocumentExtractionAsync(
+        Guid agentId, Guid expectedVersionId, bool test, string task, string userToken, CancellationToken ct, bool pinVersion = false)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["agent_id"] = agentId.ToString(),
+            ["expected_version_id"] = expectedVersionId.ToString(),
+            ["test"] = test,
+            ["task"] = task,
+        };
+        if (pinVersion) payload["pin_version"] = true;
+        var doc = await PostAsync<AgentRunResult>("/agent/document-extract", payload, userToken, "documentExtract", ct);
+        return doc.ToTaskResult();
+    }
+
+    private async Task<T> PostAsync<T>(string path, object payload, string userToken, string label, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = JsonContent.Create(payload) };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", userToken);
+        using var response = await _http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogWarning("Agent {Label} rejected: status={Status} body={Body}", label, (int)response.StatusCode, body);
+            throw new AgentRequestException($"Agent {path} HTTP {(int)response.StatusCode}: {body}", (int)response.StatusCode);
+        }
+        return await response.Content.ReadFromJsonAsync<T>(cancellationToken: ct)
+            ?? throw new AgentRequestException($"Agent returned empty {path} body.", 502);
+    }
 }
 
 public sealed record AgentRunResult(
-    [property: JsonPropertyName("final_answer")] string? FinalAnswer);
+    [property: JsonPropertyName("final_answer")] string? FinalAnswer,
+    [property: JsonPropertyName("agent_id")] Guid? AgentId = null,
+    [property: JsonPropertyName("agent_version_id")] Guid? AgentVersionId = null,
+    [property: JsonPropertyName("agent_version")] int? AgentVersion = null,
+    [property: JsonPropertyName("provider")] string? Provider = null,
+    [property: JsonPropertyName("model")] string? Model = null)
+{
+    public Aiq.Gateway.Vouchers.DocumentProcessing.AgentTaskResult ToTaskResult() =>
+        new(FinalAnswer ?? string.Empty, AgentId, AgentVersionId, AgentVersion, Provider, Model);
+}
 
 public sealed class AgentRequestException : Exception
 {
@@ -269,14 +369,18 @@ public sealed record AgentOcrResponse(
     [property: JsonPropertyName("average_confidence")] double AverageConfidence,
     [property: JsonPropertyName("stage_durations_ms")] Dictionary<string, int> StageDurationsMs,
     [property: JsonPropertyName("pages")] IReadOnlyList<AgentPageReport> Pages,
-    [property: JsonPropertyName("joined_text")] string JoinedText);
+    [property: JsonPropertyName("joined_text")] string JoinedText,
+    // OCR-correction LLM usage (numbers only); null when no LLM call was made
+    // or the Agent predates usage reporting.
+    [property: JsonPropertyName("llm_usage")] Aiq.Gateway.Governance.LlmUsageReport? LlmUsage = null);
 
 // Mirrors the agent's DocumentExtractResponse shape (api/document_routes.py).
 public sealed record AgentDocumentExtractResponse(
     [property: JsonPropertyName("text")] string Text,
     [property: JsonPropertyName("char_count")] int CharCount,
     [property: JsonPropertyName("mime_type")] string MimeType,
-    [property: JsonPropertyName("extraction_method")] string ExtractionMethod);
+    [property: JsonPropertyName("extraction_method")] string ExtractionMethod,
+    [property: JsonPropertyName("llm_usage")] Aiq.Gateway.Governance.LlmUsageReport? LlmUsage = null);
 
 public sealed record AgentPageReport(
     [property: JsonPropertyName("page_number")] int PageNumber,

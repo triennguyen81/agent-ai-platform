@@ -55,6 +55,60 @@ class ManifestDelegate(BaseModel):
     description: str | None
 
 
+class ManifestDocumentField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=64)
+    label: str
+    type: Literal["string", "decimal", "integer", "date", "boolean", "array", "object"]
+    required: bool
+    description: str | None = None
+
+
+class ManifestDocumentWorkflow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: UUID
+    versionId: UUID | None = None
+    name: str
+    definition: dict[str, Any]
+
+
+class ManifestDocumentSkill(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str
+    sourceKind: Literal["declarative", "filesystem"]
+    contentSha256: str | None = None
+    content: str | None = None
+
+
+class ManifestDocumentType(BaseModel):
+    """One SYSTEM document type as configured on this agent version. The
+    accountingHandler is the Gateway's fixed server-side handler name —
+    informational here; the runtime never executes accounting logic."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    code: str
+    displayName: str
+    enabled: bool
+    accountingHandler: str
+    fields: list[ManifestDocumentField]
+    # `schema` shadows a BaseModel attribute, hence the alias.
+    json_schema: dict[str, Any] = Field(alias="schema")
+    schemaSha256: str
+    extractionInstructions: str
+    workflow: ManifestDocumentWorkflow | None = None
+    skills: list[ManifestDocumentSkill] = Field(default_factory=list)
+
+
+class ManifestDocumentProcessing(BaseModel):
+    """Document-processing configuration of exactly this agent version
+    (immutable published snapshots; draft only on test manifests)."""
+
+    model_config = ConfigDict(extra="forbid")
+    agentVersionId: UUID
+    draft: bool
+    types: list[ManifestDocumentType]
+
+
 class ManifestCompanyProfile(BaseModel):
     """AIQ's own legal-entity identity for the tenant ("công ty chủ thể") —
     server-resolved from tenant_company_profiles by the authenticated
@@ -119,6 +173,13 @@ class ExecutionManifest(BaseModel):
     # Trusted company identity, resolved server-side from the authenticated
     # tenant_id — see ManifestCompanyProfile. None means "not configured".
     companyProfile: ManifestCompanyProfile | None = None
+    # Configurable document processing of this exact version. None = the
+    # version has none (the Gateway uses its legacy built-in extraction).
+    documentProcessing: ManifestDocumentProcessing | None = None
+    # Content of every ASSIGNED skill exactly as this version runs it:
+    # immutable publish-time snapshots (declarative: content + sha256; image
+    # skills: name only). The runtime never reads mutable skill content.
+    skillSnapshots: list[ManifestDocumentSkill] = Field(default_factory=list)
 
 
 class ManifestLookupError(PermissionError):
@@ -126,7 +187,8 @@ class ManifestLookupError(PermissionError):
 
 
 async def fetch_execution_manifest(
-    *, gateway_base: str, token: str, agent_id: str, timeout: float = 10.0, test: bool = False
+    *, gateway_base: str, token: str, agent_id: str, timeout: float = 10.0, test: bool = False,
+    version_id: str | None = None,
 ) -> ExecutionManifest:
     # ACL V2-C: `test=True` asks the Gateway for the CURRENT DRAFT (falling
     # back to published) of a Department Agent the caller's own department
@@ -135,7 +197,12 @@ async def fetch_execution_manifest(
     # already draft-aware unconditionally). Ignored by the Gateway for every
     # other caller/agent shape, so omitting it (the default) is byte-for-byte
     # the pre-V2-C request.
-    params = {"mode": "test"} if test else None
+    # version_id pins a specific PUBLISHED (or superseded) version — used to
+    # re-extract a document with the version that originally processed it.
+    # The Gateway still applies the caller's full authorization chain.
+    params: dict[str, str] | None = {"mode": "test"} if test else None
+    if version_id and not test:
+        params = {"versionId": version_id}
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(

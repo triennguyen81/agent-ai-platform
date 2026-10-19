@@ -96,7 +96,14 @@ public sealed record ApLedgerRow(
     decimal PaidAmount,
     string Status,
     Guid? ContractId,
-    Guid? ContractPaymentScheduleId);
+    Guid? ContractPaymentScheduleId)
+{
+    // Settlement view (UNPAID/PARTIAL/PAID/OVERDUE) — independent of the
+    // accounting POSTED state; derived from the open item itself.
+    public decimal Outstanding => Credit - PaidAmount;
+    public string SettlementStatus => Aiq.Gateway.Payments.CashSettlementRules.SettlementStatus(
+        Credit, PaidAmount, DueDate, DateOnly.FromDateTime(DateTime.UtcNow.AddHours(7)));
+}
 
 // Kế toán trưởng cần để chấm rủi ro NCC + lên kế hoạch chi.
 public sealed record SupplierPayablesReport(
@@ -106,7 +113,10 @@ public sealed record SupplierPayablesReport(
     ApAgingBuckets Aging,
     decimal OverdueAmount,
     DateOnly? LastPaymentDate,
-    int PaymentTermDefault);
+    int PaymentTermDefault,
+    // Posted receipts/payments not yet allocated to any invoice (customer
+    // advance / supplier prepayment) — never netted into the balance above.
+    decimal UnappliedAmount);
 
 public sealed record ApAgingBuckets(
     decimal Current,       // trong hạn
@@ -504,6 +514,13 @@ public sealed class SupplierRepository : ISupplierRepository
             """;
         var lastPayment = await conn.QueryFirstOrDefaultAsync<DateOnly?>(lastPaymentSql, new { supplierId });
 
+        var unapplied = await conn.ExecuteScalarAsync<decimal>(new CommandDefinition("""
+            SELECT COALESCE(SUM(c.amount - COALESCE((SELECT SUM(a.applied_amount) FROM payment_applications a
+                                                     WHERE a.cash_transaction_id = c.id AND a.status = 'active'), 0)), 0)
+            FROM cash_transactions c
+            WHERE c.tenant_id = @tenantId AND c.supplier_id = @id AND c.status = 'posted'
+            """, new { tenantId, id = supplierId }, cancellationToken: ct));
+
         return new SupplierPayablesReport(
             supplier,
             CurrentBalance331: supplier.CurrentAp,
@@ -511,7 +528,8 @@ public sealed class SupplierRepository : ISupplierRepository
             Aging: new ApAgingBuckets(bucketCurrent, b30, b60, b90, over90),
             OverdueAmount: overdue,
             LastPaymentDate: lastPayment,
-            PaymentTermDefault: supplier.PaymentTermsDays);
+            PaymentTermDefault: supplier.PaymentTermsDays,
+            UnappliedAmount: unapplied);
     }
 
     public async Task<PurchaseOrderMatch?> MatchInvoiceToPurchaseOrderAsync(
@@ -593,27 +611,29 @@ public sealed class SupplierRepository : ISupplierRepository
         await using var conn = await _factory.OpenAsync(ct);
         var scope = new { tenantId, departmentId };
 
-        // Open (unpaid) supplier invoices only — same filter GetPayablesAsync
+        // Open/partial supplier invoices only — same filter GetPayablesAsync
         // uses per-supplier, aggregated here across the whole Department in
-        // one query. credit = the outstanding invoice amount (Có 331 tăng).
+        // one query. Buckets use the REMAINING amount (credit - paid_amount),
+        // so an applied payment reduces aging immediately (previously the
+        // full invoice amount was counted, and fully paid invoices too).
         var aging = await conn.QuerySingleAsync<(
             decimal Current, decimal B30, decimal B60, decimal B90, decimal Over90,
             decimal Overdue, decimal Due7, decimal Due30, int SupplierCount)>(
             new CommandDefinition("""
                 SELECT
-                    COALESCE(SUM(CASE WHEN l.due_date IS NULL OR l.due_date >= CURRENT_DATE THEN l.credit ELSE 0 END),0) AS Current,
-                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE AND CURRENT_DATE - l.due_date <= 30 THEN l.credit ELSE 0 END),0) AS B30,
-                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE AND CURRENT_DATE - l.due_date BETWEEN 31 AND 60 THEN l.credit ELSE 0 END),0) AS B60,
-                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE AND CURRENT_DATE - l.due_date BETWEEN 61 AND 90 THEN l.credit ELSE 0 END),0) AS B90,
-                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE AND CURRENT_DATE - l.due_date > 90 THEN l.credit ELSE 0 END),0) AS Over90,
-                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE THEN l.credit ELSE 0 END),0) AS Overdue,
-                    COALESCE(SUM(CASE WHEN l.due_date >= CURRENT_DATE AND l.due_date <= CURRENT_DATE + 7 THEN l.credit ELSE 0 END),0) AS Due7,
-                    COALESCE(SUM(CASE WHEN l.due_date >= CURRENT_DATE AND l.due_date <= CURRENT_DATE + 30 THEN l.credit ELSE 0 END),0) AS Due30,
+                    COALESCE(SUM(CASE WHEN l.due_date IS NULL OR l.due_date >= CURRENT_DATE THEN l.credit - l.paid_amount ELSE 0 END),0) AS Current,
+                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE AND CURRENT_DATE - l.due_date <= 30 THEN l.credit - l.paid_amount ELSE 0 END),0) AS B30,
+                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE AND CURRENT_DATE - l.due_date BETWEEN 31 AND 60 THEN l.credit - l.paid_amount ELSE 0 END),0) AS B60,
+                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE AND CURRENT_DATE - l.due_date BETWEEN 61 AND 90 THEN l.credit - l.paid_amount ELSE 0 END),0) AS B90,
+                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE AND CURRENT_DATE - l.due_date > 90 THEN l.credit - l.paid_amount ELSE 0 END),0) AS Over90,
+                    COALESCE(SUM(CASE WHEN l.due_date < CURRENT_DATE THEN l.credit - l.paid_amount ELSE 0 END),0) AS Overdue,
+                    COALESCE(SUM(CASE WHEN l.due_date >= CURRENT_DATE AND l.due_date <= CURRENT_DATE + 7 THEN l.credit - l.paid_amount ELSE 0 END),0) AS Due7,
+                    COALESCE(SUM(CASE WHEN l.due_date >= CURRENT_DATE AND l.due_date <= CURRENT_DATE + 30 THEN l.credit - l.paid_amount ELSE 0 END),0) AS Due30,
                     COUNT(DISTINCT l.supplier_id) AS SupplierCount
                 FROM sim_ap_ledger l
                 JOIN sim_suppliers s ON s.id = l.supplier_id
                 WHERE s.tenant_id=@tenantId AND s.department_id=@departmentId
-                  AND l.document_type='invoice' AND l.debit=0
+                  AND l.document_type='invoice' AND l.status IN ('open','partial')
                 """, scope, cancellationToken: ct));
 
         // Total payable + large-balance count come from the denormalized
@@ -938,7 +958,7 @@ public sealed class SupplierRepository : ISupplierRepository
 
     // Derived, not incremented — mirrors Customer's RecomputeCurrentArAsync.
     // credit is the invoice amount for AP rows (debit is a payment/discount).
-    private static async Task<decimal> RecomputeCurrentApAsync(
+    internal static async Task<decimal> RecomputeCurrentApAsync(
         Npgsql.NpgsqlConnection conn, Npgsql.NpgsqlTransaction tx, Guid tenantId, Guid supplierId, CancellationToken ct)
     {
         var newBalance = await conn.ExecuteScalarAsync<decimal>(new CommandDefinition("""

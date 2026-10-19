@@ -86,6 +86,21 @@ public sealed class AgentDepartmentEntitlementIntegrationTests : IAsyncLifetime
         await scoped.ExecuteAsync(await ReadMigrationAsync("018_tenant_owner_enforcement.sql"));
         await scoped.ExecuteAsync(await ReadMigrationAsync("019_departments.sql"));
         await scoped.ExecuteAsync(await ReadMigrationAsync("021_agent_department_assignments.sql"));
+        // Configurable document processing (migration 060) needs the platform
+        // workflow catalog and the published-version guard this hand-rolled
+        // baseline predates (production gets them from migrations 010/012).
+        await scoped.ExecuteAsync("""
+            CREATE TABLE IF NOT EXISTS workflows (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), name TEXT NOT NULL DEFAULT 'wf');
+            CREATE OR REPLACE FUNCTION protect_published_agent_capability() RETURNS TRIGGER AS $$
+            DECLARE target_version UUID; version_status TEXT;
+            BEGIN
+                target_version := CASE WHEN TG_OP = 'DELETE' THEN OLD.agent_version_id ELSE NEW.agent_version_id END;
+                SELECT status INTO version_status FROM agent_versions WHERE id = target_version;
+                IF version_status <> 'draft' THEN RAISE EXCEPTION 'published or superseded agent version capabilities are immutable' USING ERRCODE = '23514'; END IF;
+                RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+            END; $$ LANGUAGE plpgsql;
+            """);
+        await scoped.ExecuteAsync(await ReadMigrationAsync("060_agent_version_document_processing.sql"));
 
         await AssignDepartmentsAsync(scoped);
         await SeedAgentsAsync(scoped);

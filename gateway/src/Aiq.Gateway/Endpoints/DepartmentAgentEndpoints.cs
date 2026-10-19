@@ -1,7 +1,10 @@
 using System.ComponentModel.DataAnnotations;
 using Aiq.Gateway.Data;
 using Aiq.Gateway.Governance;
+using Aiq.Gateway.Books;
 using Aiq.Gateway.Middleware;
+using Aiq.Gateway.Vouchers;
+using Aiq.Gateway.Vouchers.DocumentProcessing;
 using Npgsql;
 
 namespace Aiq.Gateway.Endpoints;
@@ -52,7 +55,163 @@ public static class DepartmentAgentEndpoints
         agents.MapPut("/{agentId:guid}/knowledge/{noteId:guid}", AttachKnowledgeAsync);
         agents.MapDelete("/{agentId:guid}/knowledge/{noteId:guid}", DetachKnowledgeAsync);
 
+        // Configurable document processing: versioned with the Agent. Edits
+        // only ever touch a DRAFT version; published configuration is
+        // immutable (DB trigger) and is what production runs.
+        agents.MapGet("/{agentId:guid}/versions/{versionId:guid}/document-processing", GetDocumentProcessingAsync);
+        agents.MapPut("/{agentId:guid}/versions/{versionId:guid}/document-processing", ReplaceDocumentProcessingAsync);
+        agents.MapPost("/{agentId:guid}/document-processing/test", TestDocumentProcessingAsync);
+        app.MapGet("/department/document-types", ListDocumentTypesAsync)
+            .RequireAuthorization("department_admin").RequireRateLimiting("default");
+
         return app;
+    }
+
+    /// <summary>
+    /// SYSTEM document type catalog: canonical codes, their FIXED server-side
+    /// handlers (read-only — not configurable) and default extraction schema.
+    /// </summary>
+    private static IResult ListDocumentTypesAsync() => Results.Ok(new
+    {
+        fieldTypes = DocumentFieldTypes.All.Order(StringComparer.Ordinal),
+        items = DocumentTypeCatalog.All.Select(t => new
+        {
+            code = t.Code, displayName = t.DisplayName, accountingHandler = t.AccountingHandler,
+            defaultFields = t.DefaultFields, defaultInstructions = t.DefaultInstructions,
+        }),
+    });
+
+    private static async Task<IResult> GetDocumentProcessingAsync(Guid agentId, Guid versionId, IDocumentProcessingRepository docs, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TryScope(ctx, out var tenantId, out var departmentId, out _)) return Results.Forbid();
+        var config = await docs.GetDepartmentVersionConfigAsync(tenantId, departmentId, agentId, versionId, ct);
+        if (config is null) return Results.NotFound();
+        return Results.Ok(new
+        {
+            versionId = config.VersionId, version = config.Version, versionStatus = config.VersionStatus,
+            configSource = config.Types.Count > 0 ? DocumentConfigSources.Manifest : DocumentConfigSources.Legacy,
+            types = config.Types.Select(t => new
+            {
+                code = t.Code, enabled = t.Enabled, displayName = t.DisplayName, fields = t.Fields,
+                extractionInstructions = t.ExtractionInstructions, workflowId = t.WorkflowId,
+                workflowVersionId = t.WorkflowVersionId, skillCodes = t.SkillCodes,
+                accountingHandler = t.AccountingHandler,
+                schema = DocumentSchema.Build(t.Code, t.Fields),
+            }),
+        });
+    }
+
+    private static async Task<IResult> ReplaceDocumentProcessingAsync(Guid agentId, Guid versionId, ReplaceDocumentProcessingRequest request,
+        IDocumentProcessingRepository docs, HttpContext ctx, CancellationToken ct)
+    {
+        if (!TryScope(ctx, out var tenantId, out var departmentId, out var actorId)) return Results.Forbid();
+        var result = await docs.ReplaceDepartmentDraftConfigAsync(tenantId, departmentId, agentId, versionId, actorId, request.Types, ct);
+        if (result.Failure == "not_found") return Results.NotFound();
+        if (result.Failure is { } failure) return Results.Conflict(new { error = failure });
+        if (result.Errors.Count > 0)
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["documentProcessing"] = result.Errors.ToArray() });
+        return Results.Ok(new { versionId, types = result.Types });
+    }
+
+    /// <summary>
+    /// Agent Builder TEST mode: runs the current draft (else published)
+    /// document configuration against a sample — pasted text or the OCR text
+    /// of one of this department's own vouchers (read-only). Uses the
+    /// tool-less /agent/document-extract runtime and the pure
+    /// DocumentExtraction core: no voucher write, no AR/AP, no journal, no
+    /// settlement, no payment — only an append-only test-run audit row.
+    /// </summary>
+    internal static async Task<IResult> TestDocumentProcessingAsync(Guid agentId, DocumentProcessingTestRequest request,
+        IDocumentProcessingRepository docs, ITenantCompanyProfileRepository profiles, IAgentClient agentClient,
+        HttpContext ctx, CancellationToken ct)
+    {
+        if (!TryScope(ctx, out var tenantId, out var departmentId, out var actorId)) return Results.Forbid();
+        var target = await docs.GetDepartmentTestTargetAsync(tenantId, departmentId, agentId, ct);
+        if (target is null) return Results.NotFound();
+        if (target.Config is not { } config)
+            return Results.Conflict(new { error = "document_processing_not_configured" });
+
+        var rawText = request.RawText?.Trim();
+        if (string.IsNullOrEmpty(rawText) && request.VoucherId is { } sampleId)
+            rawText = (await docs.GetDepartmentVoucherRawTextAsync(tenantId, departmentId, sampleId, ct))?.Trim();
+        if (string.IsNullOrEmpty(rawText)) return Results.BadRequest(new { error = "sample_text_required" });
+
+        var hint = VoucherTypes.Normalize(request.VoucherTypeHint);
+        var profile = await profiles.GetAsync(tenantId, ct);
+        var company = profile is null ? null : new Aiq.Gateway.Payments.CompanyIdentity(profile.TaxCode,
+            new[] { profile.LegalName, profile.ShortName }.Concat(profile.Aliases ?? [])
+                .Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n!).ToList());
+        var detection = VoucherTypeClassifier.Detect(rawText, company);
+        var prompt = DocumentExtraction.BuildManifestPrompt(config, detection.Type ?? hint, false, rawText);
+
+        AgentTaskResult executed;
+        try
+        {
+            executed = await agentClient.RunDocumentExtractionAsync(agentId, target.VersionId, test: true, prompt,
+                ExtractBearerToken(ctx), ct);
+        }
+        catch (AgentRequestException ex)
+        {
+            return Results.Json(new { error = ex.UpstreamStatus == 409 ? "agent_version_changed" : "agent_failed", upstreamStatus = ex.UpstreamStatus },
+                statusCode: StatusCodes.Status502BadGateway);
+        }
+        catch (HttpRequestException)
+        {
+            return Results.Json(new { error = "agent_unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        var (fields, entries) = Aiq.Gateway.Jobs.VoucherExtractJobRunner.ExtractJsonBlocks(executed.FinalAnswer);
+        if (fields is null)
+            return Results.Ok(new { mode = "test", error = "no_fields_json", accountingMutations = 0,
+                answerPreview = executed.FinalAnswer.Length > 800 ? executed.FinalAnswer[..800] : executed.FinalAnswer });
+
+        var classification = VoucherTypeClassifier.Combine(new VoucherTypeRequest(hint, null), detection,
+            Aiq.Gateway.Jobs.VoucherExtractJobRunner.ReadString(fields, "voucher_type"),
+            Aiq.Gateway.Jobs.VoucherExtractJobRunner.ReadStringAny(fields, "seller_mst", "seller_tax_code"),
+            Aiq.Gateway.Jobs.VoucherExtractJobRunner.ReadStringAny(fields, "buyer_mst", "buyer_tax_code"),
+            company?.TaxCode);
+        var policy = DocumentExtraction.ApplyPolicy(config, classification, fields, $"Trợ lý {target.AgentName} v{target.Version}");
+        var type = policy.TypeConfig;
+        await docs.RecordRunAsync(new DocumentProcessingRun("test", null, tenantId, departmentId, actorId, agentId,
+            executed.AgentVersionId ?? target.VersionId, executed.AgentVersion ?? target.Version, DocumentConfigSources.Manifest,
+            policy.Classification.VoucherType, type?.SchemaSha256, type?.Workflow?.Id, type?.Workflow?.VersionId,
+            DocumentExtraction.SkillRefs(type), executed.Provider, executed.Model, policy.Classification.Source,
+            policy.Classification.Status, policy.Classification.Confidence, policy.Schema?.Valid,
+            policy.Schema?.MissingRequired ?? [], policy.Unsupported), ct);
+
+        return Results.Ok(new
+        {
+            mode = "test",
+            configSource = DocumentConfigSources.Manifest,
+            agentId,
+            agentVersionId = target.VersionId,
+            version = target.Version,
+            versionStatus = target.VersionStatus,
+            executedAgentVersionId = executed.AgentVersionId,
+            provider = executed.Provider,
+            model = executed.Model,
+            detectedType = policy.Classification.VoucherType,
+            detectedTypeLabel = VoucherTypes.Label(policy.Classification.VoucherType),
+            classification = policy.Classification,
+            unsupportedDocumentType = policy.Unsupported,
+            schemaValid = policy.Schema?.Valid,
+            missingRequired = policy.Schema?.MissingRequired ?? [],
+            typeErrors = policy.Schema?.TypeErrors ?? [],
+            schemaSha256 = type?.SchemaSha256,
+            workflow = type?.Workflow is { } wf ? new { id = wf.Id, versionId = wf.VersionId, name = wf.Name } : null,
+            workflowRequiresReview = policy.WorkflowReview,
+            skills = DocumentExtraction.SkillRefs(type),
+            extractedFields = fields,
+            // Shown for inspection only — never saved in test mode.
+            journalSuggestionsPreview = entries ?? [],
+            accountingMutations = 0,
+        });
+    }
+
+    private static string ExtractBearerToken(HttpContext ctx)
+    {
+        var auth = ctx.Request.Headers.Authorization.ToString();
+        return auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? auth["Bearer ".Length..].Trim() : string.Empty;
     }
 
     private static async Task<IResult> ListKnowledgeAsync(Guid agentId, IDepartmentKnowledgeRepository repo, HttpContext ctx, CancellationToken ct)

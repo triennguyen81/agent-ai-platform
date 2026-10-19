@@ -66,15 +66,8 @@ public static class SkillEndpoints
     private static async Task<IResult> UpdatePlatformContentAsync(Guid skillId, UpdateDepartmentSkillContentRequest request, ISkillRepository repo, CancellationToken ct)
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
-        try
-        {
-            var item = await repo.UpdatePlatformSkillContentAsync(skillId, request, ct);
-            return item is null ? Results.NotFound() : Results.Ok(item);
-        }
-        catch (InvalidOperationException ex) when (ex.Message == "skill_content_locked")
-        {
-            return Results.Conflict(new { error = "skill_content_locked_by_published_agent_version" });
-        }
+        var item = await repo.UpdatePlatformSkillContentAsync(skillId, request, ct);
+        return item is null ? Results.NotFound() : Results.Ok(item);
     }
 
     private static Task<IResult> EnablePlatformAsync(Guid skillId, ISkillRepository repo, CancellationToken ct) => SetPlatformEnabledAsync(skillId, true, repo, ct);
@@ -138,15 +131,8 @@ public static class SkillEndpoints
     {
         if (!TryValidate(request, out var errors)) return Results.ValidationProblem(errors);
         if (!TryScope(ctx, out var tenantId, out var departmentId, out _)) return Results.Forbid();
-        try
-        {
-            var s = await repo.UpdateDepartmentSkillContentAsync(tenantId, departmentId, skillId, request, ct);
-            return s is null ? Results.NotFound() : Results.Ok(s);
-        }
-        catch (InvalidOperationException ex) when (ex.Message == "skill_content_locked")
-        {
-            return Results.Conflict(new { error = "skill_content_locked_by_published_agent_version" });
-        }
+        var s = await repo.UpdateDepartmentSkillContentAsync(tenantId, departmentId, skillId, request, ct);
+        return s is null ? Results.NotFound() : Results.Ok(s);
     }
 
     private static Task<IResult> EnableOwnAsync(Guid skillId, ISkillRepository repo, HttpContext ctx, CancellationToken ct) => SetOwnEnabledAsync(skillId, true, repo, ctx, ct);

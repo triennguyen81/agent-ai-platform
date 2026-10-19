@@ -47,4 +47,7 @@
     </Content>
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Aiq.Gateway.Tests" />
+  </ItemGroup>
 </Project>

@@ -416,11 +416,15 @@ public static class DynamicAgentEndpoints
             // that chain either). False (not a resolved Department Agent —
             // including "doesn't exist") preserves the exact pre-V2-C D3
             // behavior for every scope='system' entitlement-based agent.
+            // Re-extraction of a manifest-processed document pins the version
+            // that processed it (see VoucherExtractJobRunner); the caller's
+            // own chain below still authorizes the agent itself.
+            Guid? pinnedVersionId = Guid.TryParse(ctx.Request.Query["versionId"], out var pinned) ? pinned : null;
             result = await repo.IsResolvedDepartmentAgentAsync(agentId, ct)
-                ? await repo.GetDepartmentAgentManifestAsync(userId, resolvedTenantId, resolvedDepartmentId, agentId, isAdmin, ct)
+                ? await repo.GetDepartmentAgentManifestAsync(userId, resolvedTenantId, resolvedDepartmentId, agentId, isAdmin, ct, pinnedVersionId)
                 : isAdmin
-                    ? await repo.GetAdminManifestAsync(userId, resolvedTenantId, resolvedDepartmentId, agentId, ct)
-                    : await repo.GetManifestAsync(userId, resolvedTenantId, resolvedDepartmentId, agentId, ct);
+                    ? await repo.GetAdminManifestAsync(userId, resolvedTenantId, resolvedDepartmentId, agentId, ct, pinnedVersionId)
+                    : await repo.GetManifestAsync(userId, resolvedTenantId, resolvedDepartmentId, agentId, ct, pinnedVersionId);
             if (result.Manifest is not null)
             {
                 var minted = await MintToolExecutionTokenAsync(jwt, users, ctx, userId, resolvedTenantId, result.Manifest.TimeoutSeconds, ct);
@@ -437,7 +441,7 @@ public static class DynamicAgentEndpoints
                 _ => "GET runtime agent manifest",
             },
             "agent", agentId.ToString(),
-            new { tenantId, departmentId, allowed = result.Manifest is not null, denialReason = result.DenialReason },
+            new { tenantId, departmentId, pinnedVersionId = ctx.Request.Query["versionId"].ToString(), allowed = result.Manifest is not null, denialReason = result.DenialReason },
             ctx.Connection.RemoteIpAddress, ctx.Request.Headers.UserAgent.ToString()), ct);
         return result.Manifest is not null
             ? Results.Ok(await ctx.RequestServices.GetRequiredService<Aiq.Gateway.Notes.KnowledgeBaseRepository>().ReferencesAsync(result.Manifest, ct))

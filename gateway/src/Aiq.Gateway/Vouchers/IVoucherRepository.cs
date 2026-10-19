@@ -52,6 +52,16 @@ public interface IVoucherRepository
         UpdateVoucherRequest request,
         CancellationToken ct);
 
+    /// <summary>
+    /// ADMIN voucher-type decision: sets voucher_type and
+    /// extracted_fields.voucher_type_classification in one statement. Refuses
+    /// (returns false) once the voucher carries an accounting effect — status
+    /// 'verified' or a live cash posting — a posted type is never rewritten.
+    /// </summary>
+    Task<bool> SetVoucherTypeClassificationAsync(
+        Guid tenantId, Guid departmentId, Guid id, string voucherType, string classificationJson, CancellationToken ct,
+        bool reprocessing = false);
+
     Task ReplaceExtractedAsync(
         Guid tenantId, Guid userId, Guid id,
         CreateVoucherRequest request,
@@ -71,25 +81,8 @@ public interface IVoucherRepository
 
     Task<bool> DeleteAsync(Guid tenantId, Guid userId, Guid id, CancellationToken ct);
 
-    // R05 fix — persists a REAL tax-portal verification result (the Agent's
-    // verify_einvoice_tct tool, agent/src/aiq_agent/agentic/voucher_tools.py,
-    // makes a genuine best-effort call to hoadondientu.gdt.gov.vn). Only
-    // ever sets `true` on a determinate positive result. Also sets the
-    // tri-state tax_verification_status to 'verified' (see
-    // RejectTaxVerificationAsync for the other two states) so the Luồng 03
-    // approval gate in IExpenseClaimRepository.ConfirmAsync can read one
-    // consistent field. Department-scoped, not creator-scoped, matching
-    // every other apply-* action.
-    Task<bool> MarkTaxVerifiedAsync(Guid tenantId, Guid departmentId, Guid id, CancellationToken ct);
-
-    // P1 audit fix (tax-verification-as-gate) — records a determinate
-    // NEGATIVE outcome: the invoice was checked and found invalid/cancelled
-    // (providerUnavailable=false), or the check could not be completed at
-    // all because the government portal was unreachable
-    // (providerUnavailable=true). Either way this is an explicit, honest
-    // state — never silently left as "unverified" with no record of why,
-    // and never flipped to tct_verified=true.
-    Task<bool> RejectTaxVerificationAsync(Guid tenantId, Guid departmentId, Guid id, string reason, bool providerUnavailable, CancellationToken ct);
+    // Tax verification state is owned by ITaxVerificationRepository
+    // (Vouchers/TaxVerification.cs): ADMIN attestation with evidence only.
 
     // R06 — records an explicit Contract -> Invoice/Receipt link. Returns
     // false (no-op) if the voucher, or the contract (and installment, when
@@ -110,6 +103,19 @@ public interface IVoucherRepository
     // P1 async OCR: called from Hangfire job (no tenant/user context).
     // Updates just status + rawText + confidence + errorMessage. Idempotent.
     Task UpdateOcrResultAsync(
+        Guid id,
+        string status,
+        string? rawText,
+        decimal? ocrConfidence,
+        string? errorMessage,
+        CancellationToken ct);
+
+    // AG-02: the background OCR job — including a Hangfire retry after an
+    // Agent failure — may only write while the voucher is still waiting for
+    // OCR ('processing', or 'ocr_unavailable' from an earlier attempt).
+    // Returns false and writes nothing once the voucher has moved on
+    // (paste-fallback text, extraction, review, posting).
+    Task<bool> TryUpdateOcrJobResultAsync(
         Guid id,
         string status,
         string? rawText,
@@ -171,6 +177,8 @@ public sealed class VoucherRepository : IVoucherRepository
             tax_verification_status     AS TaxVerificationStatus,
             tax_verification_reason     AS TaxVerificationReason,
             tax_verification_checked_at AS TaxVerificationCheckedAt,
+            tax_verified_by             AS TaxVerifiedBy,
+            tax_verification_fingerprint AS TaxVerificationFingerprint,
             contract_id             AS ContractId,
             contract_installment_id AS ContractInstallmentId,
             source_file_path  AS SourceFilePath,
@@ -208,6 +216,7 @@ public sealed class VoucherRepository : IVoucherRepository
             debit_account   AS DebitAccount,
             credit_account  AS CreditAccount,
             amount          AS Amount,
+            source          AS Source,
             description     AS Description,
             confidence      AS Confidence,
             accepted_by     AS AcceptedBy,
@@ -350,6 +359,8 @@ public sealed class VoucherRepository : IVoucherRepository
 
         var voucher = await conn.QuerySingleAsync<VoucherRecord>(
             new CommandDefinition(insertSql, parameters, transaction: tx, cancellationToken: ct));
+        // The ON CONFLICT path updates an existing (possibly verified) voucher.
+        await TaxVerificationRepository.InvalidateIfIdentityChangedAsync(conn, tx, tenantId, voucher.Id, ct);
 
         // Replace line items (idempotent: delete then insert)
         const string deleteLines = "DELETE FROM voucher_line_items WHERE voucher_id = @voucherId;";
@@ -399,6 +410,28 @@ public sealed class VoucherRepository : IVoucherRepository
         return new VoucherDetail(voucher, lineItems, Array.Empty<VoucherJournalRecord>());
     }
 
+    public async Task<bool> SetVoucherTypeClassificationAsync(
+        Guid tenantId, Guid departmentId, Guid id, string voucherType, string classificationJson, CancellationToken ct,
+        bool reprocessing = false)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var rows = await conn.ExecuteAsync(new CommandDefinition("""
+            UPDATE vouchers v
+               SET voucher_type = @voucherType,
+                   status = CASE WHEN @reprocessing THEN 'processing' ELSE v.status END,
+                   extracted_fields = jsonb_set(COALESCE(v.extracted_fields, '{}'::jsonb), '{voucher_type_classification}', @classificationJson::jsonb, true)
+                                      || jsonb_build_object('voucher_type', @voucherType)
+             WHERE v.id = @id AND v.tenant_id = @tenantId AND v.department_id = @departmentId
+               AND v.status <> 'verified'
+               AND NOT EXISTS (SELECT 1 FROM cash_transactions c WHERE c.voucher_id = v.id AND c.status = 'posted')
+            """, new { id, tenantId, departmentId, voucherType, classificationJson, reprocessing }, tx, cancellationToken: ct));
+        // A type change changes which invoices the voucher stands for.
+        if (rows == 1) await TaxVerificationRepository.InvalidateIfIdentityChangedAsync(conn, tx, tenantId, id, ct);
+        await tx.CommitAsync(ct);
+        return rows == 1;
+    }
+
     public async Task ReplaceExtractedAsync(
         Guid tenantId, Guid userId, Guid id,
         CreateVoucherRequest request,
@@ -410,6 +443,7 @@ public sealed class VoucherRepository : IVoucherRepository
         const string updateSql = """
             UPDATE vouchers SET
                 status           = 'extracted',
+                voucher_type     = @voucherType,
                 document_number  = @documentNumber,
                 document_series  = @documentSeries,
                 document_date    = @documentDate,
@@ -442,6 +476,7 @@ public sealed class VoucherRepository : IVoucherRepository
             new
             {
                 id, tenantId, userId,
+                voucherType = request.VoucherType,
                 documentNumber = request.DocumentNumber,
                 documentSeries = request.DocumentSeries,
                 documentDate = request.DocumentDate,
@@ -466,6 +501,8 @@ public sealed class VoucherRepository : IVoucherRepository
             },
             transaction: tx,
             cancellationToken: ct));
+        // Re-extraction may change the invoice identity a tax verification covers.
+        await TaxVerificationRepository.InvalidateIfIdentityChangedAsync(conn, tx, tenantId, id, ct);
 
         await conn.ExecuteAsync(new CommandDefinition(
             "DELETE FROM voucher_line_items li WHERE voucher_id = @id AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=li.voucher_id AND v.tenant_id=@tenantId AND v.user_id=@userId);",
@@ -682,7 +719,8 @@ public sealed class VoucherRepository : IVoucherRepository
             """;
 
         await using var conn = await _factory.OpenAsync(ct);
-        return await conn.QuerySingleOrDefaultAsync<VoucherRecord>(
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var updated = await conn.QuerySingleOrDefaultAsync<VoucherRecord>(
             new CommandDefinition(
                 sql,
                 new
@@ -711,7 +749,15 @@ public sealed class VoucherRepository : IVoucherRepository
                     errorMessage = request.ErrorMessage,
                     tags = request.Tags,
                 },
+                tx,
                 cancellationToken: ct));
+        if (updated is null) { await tx.RollbackAsync(ct); return null; }
+        // An edit of MST / số / ngày / tổng tiền invalidates a tax verification.
+        await TaxVerificationRepository.InvalidateIfIdentityChangedAsync(conn, tx, tenantId, id, ct);
+        await tx.CommitAsync(ct);
+        if (updated.TaxVerificationStatus != TaxVerificationStatuses.Verified) return updated;
+        return await conn.QuerySingleOrDefaultAsync<VoucherRecord>(new CommandDefinition(
+            $"SELECT {VoucherSelectColumns} FROM vouchers WHERE id=@id AND tenant_id=@tenantId", new { id, tenantId }, cancellationToken: ct));
     }
 
     public async Task<IReadOnlyList<VoucherJournalRecord>> SaveJournalSuggestionsAsync(
@@ -725,7 +771,9 @@ public sealed class VoucherRepository : IVoucherRepository
         if (request.ReplaceExisting)
         {
             await conn.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM voucher_journal_suggestions j WHERE voucher_id = @voucherId AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=j.voucher_id AND v.tenant_id=@tenantId AND v.department_id=@departmentId);",
+                // Only AI/manual SUGGESTIONS are replaced — authoritative posting /
+                // reversal lines are never touched (DB trigger enforces it too).
+                "DELETE FROM voucher_journal_suggestions j WHERE voucher_id = @voucherId AND j.source = 'suggestion' AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=j.voucher_id AND v.tenant_id=@tenantId AND v.department_id=@departmentId);",
                 new { voucherId, tenantId, departmentId },
                 transaction: tx,
                 cancellationToken: ct));
@@ -746,18 +794,28 @@ public sealed class VoucherRepository : IVoucherRepository
                 amount         = EXCLUDED.amount,
                 description    = EXCLUDED.description,
                 confidence     = EXCLUDED.confidence
+            WHERE voucher_journal_suggestions.source = 'suggestion'
             RETURNING {JournalSelectColumns};
             """;
 
         foreach (var e in request.Entries)
         {
+            // A suggestion never takes an authoritative line's number: if the
+            // requested entry_no belongs to a posting, append after the last one.
+            var entryNo = await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
+                "SELECT EXISTS (SELECT 1 FROM voucher_journal_suggestions WHERE voucher_id=@voucherId AND entry_no=@entryNo AND source <> 'suggestion')",
+                new { voucherId, entryNo = e.EntryNo }, tx, cancellationToken: ct))
+                ? await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                    "SELECT COALESCE(MAX(entry_no),0)+1 FROM voucher_journal_suggestions WHERE voucher_id=@voucherId",
+                    new { voucherId }, tx, cancellationToken: ct))
+                : e.EntryNo;
             var row = await conn.QuerySingleAsync<VoucherJournalRecord>(
                 new CommandDefinition(
                     insertSql,
                     new
                     {
                         voucherId, tenantId, departmentId,
-                        entryNo = e.EntryNo,
+                        entryNo,
                         debitAccount = e.DebitAccount,
                         creditAccount = e.CreditAccount,
                         amount = e.Amount,
@@ -790,7 +848,7 @@ public sealed class VoucherRepository : IVoucherRepository
                     accepted_at = NOW(),
                     rejected_at = NULL,
                     reject_reason = NULL
-                WHERE id = @entryId AND voucher_id = @voucherId
+                WHERE id = @entryId AND voucher_id = @voucherId AND source = 'suggestion'
                   AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=voucher_id AND v.tenant_id=@tenantId AND v.department_id=@departmentId)
                 RETURNING {JournalSelectColumns};
                 """
@@ -800,7 +858,7 @@ public sealed class VoucherRepository : IVoucherRepository
                     reject_reason = @rejectReason,
                     accepted_by = NULL,
                     accepted_at = NULL
-                WHERE id = @entryId AND voucher_id = @voucherId
+                WHERE id = @entryId AND voucher_id = @voucherId AND source = 'suggestion'
                   AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=voucher_id AND v.tenant_id=@tenantId AND v.department_id=@departmentId)
                 RETURNING {JournalSelectColumns};
                 """;
@@ -864,36 +922,6 @@ public sealed class VoucherRepository : IVoucherRepository
         return rows > 0;
     }
 
-    public async Task<bool> MarkTaxVerifiedAsync(Guid tenantId, Guid departmentId, Guid id, CancellationToken ct)
-    {
-        const string sql = """
-            UPDATE vouchers SET
-                tct_verified = TRUE, tct_verified_at = NOW(),
-                tax_verification_status = 'verified', tax_verification_reason = NULL,
-                tax_verification_checked_at = NOW()
-            WHERE id = @id AND tenant_id = @tenantId AND department_id = @departmentId;
-            """;
-        await using var conn = await _factory.OpenAsync(ct);
-        var rows = await conn.ExecuteAsync(
-            new CommandDefinition(sql, new { id, tenantId, departmentId }, cancellationToken: ct));
-        return rows > 0;
-    }
-
-    public async Task<bool> RejectTaxVerificationAsync(Guid tenantId, Guid departmentId, Guid id, string reason, bool providerUnavailable, CancellationToken ct)
-    {
-        var status = providerUnavailable ? "unavailable" : "invalid";
-        const string sql = """
-            UPDATE vouchers SET
-                tax_verification_status = @status, tax_verification_reason = @reason,
-                tax_verification_checked_at = NOW()
-            WHERE id = @id AND tenant_id = @tenantId AND department_id = @departmentId;
-            """;
-        await using var conn = await _factory.OpenAsync(ct);
-        var rows = await conn.ExecuteAsync(
-            new CommandDefinition(sql, new { id, tenantId, departmentId, status, reason }, cancellationToken: ct));
-        return rows > 0;
-    }
-
     public async Task UpdateOcrResultAsync(
         Guid id,
         string status,
@@ -916,6 +944,31 @@ public sealed class VoucherRepository : IVoucherRepository
             sql,
             new { id, status, rawText, ocrConfidence, errorMessage },
             cancellationToken: ct));
+    }
+
+    public async Task<bool> TryUpdateOcrJobResultAsync(
+        Guid id,
+        string status,
+        string? rawText,
+        decimal? ocrConfidence,
+        string? errorMessage,
+        CancellationToken ct)
+    {
+        const string sql = """
+            UPDATE vouchers
+            SET status         = @status,
+                raw_ocr_text   = COALESCE(@rawText, raw_ocr_text),
+                ocr_confidence = COALESCE(@ocrConfidence, ocr_confidence),
+                error_message  = @errorMessage,
+                updated_at     = NOW()
+            WHERE id = @id
+              AND status IN ('processing', 'ocr_unavailable')
+            """;
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.ExecuteAsync(new CommandDefinition(
+            sql,
+            new { id, status, rawText, ocrConfidence, errorMessage },
+            cancellationToken: ct)) == 1;
     }
 
     public async Task<VoucherRecord?> FindDuplicateAsync(

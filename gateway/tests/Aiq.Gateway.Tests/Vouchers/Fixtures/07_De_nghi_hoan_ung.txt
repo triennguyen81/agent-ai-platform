@@ -1,0 +1,44 @@
+                                              CÔNG TY TNHH SÁU TRỰC
+                                      MST: 0123456789 - Địa chỉ: Lạc An, Ninh Thọ
+
+
+
+                                         ĐỀ NGHỊ HOÀN ỨNG
+                                                       Số: HU-TEST-7001
+
+                                                Ngày 02 tháng 10 năm 2026
+
+
+ DỮ LIỆU MẪU KIỂM THỬ AIQ
+
+
+ THÔNG TIN NHÂN VIÊN
+   Họ tên                            Nguyễn Văn Bình
+
+   Phòng ban                         Kinh doanh
+
+   Mã nhân viên                      NV-DEMO-001
+
+ NỘI DUNG HOÀN ỨNG
+   Số tiền đã tạm ứng                5.000.000 VND
+
+   Chi phí thực tế                   4.200.000 VND
+
+   Số tiền hoàn lại công ty          800.000 VND
+
+   Nội dung chi                      Chi phí đi công tác gặp khách hàng Việt Tín
+
+   Hình thức hoàn ứng                Chuyển khoản
+
+   Ngày đề nghị                      02/10/2026
+
+
+
+ Kỳ vọng: đây là chứng từ hoàn ứng/expense-claim, không được tự động đối trừ AR/AP khách hàng hoặc
+ nhà cung cấp.
+
+
+
+
+Dữ liệu mẫu phục vụ kiểm thử AIQ - không dùng làm chứng từ thực tế                             Trang 1
+

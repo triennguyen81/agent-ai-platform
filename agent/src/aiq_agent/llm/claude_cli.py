@@ -10,11 +10,9 @@ Trade-offs vs the direct Anthropic HTTPS provider:
   (Max ~50 msg/5h, Pro ~40 msg/3h — do not use for multi-user production)
 - OAuth token lives in /home/app/.claude — must be persisted via a
   volume mount so `docker compose up` restarts don't wipe login state
-- No structured token usage returned (subscription is metered by
-  message count, not tokens) — LlmUsage always reports 0
-
-The mock token counts keep the `LlmService` contract intact without
-misleading downstream observability.
+- Usage: the CLI's ResultMessage reports per-session token counts
+  (uncached input, cache write, cache read, output) and its own cost
+  estimate; they are returned in ChatResult.usage (AG token audit, Phase 1).
 """
 
 from __future__ import annotations
@@ -26,10 +24,12 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    ResultMessage,
     TextBlock,
 )
 
-from aiq_agent.llm.base import ChatMessage, ChatResult, LlmService, LlmUsage
+from aiq_agent.llm.base import ChatMessage, ChatResult, LlmService
+from aiq_agent.observability.llm_usage import UsageCollector
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +39,12 @@ class ClaudeCliLlmService(LlmService):
 
     provider = "claude_cli"
 
-    def __init__(self, *, model: str, max_turns: int = 4) -> None:
+    def __init__(self, *, model: str, max_turns: int = 4, disable_thinking: bool = False) -> None:
         self.model = model
         self._max_turns = max_turns
+        # Extended (adaptive) thinking off — for mechanical tasks such as OCR
+        # diacritic correction, where it only adds latency and tokens.
+        self._disable_thinking = disable_thinking
 
     async def chat(
         self,
@@ -73,6 +76,12 @@ class ClaudeCliLlmService(LlmService):
 
         options = ClaudeAgentOptions(
             system_prompt=system_prompt,
+            # Plain completion: no Claude Code built-in tools (Bash, Read,
+            # WebFetch, …). Their definitions were ~15k prompt tokens on
+            # every call — OCR correction pages included — and none of this
+            # service's callers may use them (token audit Phase 3).
+            tools=[],
+            thinking={"type": "disabled"} if self._disable_thinking else None,
             max_turns=self._max_turns,
             # Pin the model here (rather than letting the CLI default
             # kick in) so LlmService.chat() actually uses what settings
@@ -81,10 +90,14 @@ class ClaudeCliLlmService(LlmService):
         )
 
         chunks: list[str] = []
+        collector = UsageCollector()
         async with ClaudeSDKClient(options=options) as client:
             await client.query(query)
             async for message in client.receive_response():
+                if isinstance(message, ResultMessage):
+                    collector.add_result(message)
                 if isinstance(message, AssistantMessage):
+                    collector.add_assistant(message)
                     for block in message.content:
                         if isinstance(block, TextBlock):
                             text = (block.text or "").strip()
@@ -93,9 +106,7 @@ class ClaudeCliLlmService(LlmService):
 
         content = "\n\n".join(chunks).strip()
 
-        # Subscription auth is billed per message, not per token — we
-        # can't return meaningful usage counts.
-        usage = LlmUsage(input_tokens=0, output_tokens=0)
+        usage = collector.to_llm_usage()
 
         return ChatResult(
             content=content or "(Claude không trả nội dung.)",

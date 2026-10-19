@@ -16,6 +16,7 @@ from __future__ import annotations
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
 
+from aiq_agent.api.ocr_routes import LlmUsageReport
 from aiq_agent.documents.extraction import DocumentExtractionError, extract_document_text
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -28,6 +29,7 @@ class DocumentExtractResponse(BaseModel):
     char_count: int
     mime_type: str
     extraction_method: str  # pdf_text_layer | pdf_ocr | docx_text | image_ocr
+    llm_usage: LlmUsageReport | None = None
 
 
 @router.post("/extract", response_model=DocumentExtractResponse)
@@ -53,6 +55,11 @@ async def extract_document(
         char_count=result.char_count,
         mime_type=result.mime_type,
         extraction_method=result.extraction_method,
+        llm_usage=LlmUsageReport.from_usage(
+            result.llm_usage,
+            provider=getattr(getattr(request.app.state, "llm", None), "provider", None),
+            model=getattr(getattr(request.app.state, "llm", None), "model", None),
+        ),
     )
 
 

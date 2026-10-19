@@ -19,12 +19,29 @@ class ChatMessage:
 
 @dataclass(frozen=True, slots=True)
 class LlmUsage:
+    """Token usage of one chat() — possibly several API calls.
+
+    Anthropic semantics: ``input_tokens`` is the UNCACHED prompt part only;
+    the full prompt is input + cache_creation + cache_read. The three are
+    disjoint, so summing them never double counts. ``cost_usd`` is the
+    provider-reported cost (already priced per token class) — never derive
+    a second cost from the token counts.
+    """
+
     input_tokens: int
     output_tokens: int
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    llm_call_count: int = 1
+    cost_usd: float | None = None
+
+    @property
+    def prompt_tokens(self) -> int:
+        return self.input_tokens + self.cache_creation_input_tokens + self.cache_read_input_tokens
 
     @property
     def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
+        return self.prompt_tokens + self.output_tokens
 
 
 @dataclass(frozen=True, slots=True)

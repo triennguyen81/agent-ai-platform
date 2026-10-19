@@ -77,6 +77,7 @@ public sealed class DepartmentWorkflowSkillKnowledgeIntegrationTests : IAsyncLif
         await scoped.ExecuteAsync(await ReadMigrationAsync("024_acl_v2_scope_foundations.sql"));
         await scoped.ExecuteAsync(await ReadMigrationAsync("025_department_capability_binding_v2c_agents.sql"));
         await scoped.ExecuteAsync(await ReadMigrationAsync("026_department_workflow_versions_and_knowledge_archive.sql"));
+        await scoped.ExecuteAsync(await ReadMigrationAsync("060_agent_version_document_processing.sql"));
 
         await AssignDepartmentsAsync(scoped);
 
@@ -506,7 +507,7 @@ public sealed class DepartmentWorkflowSkillKnowledgeIntegrationTests : IAsyncLif
     }
 
     [Fact]
-    public async Task DepartmentSkill_ContentLockedOnceReferencedByAPublishedAgentVersion()
+    public async Task DepartmentSkill_EditAfterPublish_NeverChangesThePublishedVersionsSnapshot()
     {
         if (_scopedConnectionString is null) return;
         var skill = await _skillRepo.CreateDepartmentSkillAsync(_tenantA, _accounting, _adminAccounting,
@@ -526,10 +527,18 @@ public sealed class DepartmentWorkflowSkillKnowledgeIntegrationTests : IAsyncLif
         var published = await _agentRepo.PublishDepartmentAgentVersionAsync(_tenantA, _accounting, agent.Id, version.Id, _adminAccounting, default);
         Assert.NotNull(published);
 
-        // Now locked — editing content throws (endpoint translates to 409).
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            _skillRepo.UpdateDepartmentSkillContentAsync(_tenantA, _accounting, skill.Id,
-                new UpdateDepartmentSkillContentRequest("Attempted post-publish edit."), default));
+        // Runtime configuration hardening: the published version carries its
+        // own publish-time snapshot, so content stays editable for drafts and
+        // later versions while the published version keeps "Edited while draft.".
+        Assert.NotNull(await _skillRepo.UpdateDepartmentSkillContentAsync(_tenantA, _accounting, skill.Id,
+            new UpdateDepartmentSkillContentRequest("Post-publish edit."), default));
+        await using (var conn = new NpgsqlConnection(_scopedConnectionString))
+        {
+            await conn.OpenAsync();
+            Assert.Equal("Edited while draft.", await conn.ExecuteScalarAsync<string>(
+                "SELECT content FROM agent_version_skill_snapshots WHERE agent_version_id=@id AND skill_code='journal-helper'",
+                new { id = version.Id }));
+        }
 
         // Metadata (name/description) is NOT locked — only content is.
         Assert.NotNull(await _skillRepo.UpdateDepartmentSkillMetadataAsync(_tenantA, _accounting, skill.Id,

@@ -1,10 +1,9 @@
 """Authenticated document extraction; uses the existing OCR adapters, no LLM."""
 
-import asyncio
-
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from aiq_agent.api.security import RuntimePrincipal, require_principal
+from aiq_agent.ocr.concurrency import OcrBusyError, OcrTimeoutError, run_ocr_native
 from aiq_agent.ocr.pdf import render_pdf_pages
 from aiq_agent.documents.extraction import DocumentExtractionError, extract_document_text
 
@@ -30,7 +29,7 @@ async def extract_knowledge(
                 raise HTTPException(422, "Document too large or invalid text")
             return {"text": document.text, "mimeType": document.mime_type}
         if data.startswith(b"%PDF-"):
-            pages = await asyncio.to_thread(render_pdf_pages, data, dpi=150, max_pages=100)
+            pages = await run_ocr_native(render_pdf_pages, data, dpi=150, max_pages=100)
             mime = "application/pdf"
         elif data.startswith(b"\x89PNG\r\n\x1a\n") or data.startswith(b"\xff\xd8\xff"):
             pages = [data]
@@ -42,6 +41,8 @@ async def extract_knowledge(
         if not text.strip() or len(text) > 2_000_000:
             raise HTTPException(422, "No extractable text or document too large")
         return {"text": text, "mimeType": mime}
+    except (OcrBusyError, OcrTimeoutError) as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
     except DocumentExtractionError as exc:
         raise HTTPException(exc.status_code, "Document extraction failed") from exc
     except HTTPException:

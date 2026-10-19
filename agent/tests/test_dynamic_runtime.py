@@ -165,13 +165,12 @@ async def test_two_manifests_change_ollama_prompt_and_model_without_process_conf
     second = ExecutionManifest.model_validate(manifest_data(model="db-model-two", systemPrompt="DB PROMPT TWO"))
     await build_agent_executor(first, settings, skills).execute(prompt="same", token="token")
     await build_agent_executor(second, settings, skills).execute(prompt="same", token="token")
-    # Each call's system prompt always carries its OWN manifest's
-    # systemPrompt first — the trusted company-context block
-    # (_company_context_block) is always appended after it, so this checks
-    # the per-manifest prefix rather than an exact match, without hardcoding
-    # that block's wording into an otherwise-unrelated test.
-    assert [(row[0], row[1].startswith("DB PROMPT ONE")) for row in captured[:1]] == [("db-model-one", True)]
-    assert [(row[0], row[1].startswith("DB PROMPT TWO")) for row in captured[1:]] == [("db-model-two", True)]
+    # Each call's system prompt carries its OWN manifest's systemPrompt right
+    # after the immutable platform runtime policy (highest precedence); the
+    # trusted company-context block follows it.
+    from aiq_agent.runtime.executors import _PLATFORM_RUNTIME_POLICY as policy
+    assert [(row[0], row[1].startswith(policy + "\n\nDB PROMPT ONE")) for row in captured[:1]] == [("db-model-one", True)]
+    assert [(row[0], row[1].startswith(policy + "\n\nDB PROMPT TWO")) for row in captured[1:]] == [("db-model-two", True)]
     assert captured[0][2] == {"temperature": 0.3, "max_tokens": 512}
 
 

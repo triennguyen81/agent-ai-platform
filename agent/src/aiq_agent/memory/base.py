@@ -100,3 +100,22 @@ class MemoryStore(ABC):
     async def aclose(self) -> None:
         """Release any underlying resources."""
         return None
+
+
+def trim_history(messages: list[ChatMessage], *, max_messages: int, max_chars: int) -> list[ChatMessage]:
+    """Newest whole messages within both budgets (token Phase 6).
+
+    A leading assistant message is dropped so the window never starts with
+    an answer whose question was cut off.
+    """
+    kept: list[ChatMessage] = []
+    used = 0
+    for message in reversed(messages):
+        if len(kept) >= max_messages or used + len(message.content) > max_chars:
+            break
+        kept.append(message)
+        used += len(message.content)
+    kept.reverse()
+    while kept and kept[0].role == "assistant":
+        kept.pop(0)
+    return kept

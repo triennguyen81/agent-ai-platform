@@ -19,6 +19,8 @@ public static class ContractEndpoints
         g.MapGet("/",List); g.MapPost("/",Create); g.MapGet("/{id:guid}",Get); g.MapPatch("/{id:guid}",Update); g.MapDelete("/{id:guid}",Delete);
         g.MapPost("/{id:guid}/process",Process); g.MapPost("/{id:guid}/review",Review); g.MapPost("/{id:guid}/handoff",Handoff);
         g.MapGet("/{id:guid}/documents",Documents);
+        g.MapGet("/{id:guid}/payment-discount",GetPaymentDiscount);
+        g.MapPut("/{id:guid}/payment-discount",SavePaymentDiscount);
         g.MapPost("/{id:guid}/documents",UploadDocument).DisableAntiforgery();
         g.MapDelete("/{id:guid}/documents/{documentId:guid}",DeleteDocument);
         g.MapPost("/extract-text",ExtractText).DisableAntiforgery();
@@ -57,6 +59,24 @@ public static class ContractEndpoints
     {if(!Admin(x,out var p,out var t,out var d))return Results.Forbid();var contract=await r.FindAsync(t,d,id,ct);if(contract is null)return Results.NotFound();if(contract.Contract.WorkflowState is not("WAITING_REVIEW" or "NEEDS_REVIEW"))return Results.BadRequest(new{error="contract_not_waiting_review"});if(contract.Contract.HitlActionId is{} actionId){var decision=await hitl.DecideAsync(t,d,actionId,p.UserId,new DecideActionRequest(q.Approve?"approve":"reject",q.Comment),ct);if(decision is null)return Results.BadRequest(new{error="hitl_action_not_pending"});}var a=await r.ReviewAsync(t,d,p.UserId,id,q.Approve,q.Comment,ct);return a is null?Results.BadRequest(new{error="contract_not_waiting_review"}):Results.Ok(new{workflowState=a});}
     private static async Task<IResult> Handoff(Guid id,IContractRepository r,HttpContext x,CancellationToken ct)
     {if(!Admin(x,out var p,out var t,out var d))return Results.Forbid();var a=await r.PrepareHandoffAsync(t,d,p.UserId,id,ct);return a is null?Results.BadRequest(new{error="human_approval_required"}):Results.Ok(a);}
+    // Contract payment discount term (structured, revisioned). Read with the
+    // contract; written ONLY by a department ADMIN while the contract is
+    // still editable — it becomes usable for settlement once ADMIN approves
+    // the contract (APPROVED/HANDED_OFF), after which it is frozen.
+    private static async Task<IResult> GetPaymentDiscount(Guid id,IContractPaymentDiscountRepository r,ICapabilityRepository c,HttpContext x,CancellationToken ct)
+    {if(!Scope(x,out var p,out var t,out var d))return Results.Forbid();if(!p.IsInRole("admin")&&!await Consume(p,"contract.processing",c,ct))return Results.Forbid();var v=await r.GetAsync(t,d,id,ct);return v is null?Results.NotFound():Results.Ok(new{discount=v,canEdit=p.IsInRole("admin")&&v.Editable});}
+    private static async Task<IResult> SavePaymentDiscount(Guid id,SaveContractPaymentDiscountRequest q,IContractPaymentDiscountRepository r,HttpContext x,CancellationToken ct)
+    {
+        if(!Admin(x,out var p,out var t,out var d))return Results.Forbid();
+        var result=await r.SaveAsync(t,d,id,p.UserId,q,ct);
+        return result.Status switch
+        {
+            DiscountTermSaveStatus.Saved=>Results.Ok(result.Term),
+            DiscountTermSaveStatus.NotFound=>Results.NotFound(),
+            DiscountTermSaveStatus.ContractFinalized=>Results.Conflict(new{error="contract_finalized",message="Hợp đồng đã được duyệt/khoá — không thể sửa điều khoản chiết khấu."}),
+            _=>Results.ValidationProblem(new Dictionary<string,string[]>(result.Errors!)),
+        };
+    }
     private static async Task<IResult> Documents(Guid id,IContractRepository contracts,IContractDocumentRepository docs,ICapabilityRepository caps,HttpContext x,CancellationToken ct)
     {if(!Scope(x,out var p,out var t,out var d)||!await Consume(p,"contract.processing",caps,ct))return Results.Forbid();if(await contracts.FindAsync(t,d,id,ct)is null)return Results.NotFound();var rows=await docs.ListAsync(t,d,id,ct);return Results.Ok(new{items=rows,total=rows.Count});}
     private static readonly HashSet<string> DocumentTypes=["contract","sale_contract","purchase_contract","rent_contract","loan_contract","appendix","acceptance","delivery","other"];
@@ -99,7 +119,9 @@ public static class ContractEndpoints
         IOptions<S3Options> options,
         ICapabilityRepository caps,
         HttpContext x,
-        CancellationToken ct)
+        CancellationToken ct,
+        Aiq.Gateway.Governance.IAgentUsageRepository usage,
+        ILoggerFactory loggers)
     {
         if (!Scope(x, out var p, out var t, out var d) || !await Consume(p, "contract.intake", caps, ct))
             return Results.Forbid();
@@ -151,7 +173,13 @@ public static class ContractEndpoints
         buffer.Position = 0;
 
         return await AgentCallResult.RunAsync(
-            () => agent.ExtractDocumentTextAsync(buffer, filename, contentType, ct),
+            async () =>
+            {
+                var result = await agent.ExtractDocumentTextAsync(buffer, filename, contentType, ct);
+                await usage.RecordOcrBestEffortAsync(result.LlmUsage, t, d, p.UserId,
+                    loggers.CreateLogger("Aiq.Gateway.Usage"), ct);
+                return result;
+            },
             extracted => Results.Ok(new
             {
                 text = extracted.Text,

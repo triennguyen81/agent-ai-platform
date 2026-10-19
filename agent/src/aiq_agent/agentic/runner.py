@@ -16,6 +16,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    ResultMessage,
     TextBlock,
     create_sdk_mcp_server,
 )
@@ -30,6 +31,8 @@ from aiq_agent.agentic.registry import (
 from aiq_agent.agentic.report_tools import build_report_tools
 from aiq_agent.agentic.tools import build_tools
 from aiq_agent.agentic.voucher_tools import build_voucher_tools
+from aiq_agent.llm.base import LlmUsage
+from aiq_agent.observability.llm_usage import UsageCollector
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,7 @@ DEFAULT_ALLOWED_TOOLS = [
     "mcp__aiq__extract_voucher_fields",
     "mcp__aiq__save_voucher",
     "mcp__aiq__verify_einvoice_tct",
+    "mcp__aiq__propose_tax_verification",  # proposal only; ADMIN verifies in the UI
     "mcp__aiq__suggest_journal_entry",
     "mcp__aiq__save_journal_suggestions",
     # Report/query tools — customer/supplier/AR/AP/voucher-list read access
@@ -86,6 +90,8 @@ class AgenticStep:
 class AgenticRunResult:
     final_answer: str
     steps: list[AgenticStep] = field(default_factory=list)
+    usage: LlmUsage | None = None
+    model: str | None = None
 
 
 async def run_task(
@@ -178,11 +184,15 @@ async def run_task(
 
     steps: list[AgenticStep] = []
     final_chunks: list[str] = []
+    collector = UsageCollector()
 
     async with ClaudeSDKClient(options=options) as client:
         await client.query(task)
         async for message in client.receive_response():
+            if isinstance(message, ResultMessage):
+                collector.add_result(message)
             if isinstance(message, AssistantMessage):
+                collector.add_assistant(message)
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         text = (block.text or "").strip()
@@ -192,4 +202,5 @@ async def run_task(
                         final_chunks.append(text)
 
     final_answer = "\n\n".join(final_chunks).strip() or "(Agent không trả lời gì.)"
-    return AgenticRunResult(final_answer=final_answer, steps=steps)
+    return AgenticRunResult(final_answer=final_answer, steps=steps,
+                            usage=collector.to_llm_usage(), model=collector.model or resolved_model)

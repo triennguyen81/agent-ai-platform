@@ -10,10 +10,17 @@ import { Button } from "@/components/ui/button";
 interface AcceptInvoiceButtonProps {
   voucherId: string;
   disabled?: boolean;
+  // Optional — for callers that fetch voucher state client-side (not via a
+  // Server Component's own props) and so can't rely on router.refresh()
+  // alone to pick up the new POSTED status; e.g. the Accounting → Hoá đơn
+  // page. Voucher detail page doesn't pass this — router.refresh() already
+  // re-runs its server fetch.
+  onApplied?: () => void;
 }
 
 interface ApplyResponse {
   status: string;
+  payment_status?: string;
   previous_balance?: number;
   new_balance?: number;
   invoice_total?: number;
@@ -24,7 +31,7 @@ interface ApplyResponse {
 const fmt = (n: number | undefined): string =>
   n === undefined || n === null ? "—" : n.toLocaleString("vi-VN");
 
-export function AcceptInvoiceButton({ voucherId, disabled }: AcceptInvoiceButtonProps) {
+export function AcceptInvoiceButton({ voucherId, disabled, onApplied }: AcceptInvoiceButtonProps) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ApplyResponse | null>(null);
@@ -46,6 +53,7 @@ export function AcceptInvoiceButton({ voucherId, disabled }: AcceptInvoiceButton
         return;
       }
       setResult(body);
+      onApplied?.();
       setTimeout(() => router.refresh(), 1500);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
@@ -58,7 +66,7 @@ export function AcceptInvoiceButton({ voucherId, disabled }: AcceptInvoiceButton
     return (
       <div className="space-y-2 rounded-[var(--radius)] border border-emerald-300 bg-emerald-100 px-4 py-3 text-sm text-emerald-900">
         <div className="flex items-center gap-2 font-medium">
-          <CheckCircle2 className="size-4" /> Đã ghi HĐ vào công nợ khách
+          <CheckCircle2 className="size-4" /> Đã ghi nhận phải thu: {fmt(result.invoice_total)}đ
         </div>
         <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs font-mono">
           <div>Công nợ trước (131): <b>{fmt(result.previous_balance)}</b></div>
@@ -66,9 +74,11 @@ export function AcceptInvoiceButton({ voucherId, disabled }: AcceptInvoiceButton
           <div>
             Công nợ sau (131): <b className="text-emerald-800">{fmt(result.new_balance)}</b>
           </div>
-          <div>Ledger rows: <b>{result.ledger_rows_inserted ?? 0}</b></div>
+          <div>Trạng thái thanh toán: <b>Chưa thu (UNPAID)</b></div>
         </div>
-        <div className="text-[10px] italic text-emerald-700">Trang tự refresh…</div>
+        <div className="text-[10px] italic text-emerald-700">
+          Hoá đơn đã POSTED — chưa ghi nhận đã thu tiền. Trang tự refresh…
+        </div>
       </div>
     );
   }
@@ -86,11 +96,11 @@ export function AcceptInvoiceButton({ voucherId, disabled }: AcceptInvoiceButton
       <Button onClick={submit} disabled={loading || disabled} className="w-full sm:w-auto">
         {loading ? (
           <>
-            <Loader2 className="size-4 animate-spin" /> Đang ghi HĐ vào sổ AR…
+            <Loader2 className="size-4 animate-spin" /> Đang ghi nhận…
           </>
         ) : (
           <>
-            <CheckCircle2 className="size-4" /> Chấp nhận HĐ · Ghi công nợ khách
+            <CheckCircle2 className="size-4" /> Duyệt &amp; ghi nhận
           </>
         )}
       </Button>

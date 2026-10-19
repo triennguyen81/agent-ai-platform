@@ -65,7 +65,9 @@ public static class AccountingEndpoints
         IOptions<S3Options> options,
         ICapabilityRepository caps,
         HttpContext x,
-        CancellationToken ct)
+        CancellationToken ct,
+        Aiq.Gateway.Governance.IAgentUsageRepository usage,
+        ILoggerFactory loggers)
     {
         if (!AuthenticatedPrincipalContext.TryGet(x, out var p) || p.TenantId is not { } t || p.DepartmentId is not { } d)
             return Results.Forbid();
@@ -113,7 +115,13 @@ public static class AccountingEndpoints
         buffer.Position = 0;
 
         return await AgentCallResult.RunAsync(
-            () => agent.ExtractDocumentTextAsync(buffer, filename, contentType, ct),
+            async () =>
+            {
+                var result = await agent.ExtractDocumentTextAsync(buffer, filename, contentType, ct);
+                await usage.RecordOcrBestEffortAsync(result.LlmUsage, t, d, p.UserId,
+                    loggers.CreateLogger("Aiq.Gateway.Usage"), ct);
+                return result;
+            },
             extracted => Results.Ok(new
             {
                 text = extracted.Text,

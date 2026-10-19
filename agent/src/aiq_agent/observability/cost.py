@@ -76,6 +76,13 @@ class RecordedLlmService(LlmService):
             LLM_TOKENS_TOTAL.labels(
                 provider=result.provider, model=result.model, direction="output"
             ).inc(result.usage.output_tokens)
+            # Disjoint prompt classes (never summed into "input").
+            LLM_TOKENS_TOTAL.labels(
+                provider=result.provider, model=result.model, direction="cache_creation"
+            ).inc(result.usage.cache_creation_input_tokens)
+            LLM_TOKENS_TOTAL.labels(
+                provider=result.provider, model=result.model, direction="cache_read"
+            ).inc(result.usage.cache_read_input_tokens)
 
         return result
 

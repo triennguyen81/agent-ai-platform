@@ -717,16 +717,29 @@ export default async function AgentDetailPage({
 
       <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
         <h2 className="font-serif text-lg">
-          <BookOpen className="mr-2 inline size-4" /> Kho kiến thức ({attachedNotes.length})
+          <BookOpen className="mr-2 inline size-4" /> Kho kiến thức (legacy per-note) ({attachedNotes.length})
         </h2>
-        <p className="text-xs text-[var(--color-muted-fg)]">
-          Notes gắn ở đây trở thành ngữ cảnh RAG khi user chat với agent này. User role
-          không thấy/sửa được kho — chỉ admin curate.
-        </p>
+        {/* Hardening phase (docs/ACCOUNTING_AGENT_AUDIT.md, F-02): this
+            legacy per-note mechanism has NO effect on real chat with this
+            (or any) agent — the manifest-driven /chat and /agent/run paths
+            build their own knowledge context exclusively from the agent's
+            attached Knowledge Bases (Department Agents → "Knowledge" tab),
+            never from notes attached here. Left in place only for the
+            unrelated, still-functional no-agent-id admin/super_admin plain
+            chat feature. Do not remove this warning without re-verifying
+            agent/src/aiq_agent/api/routes.py's manifest branch still
+            discards knowledge_context. */}
+        <div className="rounded-[var(--radius)] border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <b>Không có tác dụng khi chat với agent này.</b> Cơ chế gắn note theo kiểu cũ
+          (legacy) này bị bỏ qua hoàn toàn bởi luồng chat thật (manifest-driven) — chỉ
+          agent&apos;s Knowledge Base thật (gắn qua tab Knowledge của Department Agent) mới
+          được dùng làm ngữ cảnh RAG. Mục này chỉ còn tác dụng cho chat admin/super_admin
+          không chọn agent cụ thể.
+        </div>
 
         {attachedNotes.length === 0 ? (
           <p className="text-sm text-[var(--color-muted-fg)]">
-            Chưa có note nào. Gắn note để user có context khi chat với agent này.
+            Chưa có note nào gắn theo cơ chế legacy này.
           </p>
         ) : (
           <div className="overflow-hidden rounded border">

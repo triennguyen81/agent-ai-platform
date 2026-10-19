@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
@@ -13,6 +14,8 @@ from aiq_agent.api.schemas import (
     AgentRunResponse,
     AgentRunStep,
     AuditEntryResponse,
+    DocumentExtractRequest,
+    DocumentExtractResponse,
     ChatRequest,
     ChatResponse,
     EmbeddingQueryHit,
@@ -36,7 +39,7 @@ from aiq_agent.embeddings.service import IngestNote
 from aiq_agent.config import get_settings
 from aiq_agent.audit import AuditStore
 from aiq_agent.llm.base import ChatMessage, LlmService
-from aiq_agent.memory.base import MemoryStore
+from aiq_agent.memory.base import MemoryStore, trim_history
 from aiq_agent.orchestration import PlannerExecutorCritic
 from aiq_agent.skills import SkillRegistry, select_skills
 from aiq_agent.tools.registry import ToolExecutionError, ToolRegistry
@@ -44,7 +47,9 @@ from aiq_agent.runtime import (
     ClaudeSdkConfigurationTooLargeError,
     ExecutionManifest,
     build_agent_executor,
+    extraction_manifest,
 )
+from aiq_agent.observability.usage_reporter import report_unscoped_usage, report_usage
 
 
 def _tenant_thread_id(principal: RuntimePrincipal, thread_id: str) -> str:
@@ -132,6 +137,12 @@ def _department_id_str(manifest: ExecutionManifest | None) -> str | None:
     return str(manifest.departmentId) if manifest is not None and manifest.departmentId else None
 
 
+def _history_window(messages: list[ChatMessage], *, max_messages: int | None = None) -> list[ChatMessage]:
+    settings = get_settings()
+    cap = settings.history_max_messages if max_messages is None else min(max_messages, settings.history_max_messages)
+    return trim_history(messages, max_messages=cap, max_chars=settings.history_max_chars)
+
+
 def _llm(request: Request) -> LlmService:
     return request.app.state.llm
 
@@ -180,6 +191,8 @@ async def chat(
     import time as _t
 
     _started = _t.monotonic()
+    request_id = uuid.uuid4()
+    unscoped_usage = None  # plain / PEC chat usage (no agent manifest)
     if principal.is_user_only and not body.agent_id:
         raise HTTPException(status_code=403, detail="An assigned agent is required")
     manifest = None
@@ -194,6 +207,7 @@ async def chat(
     prior_history: list[ChatMessage] = []
     if body.thread_id:
         prior_history = await memory.get(_tenant_thread_id(principal, body.thread_id), limit=body.memory_limit)
+        prior_history = _history_window(prior_history, max_messages=body.memory_limit)
 
     thinking: str | None = None
     steps: list[StepResponse] = []
@@ -241,6 +255,7 @@ async def chat(
                 )
             raise HTTPException(status_code=502, detail="Dynamic agent execution failed") from exc
         thinking, final_answer = _split_thinking(dynamic.final_answer)
+        remembered = _split_thinking(dynamic.history_text)[1] if dynamic.history_text else final_answer
         steps = [StepResponse(role=step.role, content=step.text) for step in dynamic.steps]
     elif body.tool:
         # Tool-augmented path keeps the Planner-Executor-Critic loop.
@@ -259,6 +274,7 @@ async def chat(
             ) from exc
 
         thinking, final_answer = _split_thinking(run.final_answer)
+        unscoped_usage = ("pec_chat", run.usage)
         steps = [
             StepResponse(
                 role=step.role,
@@ -305,6 +321,7 @@ async def chat(
 
         result = await llm.chat(messages, temperature=body.temperature)
         thinking, final_answer = _split_thinking(result.content)
+        unscoped_usage = ("plain_chat", result.usage)
 
     history_length = len(prior_history)
     if body.thread_id:
@@ -312,7 +329,7 @@ async def chat(
             _tenant_thread_id(principal, body.thread_id),
             [
                 ChatMessage("user", body.prompt),
-                ChatMessage("assistant", final_answer),
+                ChatMessage("assistant", remembered if manifest is not None else final_answer),
             ],
             # Explicit, never inferred — this is the plain /chat endpoint,
             # so every thread it writes is mode='chat' by construction.
@@ -354,6 +371,27 @@ async def chat(
             tools_used=dynamic.tools_used if manifest is not None else None,
             delegations=dynamic.delegations if manifest is not None else None,
             workflow_id=dynamic.workflow_id if manifest is not None else None,
+        )
+
+    if manifest is not None:
+        await report_usage(
+            manifest=manifest,
+            result=dynamic,
+            event_type="chat",
+            total_latency_ms=int((_t.monotonic() - _started) * 1000),
+            gateway_base=get_settings().gateway_base_url,
+            request_id=request_id,
+        )
+    elif unscoped_usage is not None:
+        await report_unscoped_usage(
+            token=principal.token,
+            event_type=unscoped_usage[0],
+            usage=unscoped_usage[1],
+            provider=llm.provider,
+            model=llm.model,
+            total_latency_ms=int((_t.monotonic() - _started) * 1000),
+            gateway_base=get_settings().gateway_base_url,
+            request_id=request_id,
         )
 
     return ChatResponse(
@@ -580,6 +618,7 @@ async def agentic_run(
     import time as _t
 
     _started = _t.monotonic()
+    request_id = uuid.uuid4()
     if body.capability and body.agent_id:
         detail = "capability and agent_id are mutually exclusive"
         raise HTTPException(status_code=400, detail=detail)
@@ -601,6 +640,9 @@ async def agentic_run(
         resolved_agent_id = body.agent_id
     if principal.is_user_only and not resolved_agent_id:
         raise HTTPException(status_code=403, detail="An assigned agent is required")
+    if not resolved_agent_id and not settings.legacy_agent_run_enabled:
+        # Token/governance Phase 5: the legacy no-agent runtime is off.
+        raise HTTPException(status_code=403, detail="An assigned agent is required")
     manifest = (
         await require_agent_execution(principal, resolved_agent_id) if resolved_agent_id else None
     )
@@ -609,7 +651,7 @@ async def agentic_run(
     full_thread_id = _tenant_thread_id(principal, body.thread_id) if body.thread_id else None
     prior_history: list[ChatMessage] = []
     if full_thread_id:
-        prior_history = await memory.get(full_thread_id)
+        prior_history = _history_window(await memory.get(full_thread_id))
 
     try:
         if manifest is not None:
@@ -673,12 +715,35 @@ async def agentic_run(
             workflow_id=result.workflow_id if manifest else None,
         )
 
+    if manifest is not None:
+        await report_usage(
+            manifest=manifest,
+            result=result,
+            event_type="agent_run",
+            total_latency_ms=int((_t.monotonic() - _started) * 1000),
+            gateway_base=settings.gateway_base_url,
+            request_id=request_id,
+        )
+    else:
+        await report_unscoped_usage(
+            token=principal.token,
+            event_type="legacy_agent_run",
+            usage=result.usage,
+            provider="claude_cli",
+            model=result.model,
+            total_latency_ms=int((_t.monotonic() - _started) * 1000),
+            gateway_base=settings.gateway_base_url,
+            request_id=request_id,
+        )
+
     if full_thread_id:
         await memory.append(
             full_thread_id,
             [
                 ChatMessage("user", body.task),
-                ChatMessage("assistant", result.final_answer),
+                # Only the final answer (after the last tool call), not every
+                # intermediate narration block — token Phase 6.
+                ChatMessage("assistant", getattr(result, "history_text", None) or result.final_answer),
             ],
             # Explicit, never inferred — this is /agent/run, so every thread
             # it writes is mode='agentic' by construction. Chat's /chat
@@ -698,4 +763,84 @@ async def agentic_run(
         steps=[AgentRunStep(role=s.role, text=s.text) for s in result.steps],
         tools_used=result.tools_used if manifest else [],
         thread_id=body.thread_id,
+        agent_id=str(manifest.agent.id) if manifest else None,
+        agent_version_id=str(manifest.publishedVersionId) if manifest else None,
+        agent_version=manifest.version if manifest else None,
+        provider=manifest.provider if manifest else None,
+        model=manifest.model if manifest else None,
+    )
+
+
+@router.post("/agent/document-extract", response_model=DocumentExtractResponse)
+async def document_extract(
+    body: DocumentExtractRequest,
+    principal: RuntimePrincipal = Depends(require_principal),
+    audit: AuditStore | None = Depends(_audit),
+    skill_registry: SkillRegistry = Depends(_skills),
+) -> DocumentExtractResponse:
+    """Document extraction for configurable document processing.
+
+    Authorization is exactly an agent run's: the Gateway manifest for this
+    caller + agent (published; the caller's own department draft only with
+    `test`, which the Gateway restricts to the owning ADMIN). The run is
+    deliberately TOOL-LESS — no granted tools, no delegation, no agent-level
+    workflow — so neither production extraction nor Agent Builder test mode
+    can mutate anything from here; the Gateway alone persists results.
+    """
+    import time as _t
+
+    settings = get_settings()
+    started = _t.monotonic()
+    manifest = await require_agent_execution(
+        principal, body.agent_id, test=body.test,
+        version_id=body.expected_version_id if body.pin_version and not body.test else None,
+    )
+    if str(manifest.publishedVersionId) != body.expected_version_id:
+        raise HTTPException(status_code=409, detail="agent_version_changed")
+    if manifest.documentProcessing is None:
+        raise HTTPException(status_code=409, detail="document_processing_not_configured")
+
+    extraction_manifest_ = extraction_manifest(manifest, body.task, lean=settings.extraction_lean_prompt)
+    audit_fields = dict(
+        user_id=str(manifest.userId), tenant_id=str(manifest.tenantId),
+        department_id=_department_id_str(manifest), agent_id=str(manifest.agent.id),
+        version=manifest.version, provider=manifest.provider, model=manifest.model,
+    )
+    try:
+        executor = build_agent_executor(extraction_manifest_, settings, skill_registry)
+        if settings.extraction_lean_prompt:
+            # Skill content is inlined; no CLI-side skill discovery/settings.
+            executor.cli_skill_discovery = False
+        # Extraction already carries exactly the skills its prompt names.
+        executor.dynamic_skills = False
+        result = await executor.execute(prompt=body.task, token=principal.token)
+    except Exception as exc:  # noqa: BLE001 — fail closed, audit without prompt content
+        if audit is not None:
+            await audit.write(
+                event="document_extract", name="test" if body.test else "production",
+                user_prefix=principal.user_id[:12], ms=int((_t.monotonic() - started) * 1000), ok=False,
+                detail=f"{exc.__class__.__name__}: {exc}"[:200], **audit_fields,
+            )
+        raise HTTPException(status_code=502, detail="Document extraction failed") from exc
+
+    if audit is not None:
+        await audit.write(
+            event="document_extract", name="test" if body.test else "production",
+            user_prefix=principal.user_id[:12], ms=int((_t.monotonic() - started) * 1000), ok=True,
+            detail=None, input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+            estimated_cost_usd=result.estimated_cost_usd, tools_used=result.tools_used, **audit_fields,
+        )
+    await report_usage(
+        manifest=manifest, result=result, event_type="document_extract",
+        total_latency_ms=int((_t.monotonic() - started) * 1000), gateway_base=settings.gateway_base_url,
+        request_id=uuid.uuid4(),
+    )
+    return DocumentExtractResponse(
+        final_answer=result.final_answer,
+        agent_id=str(manifest.agent.id),
+        agent_version_id=str(manifest.publishedVersionId),
+        agent_version=manifest.version,
+        provider=manifest.provider,
+        model=manifest.model,
+        draft=manifest.documentProcessing.draft,
     )

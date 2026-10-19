@@ -1,0 +1,38 @@
+                                              CÔNG TY TNHH SÁU TRỰC
+                                      MST: 0123456789 - Địa chỉ: Lạc An, Ninh Thọ
+
+
+
+                                                     PHIẾU CHI
+                                                       Số: PC-TEST-4001
+
+                                                Ngày 02 tháng 10 năm 2026
+
+
+ DỮ LIỆU MẪU KIỂM THỬ AIQ
+
+
+ THÔNG TIN CHI TIỀN
+   Đơn vị trả tiền                   CÔNG TY TNHH SÁU TRỰC
+
+   Đơn vị nhận tiền                  CÔNG TY CP VẬT TƯ KIM LONG
+
+   MST người nhận                    0200000002
+
+   Số tiền                           5.500.000 VND
+
+   Hình thức                         Chuyển khoản
+
+   Nội dung                          Thanh toán một phần công nợ hóa đơn TEST-PINV-2001
+
+   Hóa đơn tham chiếu                TEST-PINV-2001
+
+
+
+ Bút toán kỳ vọng khi ADMIN duyệt: Nợ 331 / Có 1121: 5.500.000 VND.
+
+
+
+
+Dữ liệu mẫu phục vụ kiểm thử AIQ - không dùng làm chứng từ thực tế                        Trang 1
+

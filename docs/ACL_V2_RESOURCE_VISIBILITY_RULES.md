@@ -437,7 +437,8 @@ USER (có Agent được assign + capability đúng module):
 
 ADMIN:
   - Toàn quyền trên mọi record trong Department mình, không phân biệt
-    created_by
+    created_by — kể cả duyệt/ghi nhận/chi trên record do chính mình tạo
+    hoặc đã duyệt ở bước trước (§15 ADMIN Department Authority Invariant)
   - Riêng có: delete, apply-receipt/apply-invoice/apply-expense, decide
     journal suggestion, review/approve/reject/handoff hợp đồng
   - KHÔNG thấy Department khác, KHÔNG thấy Tenant khác
@@ -471,3 +472,61 @@ và `scripts/test_contract_processing_e2e.sh` (Contracts) xác nhận đủ các
 trường hợp USER-with-capability / USER-without-capability / edit-own /
 cannot-edit-others / ADMIN-full-department / cross-department-denied /
 cross-tenant-denied.
+
+## 15. ADMIN Department Authority Invariant (BẤT BIẾN — quyết định sản phẩm)
+
+> Quyết định sản phẩm, thay thế mọi giả định "phân tách nhiệm vụ" (SoD /
+> R16) trước đây — kể cả của Đề nghị hoàn ứng (Expense Claim).
+
+**Một ADMIN cùng Department có TOÀN QUYỀN vận hành trong Department của
+mình và được hoàn tất toàn bộ quy trình nghiệp vụ thông thường — kể cả trên
+chính chứng từ/đề nghị do mình tạo.**
+
+ADMIN cùng Department được:
+
+- tạo / upload / sửa / review chứng từ;
+- duyệt bộ phận, duyệt kế toán;
+- ghi nhận kế toán chính thức (recognition), xác nhận nghiệp vụ kế toán;
+- thực hiện chi / thanh toán;
+- duyệt và hoàn tất chứng từ do chính mình tạo.
+
+**KHÔNG được chặn ADMIN chỉ vì ADMIN đó là:** người tạo, người upload,
+người đề nghị (claimant), người đã duyệt bước trước, người duyệt kế toán,
+người thực hiện chi. Không có quy tắc "tự duyệt" chung nào cho ADMIN.
+
+Áp dụng cho mọi luồng nghiệp vụ thông thường của phòng ban: Expense Claim
+(một chứng từ và nhiều chứng từ), hoá đơn, phiếu thu, phiếu chi, document
+review, đối trừ/settlement, xác minh thuế, và các luồng kế toán vận hành
+khác.
+
+Các vai trò khác (GIỮ NGUYÊN):
+
+| Vai trò | Quy tắc |
+|---|---|
+| USER | Tạo/upload theo quyền hiện có, dùng Agent được assign; **không** tự duyệt nghiệp vụ kế toán chính thức (mọi endpoint "quyết định" là `department_admin`) trừ khi có ACL tường minh trong tương lai |
+| TENANT_OWNER | Chỉ quản trị tenant (users/departments/settings/audit); **không** duyệt nghiệp vụ kế toán vận hành |
+| SUPER_ADMIN | Quản trị nền tảng; **không** tự động có quyền vận hành kế toán của Department |
+| Department khác | deny / not-found |
+| Tenant khác | deny / not-found |
+
+Quy tắc cho thay đổi tương lai:
+
+- Mọi code / test / tài liệu nói "người tạo không được duyệt", "người upload
+  không được duyệt", "cùng người duyệt không được làm bước sau" **không áp
+  dụng cho ADMIN**, trừ khi một luồng nghiệp vụ cụ thể được ghi nhận rõ là
+  ngoại lệ **sau** quyết định này. Không được tự suy ra ngoại lệ.
+- Không được đưa lại hạn chế tự duyệt cho ADMIN chỉ vì code cũ dùng SoD,
+  test cũ mong đợi nhiều actor khác nhau, một pattern bảo mật chung gợi ý
+  tách người duyệt, hay Expense Claim từng dùng nhiều actor.
+- Nếu một yêu cầu thực sự cần SoD cho ADMIN: **DỪNG LẠI và xin quyết định
+  sản phẩm/nghiệp vụ tường minh** trước khi triển khai.
+
+Triển khai: các endpoint quyết định dùng policy `department_admin` +
+`BusinessModuleAuthorization.TryScope` (tenant/department lấy từ principal
+đã xác thực; TENANT_OWNER/SUPER_ADMIN không qua được). Helper
+`BusinessModuleAuthorization.IsSelfApproval` và các blocker
+`actor_is_claimant`, `actor_reviewed_department_stage`,
+`actor_reviewed_earlier_stage`, `verifier_is_claimant` đã bị gỡ khỏi Expense
+Claim, ghi nhận kế toán, thanh toán và xác minh thuế.
+
+Ngoại lệ tường minh hiện còn hiệu lực: **không có**.

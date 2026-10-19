@@ -73,7 +73,8 @@ public sealed class AccountsReceivableOverdueJobTests : IAsyncLifetime
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 tenant_id UUID NOT NULL, customer_id UUID NOT NULL,
                 document_date DATE NOT NULL, document_number TEXT NOT NULL, document_type TEXT NOT NULL,
-                debit NUMERIC(18,2) DEFAULT 0, credit NUMERIC(18,2) DEFAULT 0, due_date DATE
+                debit NUMERIC(18,2) DEFAULT 0, credit NUMERIC(18,2) DEFAULT 0, due_date DATE,
+                paid_amount NUMERIC(18,2) NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'open'
             );
             CREATE TABLE notifications (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -146,5 +147,11 @@ public sealed class AccountsReceivableOverdueJobTests : IAsyncLifetime
         Assert.Equal(2, kinds.Count);
         Assert.Contains("ar_overdue_notice", kinds);
         Assert.Contains("ar_overdue_reminder1", kinds);
+
+        // Settled by a receipt (paid_amount/status move; credit never does):
+        // however far past due, a PAID invoice is never escalated again.
+        await conn.ExecuteAsync("UPDATE sim_ar_ledger SET paid_amount = debit, status = 'paid', due_date = CURRENT_DATE - 60 WHERE document_number='INV-001'");
+        await job.RunAsync(CancellationToken.None);
+        Assert.Equal(2, await conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM notifications"));
     }
 }

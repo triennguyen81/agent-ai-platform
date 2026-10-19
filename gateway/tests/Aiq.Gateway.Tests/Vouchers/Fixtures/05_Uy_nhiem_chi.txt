@@ -1,0 +1,40 @@
+                                              CÔNG TY TNHH SÁU TRỰC
+                                      MST: 0123456789 - Địa chỉ: Lạc An, Ninh Thọ
+
+
+
+                                                ỦY NHIỆM CHI
+                                                      Số: UNC-TEST-5001
+
+                                                Ngày 02 tháng 10 năm 2026
+
+
+ DỮ LIỆU MẪU KIỂM THỬ AIQ
+
+
+ THÔNG TIN CHUYỂN KHOẢN
+   Đơn vị trả tiền                   CÔNG TY TNHH SÁU TRỰC
+
+   Tài khoản trả                     1121-TEST-SAUTF
+
+   Ngân hàng                         Ngân hàng TMCP Demo
+
+   Người thụ hưởng                   CÔNG TY CP VẬT TƯ KIM LONG
+
+   MST thụ hưởng                     0200000002
+
+   Số tiền                           11.000.000 VND
+
+   Nội dung                          Thanh toán phần còn lại hóa đơn TEST-PINV-2001
+
+   Hóa đơn tham chiếu                TEST-PINV-2001
+
+
+
+ Kỳ vọng: hệ thống nhận diện money_out và đề xuất đối trừ AP của Kim Long.
+
+
+
+
+Dữ liệu mẫu phục vụ kiểm thử AIQ - không dùng làm chứng từ thực tế                    Trang 1
+

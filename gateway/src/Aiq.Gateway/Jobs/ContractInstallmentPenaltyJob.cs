@@ -19,6 +19,9 @@ namespace Aiq.Gateway.Jobs;
 ///     "ambiguous contract terms" case the audit says must stay a review
 ///     item, not a guessed calculation;
 ///   - the contract's own penalty_percent actually set (non-null, > 0).
+///   - the contract is APPROVED/HANDED_OFF: a draft / under-review /
+///     rejected contract's terms are not authoritative, so no penalty is
+///     computed for it (and a stale one is cleared).
 ///
 /// Recomputed as a pure function of (total_amount, penalty_percent,
 /// days_overdue) every run — never an accumulator — so a retry or a
@@ -53,6 +56,7 @@ public sealed class ContractInstallmentPenaltyJob
               AND NOT EXISTS (
                   SELECT 1 FROM contracts c
                   WHERE c.id = s.contract_id
+                    AND c.workflow_state IN ('APPROVED', 'HANDED_OFF')
                     AND s.status = 'pending'
                     AND s.due_date IS NOT NULL AND s.due_date < CURRENT_DATE
                     AND c.penalty_percent IS NOT NULL AND c.penalty_percent > 0
@@ -68,6 +72,7 @@ public sealed class ContractInstallmentPenaltyJob
                 penalty_calculated_at = NOW()
             FROM contracts c
             WHERE c.id = s.contract_id
+              AND c.workflow_state IN ('APPROVED', 'HANDED_OFF')
               AND s.status = 'pending'
               AND s.due_date IS NOT NULL AND s.due_date < CURRENT_DATE
               AND c.penalty_percent IS NOT NULL AND c.penalty_percent > 0

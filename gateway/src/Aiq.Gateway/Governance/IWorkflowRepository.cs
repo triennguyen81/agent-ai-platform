@@ -36,11 +36,82 @@ public sealed record UpdateDepartmentWorkflowRequest(
     [property: StringLength(160, MinimumLength = 2)] string? Name,
     [property: StringLength(2000)] string? Description);
 
-/// <summary>Step type names the runtime knows how to execute — kept in sync with runtime/executors.py's _WORKFLOW_STEP_TYPES.</summary>
+/// <summary>
+/// Step type names the runtime knows how to execute — kept in sync with runtime/executors.py's _WORKFLOW_STEP_TYPES.
+/// require_review is a document-processing gate (forces human confirmation in the Gateway document pipeline;
+/// a no-op in chat). No step type can post, verify, approve or run arbitrary logic.
+/// </summary>
 public static class WorkflowStepTypes
 {
     public static readonly IReadOnlySet<string> Known = new HashSet<string>(
-        ["prompt", "require_knowledge", "require_tool"], StringComparer.Ordinal);
+        ["prompt", "require_knowledge", "require_tool", "require_review"], StringComparer.Ordinal);
+}
+
+/// <summary>
+/// The ONE canonical workflow definition shape. Every write path normalises
+/// through <see cref="Canonicalize"/>, so stored definitions always use
+/// <c>prompt</c> for instruction text. Rows written by the older API with
+/// the legacy <c>text</c> key stay readable through <see cref="PromptText"/>
+/// (runtime readers in Gateway and Agent use the same rule: prompt, else
+/// legacy text). Malformed steps are rejected, never silently dropped.
+/// </summary>
+public static class WorkflowDefinitions
+{
+    public const string PromptKey = "prompt";
+    public const string LegacyTextKey = "text";
+
+    /// <summary>Canonical prompt text of a step: "prompt", else legacy "text".</summary>
+    public static string? PromptText(JsonElement step)
+    {
+        if (step.ValueKind != JsonValueKind.Object) return null;
+        if (step.TryGetProperty(PromptKey, out var p) && p.ValueKind == JsonValueKind.String) return p.GetString();
+        if (step.TryGetProperty(LegacyTextKey, out var t) && t.ValueKind == JsonValueKind.String) return t.GetString();
+        return null;
+    }
+
+    public static bool TryCanonicalize(JsonElement definition, out JsonElement canonical, out string? error)
+    {
+        canonical = default;
+        error = null;
+        if (definition.ValueKind != JsonValueKind.Object || !definition.TryGetProperty("steps", out var steps)
+            || steps.ValueKind != JsonValueKind.Array)
+        {
+            error = "definition must be an object with a 'steps' array";
+            return false;
+        }
+        var outSteps = new List<Dictionary<string, object?>>();
+        var index = 0;
+        foreach (var step in steps.EnumerateArray())
+        {
+            index++;
+            if (step.ValueKind != JsonValueKind.Object || !step.TryGetProperty("type", out var typeEl)
+                || typeEl.ValueKind != JsonValueKind.String || !WorkflowStepTypes.Known.Contains(typeEl.GetString()!))
+            {
+                error = $"step {index}: unknown or missing step type (allowed: {string.Join(", ", WorkflowStepTypes.Known)})";
+                return false;
+            }
+            var type = typeEl.GetString()!;
+            switch (type)
+            {
+                case "prompt":
+                    var text = PromptText(step);
+                    if (string.IsNullOrWhiteSpace(text)) { error = $"step {index}: prompt step requires a non-empty '{PromptKey}'"; return false; }
+                    outSteps.Add(new() { ["type"] = type, [PromptKey] = text.Trim() });
+                    break;
+                case "require_tool":
+                    var tool = step.TryGetProperty("tool", out var toolEl) && toolEl.ValueKind == JsonValueKind.String ? toolEl.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(tool)) { error = $"step {index}: require_tool step requires a non-empty 'tool'"; return false; }
+                    outSteps.Add(new() { ["type"] = type, ["tool"] = tool.Trim() });
+                    break;
+                default:
+                    outSteps.Add(new() { ["type"] = type });
+                    break;
+            }
+        }
+        var requiresApproval = definition.TryGetProperty("requiresApproval", out var ra) && ra.ValueKind == JsonValueKind.True;
+        canonical = JsonSerializer.SerializeToElement(new Dictionary<string, object?> { ["steps"] = outSteps, ["requiresApproval"] = requiresApproval });
+        return true;
+    }
 }
 
 public interface IWorkflowRepository

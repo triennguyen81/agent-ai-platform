@@ -75,6 +75,7 @@ public sealed class DepartmentCapabilityOwnershipIntegrationTests : IAsyncLifeti
         await scoped.ExecuteAsync(await ReadMigrationAsync("022_business_capabilities.sql"));
         await scoped.ExecuteAsync(await ReadMigrationAsync("024_acl_v2_scope_foundations.sql"));
         await scoped.ExecuteAsync(await ReadMigrationAsync("025_department_capability_binding_v2c_agents.sql"));
+        await scoped.ExecuteAsync(await ReadMigrationAsync("060_agent_version_document_processing.sql"));
 
         await AssignDepartmentsAsync(scoped);
 

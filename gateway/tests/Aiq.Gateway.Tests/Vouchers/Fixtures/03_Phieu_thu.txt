@@ -1,0 +1,38 @@
+                                              CÔNG TY TNHH SÁU TRỰC
+                                      MST: 0123456789 - Địa chỉ: Lạc An, Ninh Thọ
+
+
+
+                                                    PHIẾU THU
+                                                       Số: PT-TEST-3001
+
+                                                Ngày 02 tháng 10 năm 2026
+
+
+ DỮ LIỆU MẪU KIỂM THỬ AIQ
+
+
+ THÔNG TIN THU TIỀN
+   Đơn vị nộp tiền                   CÔNG TY TNHH VIỆT TÍN
+
+   MST người nộp                     0307890123
+
+   Đơn vị nhận tiền                  CÔNG TY TNHH SÁU TRỰC
+
+   Số tiền                           10.000.000 VND
+
+   Hình thức                         Chuyển khoản
+
+   Nội dung                          Thu một phần công nợ hóa đơn TEST-SINV-1001
+
+   Hóa đơn tham chiếu                TEST-SINV-1001
+
+
+
+ Bút toán kỳ vọng khi ADMIN duyệt: Nợ 1121 / Có 131: 10.000.000 VND.
+
+
+
+
+Dữ liệu mẫu phục vụ kiểm thử AIQ - không dùng làm chứng từ thực tế                  Trang 1
+

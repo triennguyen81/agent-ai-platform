@@ -19,8 +19,9 @@ import io
 import logging
 from typing import Any
 
-import httpx
 from claude_agent_sdk import tool
+
+from aiq_agent.security.ssrf import SsrfBlockedError, SsrfFetchError, safe_get
 
 logger = logging.getLogger(__name__)
 
@@ -247,8 +248,6 @@ def _format_vnd(amount: float) -> str:
 
 def build_accounting_tools(*, token: str, gateway_base: str) -> list[Any]:
     """Return the 7 accounting tools for inclusion in /agent/run MCP server."""
-
-    auth_headers = {"Authorization": f"Bearer {token}"}
 
     @tool(
         "calculate_vat",
@@ -708,39 +707,35 @@ def build_accounting_tools(*, token: str, gateway_base: str) -> list[Any]:
                 ]
             }
 
+        # SSRF hardening (docs/ACCOUNTING_AGENT_AUDIT.md F-01): validates
+        # scheme + every DNS-resolved address (blocking loopback/private/
+        # link-local/reserved/unspecified — including the cloud metadata
+        # endpoint), re-validates each redirect hop before following it, and
+        # enforces the 1 MB cap incrementally while streaming instead of
+        # buffering the whole body first. See aiq_agent.security.ssrf.
         try:
-            async with httpx.AsyncClient(
+            fetched = await safe_get(
+                url,
                 timeout=30,
-                follow_redirects=True,
+                max_bytes=1_048_576,
+                max_redirects=5,
+                # Pre-existing behaviour: any public port. The IP/DNS policy
+                # still applies to every port.
+                allowed_ports=None,
                 headers={"User-Agent": "AIQ-Agent/0.1 (+import_excel_ledger)"},
-            ) as client:
-                response = await client.get(url)
-                if response.status_code >= 400:
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": f"HTTP {response.status_code} fetching {url}",
-                            }
-                        ]
-                    }
-                raw_bytes = response.content
-                if len(raw_bytes) > 1_048_576:
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": f"File quá lớn ({len(raw_bytes) // 1024} KB > 1 MB cap)",
-                            }
-                        ]
-                    }
-                content_type = response.headers.get("content-type", "").lower()
-        except httpx.HTTPError as exc:
+            )
+        except SsrfBlockedError as exc:
+            return {"content": [{"type": "text", "text": f"URL bị chặn (chính sách an toàn): {exc}"}]}
+        except SsrfFetchError as exc:
+            return {"content": [{"type": "text", "text": f"Fetch error: {exc}"}]}
+        if fetched.status_code >= 400:
             return {
                 "content": [
-                    {"type": "text", "text": f"Fetch error: {exc.__class__.__name__}: {exc}"}
+                    {"type": "text", "text": f"HTTP {fetched.status_code} fetching {url}"}
                 ]
             }
+        raw_bytes = fetched.content
+        content_type = fetched.content_type.lower()
 
         rows: list[list[Any]] = []
         source_format = "unknown"

@@ -51,7 +51,8 @@ public sealed class ContractInstallmentPenaltyJobTests : IAsyncLifetime
             CREATE EXTENSION IF NOT EXISTS pgcrypto;
             CREATE TABLE contracts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                penalty_percent NUMERIC(9,4)
+                penalty_percent NUMERIC(9,4),
+                workflow_state TEXT NOT NULL DEFAULT 'APPROVED'
             );
             CREATE TABLE contract_payment_schedules (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -201,5 +202,32 @@ public sealed class ContractInstallmentPenaltyJobTests : IAsyncLifetime
         await job.RunAsync(CancellationToken.None);
         var afterPaid = await conn.QuerySingleAsync<decimal?>("SELECT penalty_amount FROM contract_payment_schedules WHERE id=@installmentId", new { installmentId });
         Assert.Null(afterPaid); // cleared, not left stale
+    }
+
+    [Theory]
+    [InlineData("WAITING_REVIEW")]
+    [InlineData("NEEDS_REVIEW")]
+    [InlineData("REJECTED")]
+    [InlineData("RECEIVED")]
+    public async Task UnapprovedContract_NeverGetsAPenalty_AndAStaleOneIsCleared(string state)
+    {
+        if (_scopedConnectionString is null) return;
+        var factory = new NpgsqlConnectionFactory(_scopedConnectionString);
+        var job = new ContractInstallmentPenaltyJob(factory, NullLogger<ContractInstallmentPenaltyJob>.Instance);
+        await using var conn = await factory.OpenAsync();
+        var contractId = Guid.NewGuid();
+        var installmentId = Guid.NewGuid();
+        await conn.ExecuteAsync(
+            "INSERT INTO contracts(id, penalty_percent, workflow_state) VALUES (@contractId, 0.05, 'APPROVED'); " +
+            "INSERT INTO contract_payment_schedules(id, contract_id, ordinal, total_amount, due_date, status) " +
+            "VALUES (@installmentId, @contractId, 1, 2000000, CURRENT_DATE - 10, 'pending')",
+            new { contractId, installmentId });
+        await job.RunAsync(CancellationToken.None);
+        Assert.NotNull(await conn.ExecuteScalarAsync<decimal?>("SELECT penalty_amount FROM contract_payment_schedules WHERE id=@installmentId", new { installmentId }));
+
+        // The same terms on a contract that is not (or no longer) approved: no penalty.
+        await conn.ExecuteAsync("UPDATE contracts SET workflow_state=@state WHERE id=@contractId", new { state, contractId });
+        await job.RunAsync(CancellationToken.None);
+        Assert.Null(await conn.ExecuteScalarAsync<decimal?>("SELECT penalty_amount FROM contract_payment_schedules WHERE id=@installmentId", new { installmentId }));
     }
 }

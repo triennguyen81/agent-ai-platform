@@ -113,16 +113,26 @@ Nợ 1331  VAT khấu trừ
   "voucher_type": "receipt",
   "document_number": "PT-2026-08-001",
   "document_date": "2026-08-01",
-  "payer_name": "Khách hàng ABC",
-  "payer_type": "customer",           // customer / employee / other
-  "reason": "Thanh toán HĐ 00001234",
-  "linked_invoice_number": "00001234", // nếu có
-  "amount": 110000000,
-  "method": "TM",                     // TM / CK
+  "payer_name": "Công ty TNHH Việt Tín",   // bên NỘP tiền
+  "payer_mst": "0307890123",               // nếu có trên chứng từ
+  "payer_type": "customer",                // customer / employee / other
+  "payee_name": "Công ty TNHH Sáu Trực",   // bên NHẬN tiền (nếu in trên chứng từ)
+  "payee_mst": "0123456789",
+  "reason": "Thanh toán HĐ DEMO-ST-VT-001 đợt 1",
+  "invoice_number": "DEMO-ST-VT-001",      // số HĐ được thanh toán, nếu có
+  "contract_number": "HĐ-2026-045",        // nếu có
+  "amount": 20000000,
+  "currency": "VND",
+  "payment_method": "CK",                  // TM (tiền mặt) / CK (chuyển khoản)
+  "bank_account": "0011000123456 VCB",     // nếu chuyển khoản
   "cashier_name": "Nguyễn Văn A",
   "approver_name": "Trần Thị B"
 }
 ```
+
+Chỉ ghi lại đúng những gì có trên chứng từ — KHÔNG tự suy ra MST/số HĐ. Hệ thống tự xác định
+bên nào là công ty mình (theo Hồ sơ công ty) và tự tìm hoá đơn công nợ để đối trừ; ADMIN duyệt
+trước khi công nợ thay đổi.
 
 **Bút toán:**
 ```
@@ -132,7 +142,9 @@ Nợ 111/112   amount
 
 ### 4. `payment` — Phiếu chi (chi tiền ra khỏi quỹ)
 
-Schema giống #3 nhưng `payer_name` → `payee_name`, `payer_type` → `payee_type`.
+Schema giống #3 với vai trò đảo lại: `payee_name`/`payee_mst`/`payee_type` là bên NHẬN tiền
+(NCC), `payer_name`/`payer_mst` là bên CHI (công ty mình, nếu in trên chứng từ). Giữ nguyên
+`invoice_number`, `contract_number`, `amount`, `currency`, `payment_method`, `bank_account`, `reason`.
 
 **Bút toán:**
 ```
@@ -154,6 +166,7 @@ Nợ 331/641/642/141  (theo lý do chi)
   "amount": 100000000,
   "currency": "VND",
   "content": "Thanh toan HD 00005678 thang 8",
+  "invoice_number": "00005678",       // nếu nội dung có số HĐ
   "fee": 22000,
   "fee_bearer": "sender"              // sender/receiver
 }

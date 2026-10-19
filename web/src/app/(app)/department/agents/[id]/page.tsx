@@ -20,6 +20,11 @@ import { Input, Label } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AgentTestPanel } from "@/components/agent-test-panel";
 import { CapabilityPicker, type CapabilityOption } from "@/components/capability-picker";
+import {
+  DocumentProcessingEditor,
+  type CatalogDocumentType,
+  type DocumentTypeConfig,
+} from "@/components/document-processing-editor";
 
 // ACL V2-C: ADMIN's own Department Agent Builder. Structurally the same
 // editing experience as SUPER_ADMIN's /admin/agent-builder/[id] (draft ->
@@ -575,11 +580,30 @@ export default async function DepartmentAgentDetailPage({
   const activeVersion = draftVersion ?? publishedVersion;
   const draftAction = draftVersion ? updateDraftAction : createDraftAction;
 
+  // Configurable document processing of the version being edited (draft,
+  // else the read-only published one) + the SYSTEM type catalog + samples
+  // for Test mode (this department's own vouchers that already have OCR text).
+  const [docTypesRes, docConfigRes, samplesRes] = await Promise.all([
+    gateway.listDepartmentDocumentTypes(token),
+    activeVersion ? gateway.getDepartmentAgentDocumentProcessing(token, id, activeVersion.id) : Promise.resolve(null),
+    gateway.listVouchers(token, { limit: 30 }),
+  ]);
+  const docCatalog = docTypesRes.ok
+    ? ((await docTypesRes.json()) as { items: CatalogDocumentType[]; fieldTypes: string[] })
+    : { items: [] as CatalogDocumentType[], fieldTypes: ["string", "decimal", "integer", "date", "boolean", "array", "object"] };
+  const docConfig: DocumentTypeConfig[] = docConfigRes?.ok
+    ? ((await docConfigRes.json()) as { types: DocumentTypeConfig[] }).types
+    : [];
+  const sampleVouchers = samplesRes.ok
+    ? ((await samplesRes.json()) as { items?: { id: string; voucherType: string; documentNumber: string | null; sourceFileName: string | null; status: string }[] }).items ?? []
+    : [];
+
   const TABS = [
     { value: "identity", label: "Identity" },
     { value: "runtime", label: "Runtime" },
     { value: "capabilities", label: "Nghiệp vụ" },
     { value: "workflow", label: "Workflow / Delegates" },
+    { value: "documents", label: "Xử lý chứng từ" },
     { value: "knowledge", label: `Knowledge (${attachedKnowledge.length})` },
     { value: "users", label: `Nhân sự (${assignedUsers.length})` },
     { value: "versions", label: `Version History (${versions.length})` },
@@ -720,6 +744,25 @@ export default async function DepartmentAgentDetailPage({
             </form>
           </>
         )}
+
+        <TabsContent value="documents">
+          <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">
+            <h2 className="font-serif text-lg">Xử lý chứng từ</h2>
+            <DocumentProcessingEditor
+              key={activeVersion?.id ?? "none"}
+              agentId={deptAgent.id}
+              version={activeVersion ? { id: activeVersion.id, version: activeVersion.version, status: activeVersion.status } : null}
+              initialTypes={docConfig}
+              catalog={docCatalog.items}
+              fieldTypes={docCatalog.fieldTypes}
+              workflows={workflows.filter((w) => w.isActive).map((w) => ({ id: w.id, name: w.name, scope: w.scope }))}
+              skills={ownSkills.filter((s) => s.isActive).map((s) => ({ code: s.code, name: s.name, scope: s.scope }))}
+              sampleVouchers={sampleVouchers
+                .filter((v) => v.status !== "uploading" && v.status !== "ocr_unavailable")
+                .map((v) => ({ id: v.id, label: `${v.documentNumber ?? v.sourceFileName ?? v.id.slice(0, 8)} · ${v.voucherType}` }))}
+            />
+          </section>
+        </TabsContent>
 
         <TabsContent value="knowledge">
           <section className="space-y-3 rounded-[var(--radius)] border bg-[var(--color-bg)] p-5">

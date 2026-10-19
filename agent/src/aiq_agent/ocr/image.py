@@ -8,8 +8,9 @@ the same pipeline handles both PDF-rendered pages and standalone photos.
 
 from __future__ import annotations
 
-import asyncio
 import io
+
+from aiq_agent.ocr.concurrency import run_ocr_native
 
 
 def normalize_image_to_png(image_bytes: bytes) -> bytes:
@@ -42,4 +43,4 @@ def normalize_image_to_png(image_bytes: bytes) -> bytes:
 
 
 async def normalize_image_to_png_async(image_bytes: bytes) -> bytes:
-    return await asyncio.to_thread(normalize_image_to_png, image_bytes)
+    return await run_ocr_native(normalize_image_to_png, image_bytes)

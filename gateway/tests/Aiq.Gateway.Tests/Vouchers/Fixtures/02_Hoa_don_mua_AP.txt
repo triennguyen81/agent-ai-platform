@@ -1,0 +1,51 @@
+                                              CÔNG TY TNHH SÁU TRỰC
+                                      MST: 0123456789 - Địa chỉ: Lạc An, Ninh Thọ
+
+
+
+                   HÓA ĐƠN MUA HÀNG - PHẢI TRẢ (AP)
+                                                      Số: TEST-PINV-2001
+
+                                                Ngày 02 tháng 10 năm 2026
+
+
+ DỮ LIỆU MẪU KIỂM THỬ AIQ
+
+
+ NGƯỜI BÁN
+   Tên đơn vị                        CÔNG TY CP VẬT TƯ KIM LONG
+
+   MST                               0200000002
+
+   Địa chỉ                           88 Trần Phú, Hải Phòng
+
+ NGƯỜI MUA
+   Tên đơn vị                        CÔNG TY TNHH SÁU TRỰC
+
+   MST                               0123456789
+
+   Địa chỉ                           Lạc An, Ninh Thọ
+
+ HÀNG HÓA
+      STT    Hàng hóa / Dịch vụ                            ĐVT       SL   Đơn giá            Thành tiền
+
+       1     Vật tư lọc công nghiệp KL-A                  Thùng      10      1.000.000 VND       10.000.000 VND
+
+       2     Màng PE công nghiệp                           Cuộn      10        500.000 VND         5.000.000 VND
+
+
+   Tiền trước VAT                    15.000.000 VND
+
+   VAT 10%                           1.500.000 VND
+
+   Tổng thanh toán                   16.500.000 VND
+
+   Hạn thanh toán                    20/10/2026
+
+   Trạng thái                        CHƯA THANH TOÁN / UNPAID
+
+
+
+
+Dữ liệu mẫu phục vụ kiểm thử AIQ - không dùng làm chứng từ thực tế                                             Trang 1
+
