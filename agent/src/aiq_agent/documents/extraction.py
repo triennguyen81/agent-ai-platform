@@ -102,7 +102,9 @@ def _extract_xml_text(data: bytes) -> str:
     # expansion payloads; no legitimate e-invoice export needs either.
     head = data[:2048]
     if b"<!DOCTYPE" in head or b"<!ENTITY" in head:
-        raise DocumentExtractionError("Tệp XML chứa DOCTYPE/ENTITY không được hỗ trợ.", status_code=415)
+        raise DocumentExtractionError(
+            "Tệp XML chứa DOCTYPE/ENTITY không được hỗ trợ.", status_code=415
+        )
 
     try:
         root = ET.fromstring(data)  # noqa: S314 — DOCTYPE/ENTITY already rejected above; expat also never fetches external resources by default
@@ -149,7 +151,8 @@ async def extract_document_text(
 
     if name.endswith(".doc") and not name.endswith(".docx"):
         raise DocumentExtractionError(
-            "Định dạng .doc cũ chưa được hỗ trợ — vui lòng lưu lại thành .docx hoặc PDF rồi tải lên.",
+            "Định dạng .doc cũ chưa được hỗ trợ — vui lòng lưu lại thành .docx hoặc PDF rồi tải "
+            "lên.",
             status_code=415,
         )
 
@@ -176,8 +179,14 @@ async def extract_document_text(
             mime = "application/xml"
             text = await asyncio.to_thread(_extract_xml_text, data)
             method = "xml_text"
-        elif name.endswith(_IMAGE_SUFFIXES) or data.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")):
-            mime = "image/png" if data.startswith(b"\x89PNG") or name.endswith(".png") else "image/jpeg"
+        elif name.endswith(_IMAGE_SUFFIXES) or data.startswith(
+            (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")
+        ):
+            mime = (
+                "image/png"
+                if data.startswith(b"\x89PNG") or name.endswith(".png")
+                else "image/jpeg"
+            )
             if pipeline is None:
                 raise DocumentExtractionError("OCR pipeline not configured.", status_code=503)
             from aiq_agent.ocr.image import normalize_image_to_png_async
@@ -188,7 +197,8 @@ async def extract_document_text(
             llm_usage = getattr(result, "llm_usage", None)
         else:
             raise DocumentExtractionError(
-                "Chỉ hỗ trợ PDF, DOCX, PNG, JPG/JPEG, XML.", status_code=415,
+                "Chỉ hỗ trợ PDF, DOCX, PNG, JPG/JPEG, XML.",
+                status_code=415,
             )
     except DocumentExtractionError:
         raise
@@ -212,7 +222,9 @@ async def extract_document_text(
     if not text:
         raise DocumentExtractionError("Không trích xuất được nội dung từ tệp này.")
 
-    return DocumentExtractionResult(text=text, mime_type=mime, extraction_method=method, llm_usage=llm_usage)
+    return DocumentExtractionResult(
+        text=text, mime_type=mime, extraction_method=method, llm_usage=llm_usage
+    )
 
 
 __all__ = [

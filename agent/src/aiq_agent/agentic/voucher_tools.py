@@ -83,13 +83,16 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
         vtype = str(args.get("voucher_type", "invoice_vat")).strip().lower()
 
         if not raw:
-            return {"content": [{"type": "text", "text": "raw_text trống — không có gì để extract"}]}
+            return {
+                "content": [{"type": "text", "text": "raw_text trống — không có gì để extract"}]
+            }
         if vtype not in _VOUCHER_TYPES:
             return {
                 "content": [
                     {
                         "type": "text",
-                        "text": f"voucher_type '{vtype}' không hợp lệ. Chọn 1 trong: {', '.join(sorted(_VOUCHER_TYPES))}",
+                        "text": f"voucher_type '{vtype}' không hợp lệ. Chọn 1 trong: "
+                        f"{', '.join(sorted(_VOUCHER_TYPES))}",
                     }
                 ]
             }
@@ -111,12 +114,11 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
                 {
                     "type": "text",
                     "text": (
-                        f"Raw OCR text chứng từ loại '{vtype}' ({len(raw)} ký tự). "
-                        f"Hãy áp dụng skill {skill_name}, đúng phần mô tả cho voucher_type='{vtype}', "
+                        f"Raw OCR text chứng từ loại '{vtype}' ({len(raw)} ký tự). Hãy áp dụng "
+                        f"skill {skill_name}, đúng phần mô tả cho voucher_type='{vtype}', "
                         "và trả về JSON đầy đủ đúng theo schema của loại chứng từ đó (bắt buộc có "
-                        "voucher_type). KHÔNG dùng schema hoá đơn (seller/buyer/line_items) cho một "
-                        "loại chứng từ không phải hoá đơn.\n\n"
-                        "===== RAW OCR TEXT =====\n"
+                        "voucher_type). KHÔNG dùng schema hoá đơn (seller/buyer/line_items) cho "
+                        "một loại chứng từ không phải hoá đơn.\n\n===== RAW OCR TEXT =====\n"
                         f"{snippet}\n"
                         "===== END ====="
                     ),
@@ -145,9 +147,7 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
 
         vtype = str(fields.get("voucher_type") or "invoice_vat").strip().lower()
         if vtype not in _VOUCHER_TYPES:
-            return {
-                "content": [{"type": "text", "text": f"voucher_type '{vtype}' không hợp lệ"}]
-            }
+            return {"content": [{"type": "text", "text": f"voucher_type '{vtype}' không hợp lệ"}]}
 
         line_items_in = fields.get("line_items") or []
         line_items_out: list[dict[str, Any]] = []
@@ -320,7 +320,13 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
         "cho ADMIN xem xét (trạng thái 'pending_review'). Tool này KHÔNG xác thực "
         "hoá đơn — chỉ ADMIN phòng ban xác nhận được, kèm bằng chứng, trên giao diện. "
         "Truyền nguyên văn tct_status và đoạn phản hồi, không diễn giải thành 'hợp lệ'.",
-        {"voucher_id": str, "tct_status": str, "response_snippet": str, "note": str, "recommendation": str},
+        {
+            "voucher_id": str,
+            "tct_status": str,
+            "response_snippet": str,
+            "note": str,
+            "recommendation": str,
+        },
     )
     async def propose_tax_verification(args: dict[str, Any]) -> dict[str, Any]:
         vid = str(args.get("voucher_id", "")).strip()
@@ -345,8 +351,23 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
         if res.status_code == 404:
             return {"content": [{"type": "text", "text": "Voucher not found"}]}
         if res.status_code != 200:
-            return {"content": [{"type": "text", "text": f"Gateway returned {res.status_code}: {res.text[:200]}"}]}
-        return {"content": [{"type": "text", "text": f"Đã ghi đề xuất xác thực cho voucher {vid} — chờ ADMIN xác nhận kèm bằng chứng."}]}
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Gateway returned {res.status_code}: {res.text[:200]}",
+                    }
+                ]
+            }
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"Đã ghi đề xuất xác thực cho voucher {vid} — chờ ADMIN xác "
+                    f"nhận kèm bằng chứng.",
+                }
+            ]
+        }
 
     @tool(
         "reject_tax_verified",
@@ -374,8 +395,19 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
         if res.status_code == 404:
             return {"content": [{"type": "text", "text": "Voucher not found"}]}
         if res.status_code != 200:
-            return {"content": [{"type": "text", "text": f"Gateway returned {res.status_code}: {res.text[:200]}"}]}
-        return {"content": [{"type": "text", "text": f"Đã ghi đề xuất cho voucher {vid} — chờ ADMIN kết luận."}]}
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Gateway returned {res.status_code}: {res.text[:200]}",
+                    }
+                ]
+            }
+        return {
+            "content": [
+                {"type": "text", "text": f"Đã ghi đề xuất cho voucher {vid} — chờ ADMIN kết luận."}
+            ]
+        }
 
     @tool(
         "suggest_journal_entry",
@@ -397,11 +429,7 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
         if res.status_code == 404:
             return {"content": [{"type": "text", "text": "Voucher not found"}]}
         if res.status_code != 200:
-            return {
-                "content": [
-                    {"type": "text", "text": f"Gateway returned {res.status_code}"}
-                ]
-            }
+            return {"content": [{"type": "text", "text": f"Gateway returned {res.status_code}"}]}
 
         voucher_json = res.text
         return {
@@ -496,9 +524,7 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
             "content": [
                 {
                     "type": "text",
-                    "text": (
-                        f"✓ Đã lưu {len(normalized)} bút toán suggest cho voucher {vid}."
-                    ),
+                    "text": (f"✓ Đã lưu {len(normalized)} bút toán suggest cho voucher {vid}."),
                 }
             ]
         }

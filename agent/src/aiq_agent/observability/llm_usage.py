@@ -73,7 +73,11 @@ class UsageCollector:
 
     @property
     def model(self) -> str | None:
-        return sorted(self.models)[0] if len(self.models) == 1 else (",".join(sorted(self.models)) or None)
+        return (
+            sorted(self.models)[0]
+            if len(self.models) == 1
+            else (",".join(sorted(self.models)) or None)
+        )
 
     def to_llm_usage(self) -> LlmUsage | None:
         if self.usage is None:

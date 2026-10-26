@@ -368,12 +368,12 @@ public sealed partial class CashSettlementIntegrationTests
         var job = new ContractInstallmentPenaltyJob(Factory(), NullLogger<ContractInstallmentPenaltyJob>.Instance);
 
         await job.RunAsync(default);
-        Assert.NotNull(await Scalar<decimal?>("SELECT penalty_amount FROM contract_payment_schedules WHERE id=@id", new { id = k.Schedules[0] }));
+        Assert.NotNull(await ScalarOrNull<decimal?>("SELECT penalty_amount FROM contract_payment_schedules WHERE id=@id", new { id = k.Schedules[0] }));
 
         await Settle().PostStatementLineAsync(_tenantId, _departmentId, v, rows[0].Id, _adminId, new PostStatementLineRequest(null, false, false), default);
         Assert.Equal("paid", await ScheduleStatusAsync(k.Schedules[0]));
         await job.RunAsync(default);
-        Assert.Null(await Scalar<decimal?>("SELECT penalty_amount FROM contract_payment_schedules WHERE id=@id", new { id = k.Schedules[0] }));
+        Assert.Null(await ScalarOrNull<decimal?>("SELECT penalty_amount FROM contract_payment_schedules WHERE id=@id", new { id = k.Schedules[0] }));
         // Control: the unpaid overdue schedule is still penalised by the unchanged rules.
         // Days overdue as the job computes them (DB CURRENT_DATE), not the test's UTC+7 "today".
         Assert.Equal(60_000_000m * 0.0005m * await OverdueDaysAsync(k.Schedules[1]), await Scalar<decimal>("SELECT penalty_amount FROM contract_payment_schedules WHERE id=@id", new { id = k.Schedules[1] }));

@@ -61,7 +61,15 @@ def _derive_process_parties(fields: dict[str, Any]) -> list[dict[str, Any]]:
         return out
     for key, role in (("party_a", "party_a"), ("party_b", "party_b")):
         if fields.get(key):
-            out.append({"partyRole": role, "name": str(fields[key]), "taxCode": None, "address": None, "representative": None})
+            out.append(
+                {
+                    "partyRole": role,
+                    "name": str(fields[key]),
+                    "taxCode": None,
+                    "address": None,
+                    "representative": None,
+                }
+            )
     return out
 
 
@@ -80,7 +88,7 @@ def _normalize_payment_terms(raw: Any) -> list[dict[str, Any]]:
     dicts = [p for p in raw if isinstance(p, dict)]
     percentages = normalize_payment_percentages([p.get("percentage") for p in dicts])
     out: list[dict[str, Any]] = []
-    for idx, (p, percentage) in enumerate(zip(dicts, percentages), start=1):
+    for idx, (p, percentage) in enumerate(zip(dicts, percentages, strict=True), start=1):
         repaired = repair_payment_term(p)
         out.append(
             {
@@ -209,7 +217,9 @@ def build_contract_tools(*, token: str, gateway_base: str) -> list[Any]:
     async def extract_contract_fields(args: dict[str, Any]) -> dict[str, Any]:
         raw = str(args.get("raw_text", "")).strip()
         if not raw:
-            return {"content": [{"type": "text", "text": "raw_text trống — không có gì để extract"}]}
+            return {
+                "content": [{"type": "text", "text": "raw_text trống — không có gì để extract"}]
+            }
         # The tool itself doesn't call the LLM — the agent SDK loop will
         # have the model produce the JSON when the skill is in context.
         # We just echo the input back so the model has it in the tool
@@ -252,11 +262,7 @@ def build_contract_tools(*, token: str, gateway_base: str) -> list[Any]:
         fields = args.get("fields") or {}
         raw_text = str(args.get("raw_text", ""))
         if not isinstance(fields, dict) or not fields.get("title"):
-            return {
-                "content": [
-                    {"type": "text", "text": "fields.title là bắt buộc"}
-                ]
-            }
+            return {"content": [{"type": "text", "text": "fields.title là bắt buộc"}]}
 
         # Strict structural check on the model's raw extraction before any
         # of it reaches /process — never blocks the save (Gateway's own
@@ -333,7 +339,11 @@ def build_contract_tools(*, token: str, gateway_base: str) -> list[Any]:
             "paymentTerms": _normalize_payment_terms(fields.get("payment_terms")),
             "milestones": _normalize_milestones(fields.get("milestones")),
             "referencedDocuments": [
-                {"documentType": str(d.get("document_type")), "referencedCode": d.get("referenced_code"), "required": bool(d.get("required", True))}
+                {
+                    "documentType": str(d.get("document_type")),
+                    "referencedCode": d.get("referenced_code"),
+                    "required": bool(d.get("required", True)),
+                }
                 for d in (fields.get("referenced_documents") or [])
                 if isinstance(d, dict) and d.get("document_type")
             ],
@@ -400,11 +410,7 @@ def build_contract_tools(*, token: str, gateway_base: str) -> list[Any]:
         if res.status_code == 404:
             return {"content": [{"type": "text", "text": "Contract not found"}]}
         if res.status_code != 200:
-            return {
-                "content": [
-                    {"type": "text", "text": f"Gateway returned {res.status_code}"}
-                ]
-            }
+            return {"content": [{"type": "text", "text": f"Gateway returned {res.status_code}"}]}
         return {"content": [{"type": "text", "text": res.text}]}
 
     @tool(
@@ -436,7 +442,8 @@ def build_contract_tools(*, token: str, gateway_base: str) -> list[Any]:
                 "content": [
                     {
                         "type": "text",
-                        "text": f"Cannot fetch contract for clause mapping: {contract_res.status_code}",
+                        "text": f"Cannot fetch contract for clause mapping: "
+                        f"{contract_res.status_code}",
                     }
                 ]
             }
@@ -492,7 +499,8 @@ def build_contract_tools(*, token: str, gateway_base: str) -> list[Any]:
             "content": [
                 {
                     "type": "text",
-                    "text": f"✓ Đã lưu {payload.get('total', len(normalized))} checklist items cho contract {contract_id}",
+                    "text": f"✓ Đã lưu {payload.get('total', len(normalized))} checklist "
+                    f"items cho contract {contract_id}",
                 }
             ]
         }

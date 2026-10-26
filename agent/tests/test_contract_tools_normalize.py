@@ -21,7 +21,6 @@ from aiq_agent.agentic.contract_tools import (
     _normalize_payment_terms,
 )
 
-
 # ---------------------------------------------------------------------
 # _normalize_payment_terms — real-contract regression: 30/40/30 of 330M
 # ---------------------------------------------------------------------
@@ -174,7 +173,8 @@ def test_malformed_milestone_trigger_and_due_date_both_present_is_repaired():
 _REAL_CONTRACT_RAW_TEXT = """HỢP ĐỒNG CUNG CẤP DỊCH VỤ
 Số: 016/2026/HĐDV-AI
 ĐIỀU 1. PHẠM VI DỊCH VỤ
-Bên B cung cấp cho Bên A dịch vụ tư vấn, cấu hình và triển khai hệ thống trợ lý AI hỗ trợ xử lý chứng
+Bên B cung cấp cho Bên A dịch vụ tư vấn, cấu hình và triển khai hệ thống trợ lý AI hỗ trợ \
+xử lý chứng
 từ, hợp đồng, công nợ và báo cáo quản trị.
 ĐIỀU 2. GIÁ TRỊ HỢP ĐỒNG VÀ THUẾ
 Nội dung Giá trị (VND)

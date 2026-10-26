@@ -22,7 +22,8 @@ class ChatRequest(BaseModel):
     thread_id: str | None = Field(
         default=None,
         max_length=128,
-        description="Conversation id. When provided, prior turns are loaded from memory and the new exchange is appended.",
+        description="Conversation id. When provided, prior turns are loaded from memory and "
+        "the new exchange is appended.",
     )
     memory_limit: int = Field(default=20, ge=0, le=200)
     agent_id: str | None = Field(default=None, max_length=64)
@@ -220,7 +221,9 @@ class EmbeddingNoteInput(BaseModel):
 class EmbeddingQueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: str = Field(min_length=1, max_length=10_000)
-    user_id: str | None = Field(default=None, max_length=128, description="Deprecated; authenticated user is authoritative.")
+    user_id: str | None = Field(
+        default=None, max_length=128, description="Deprecated; authenticated user is authoritative."
+    )
     notes: list[EmbeddingNoteInput]
     k: int = Field(default=10, ge=1, le=50)
 

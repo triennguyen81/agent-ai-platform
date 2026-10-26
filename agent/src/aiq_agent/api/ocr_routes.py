@@ -36,7 +36,9 @@ class LlmUsageReport(BaseModel):
     model: str | None = None
 
     @classmethod
-    def from_usage(cls, usage: LlmUsage | None, *, provider: str | None, model: str | None) -> LlmUsageReport | None:
+    def from_usage(
+        cls, usage: LlmUsage | None, *, provider: str | None, model: str | None
+    ) -> LlmUsageReport | None:
         if usage is None:
             return None
         return cls(
@@ -103,9 +105,7 @@ def _to_response(result: PipelineResult, request: Request | None = None) -> Pipe
     return PipelineResponse(
         page_count=result.page_count,
         average_confidence=result.average_confidence,
-        stage_durations_ms={
-            stage.value: ms for stage, ms in result.stage_durations_ms.items()
-        },
+        stage_durations_ms={stage.value: ms for stage, ms in result.stage_durations_ms.items()},
         pages=pages,
         joined_text=result.joined_text(),
         llm_usage=LlmUsageReport.from_usage(result.llm_usage, provider=provider, model=model),

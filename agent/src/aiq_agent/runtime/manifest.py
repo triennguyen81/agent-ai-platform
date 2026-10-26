@@ -187,7 +187,7 @@ class ManifestLookupError(PermissionError):
 
 
 async def fetch_execution_manifest(
-    *, gateway_base: str, token: str, agent_id: str, timeout: float = 10.0, test: bool = False,
+    *, gateway_base: str, token: str, agent_id: str, http_timeout: float = 10.0, test: bool = False,
     version_id: str | None = None,
 ) -> ExecutionManifest:
     # ACL V2-C: `test=True` asks the Gateway for the CURRENT DRAFT (falling
@@ -204,7 +204,7 @@ async def fetch_execution_manifest(
     if version_id and not test:
         params = {"versionId": version_id}
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             response = await client.get(
                 f"{gateway_base.rstrip('/')}/runtime/agents/{agent_id}/manifest",
                 headers={"Authorization": f"Bearer {token}"},
@@ -224,7 +224,12 @@ async def fetch_execution_manifest(
 
 
 async def fetch_delegate_manifest(
-    *, gateway_base: str, token: str, router_agent_id: str, specialist_agent_id: str, timeout: float = 10.0
+    *,
+    gateway_base: str,
+    token: str,
+    router_agent_id: str,
+    specialist_agent_id: str,
+    http_timeout: float = 10.0,
 ) -> ExecutionManifest:
     """Same contract as fetch_execution_manifest, but for a specialist reached
     THROUGH an authorized router delegation (see runtime/executors.py's
@@ -232,7 +237,7 @@ async def fetch_delegate_manifest(
     from scratch — this call carries no assumption that a prior fetch succeeded.
     """
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             response = await client.get(
                 f"{gateway_base.rstrip('/')}/runtime/agents/{router_agent_id}/delegate/{specialist_agent_id}/manifest",
                 headers={"Authorization": f"Bearer {token}"},
@@ -240,11 +245,15 @@ async def fetch_delegate_manifest(
     except httpx.RequestError as exc:
         raise ManifestLookupError("Delegate manifest service unavailable") from exc
     if response.status_code != 200:
-        raise ManifestLookupError(f"Delegate manifest authorization failed ({response.status_code})")
+        raise ManifestLookupError(
+            f"Delegate manifest authorization failed ({response.status_code})"
+        )
     try:
         manifest = ExecutionManifest.model_validate(response.json())
     except (ValueError, TypeError) as exc:
-        raise ManifestLookupError("Gateway returned an invalid delegate execution manifest") from exc
+        raise ManifestLookupError(
+            "Gateway returned an invalid delegate execution manifest"
+        ) from exc
     if str(manifest.agent.id) != str(specialist_agent_id):
         raise ManifestLookupError("Delegate manifest agent identity mismatch")
     return manifest

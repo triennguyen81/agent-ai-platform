@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
-from aiq_agent.audit.store import AuditStore
 from aiq_agent.api.routes import _tenant_thread_id, _tenant_thread_prefix
 from aiq_agent.api.schemas import EmbeddingQueryRequest
 from aiq_agent.api.security import RuntimePrincipal
+from aiq_agent.audit.store import AuditStore
 from aiq_agent.embeddings.service import IngestNote, _note_id_to_point_id
-from pydantic import ValidationError
-from types import SimpleNamespace
 
 
 def principal(tenant: str, user: str = "user-a") -> RuntimePrincipal:
-    return RuntimePrincipal(token="token", user_id=user, roles=frozenset({"user"}), tenant_id=tenant)
+    return RuntimePrincipal(
+        token="token", user_id=user, roles=frozenset({"user"}), tenant_id=tenant
+    )
 
 
 def test_conversation_keys_are_tenant_and_user_scoped() -> None:
@@ -58,13 +60,16 @@ def test_qdrant_search_always_intersects_tenant_and_user_filters() -> None:
             self.kwargs = kwargs
             return SimpleNamespace(points=[])
 
-    service = EmbeddingService(model_name="m", embedding_dim=2, qdrant_url="http://q", collection="c")
+    service = EmbeddingService(
+        model_name="m", embedding_dim=2, qdrant_url="http://q", collection="c"
+    )
     service._encoder = Encoder()
     service._qdrant = Qdrant()
     service.search(query="q", tenant_id="tenant-a", user_id="user-a", k=3)
     conditions = service._qdrant.kwargs["query_filter"].must
     assert {(condition.key, condition.match.value) for condition in conditions} == {
-        ("tenant_id", "tenant-a"), ("user_id", "user-a")
+        ("tenant_id", "tenant-a"),
+        ("user_id", "user-a"),
     }
 
 
@@ -73,8 +78,13 @@ async def test_audit_listing_is_tenant_scoped_before_returning_entries() -> None
     class Redis:
         async def lrange(self, _key, _start, _end):
             base = {
-                "ts": 1.0, "event": "chat", "user_prefix": "user",
-                "name": "agent", "ms": 10, "ok": True, "detail": None,
+                "ts": 1.0,
+                "event": "chat",
+                "user_prefix": "user",
+                "name": "agent",
+                "ms": 10,
+                "ok": True,
+                "detail": None,
             }
             return [
                 json.dumps({**base, "tenant_id": "tenant-a", "department_id": "accounting"}),
@@ -82,9 +92,7 @@ async def test_audit_listing_is_tenant_scoped_before_returning_entries() -> None
                 json.dumps({**base, "tenant_id": "tenant-b", "department_id": "accounting"}),
             ]
 
-    entries = await AuditStore(redis=Redis()).list(
-        tenant_id="tenant-a", department_id="accounting"
-    )
+    entries = await AuditStore(redis=Redis()).list(tenant_id="tenant-a", department_id="accounting")
     assert [(entry.tenant_id, entry.department_id) for entry in entries] == [
         ("tenant-a", "accounting")
     ]

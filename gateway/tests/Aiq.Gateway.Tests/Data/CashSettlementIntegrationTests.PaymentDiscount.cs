@@ -39,7 +39,7 @@ public sealed partial class CashSettlementIntegrationTests
         decimal rate = 2m, int days = 10, bool enabled = true, string state = "APPROVED", bool linkInvoice = true,
         string buyerMst = DiscountCustomerMst, string currency = "VND")
     {
-        var customer = await Scalar<Guid?>("SELECT id FROM sim_customers WHERE tenant_id=@t AND mst=@m", new { t = _tenantId, m = DiscountCustomerMst })
+        var customer = await ScalarOrNull<Guid?>("SELECT id FROM sim_customers WHERE tenant_id=@t AND mst=@m", new { t = _tenantId, m = DiscountCustomerMst })
             ?? await SeedCustomerAsync("LIVE-TEST-CUS-CK", "Công ty LIVE-TEST Khách CK", DiscountCustomerMst);
         var contract = await DiscountContractAsync($"LIVE-TEST-DISCOUNT-{tag}", buyerMst, currency: currency);
         var saved = await DiscountTerms().SaveAsync(_tenantId, _departmentId, contract, _adminId,

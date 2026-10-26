@@ -137,7 +137,7 @@ public sealed partial class CashSettlementIntegrationTests
             Settle().ReconcileStatementLineAsync(_tenantId, _departmentId, v, rows[0].Id, _adminId, receipt.Posting.Id, default));
         Assert.Equal("document_review_required", ex.Code);
         Assert.Equal(before, await GateSnapshotAsync());
-        Assert.Null(await Scalar<Guid?>("SELECT reconciled_cash_transaction_id FROM sim_bank_transactions WHERE id=@id", new { id = rows[0].Id }));
+        Assert.Null(await ScalarOrNull<Guid?>("SELECT reconciled_cash_transaction_id FROM sim_bank_transactions WHERE id=@id", new { id = rows[0].Id }));
 
         await BlockStatementAsync(v, "approved");
         Assert.Equal(StatementAccountingStatuses.Reconciled,
@@ -151,7 +151,7 @@ public sealed partial class CashSettlementIntegrationTests
         await SeedCompanyBankAccountAsync();
         var (vt, inv) = await VietTinWithInvoiceAsync();
         var (v, rows) = await ImportStatementAsync("SK-G5", Csv("10/10/2026,FT7005,TT DEMO-INV-VT-001,123456789,CÔNG TY TNHH VIỆT TÍN,VCB,20000000,"));
-        Assert.Null(await Scalar<string?>("SELECT document_review_status FROM vouchers WHERE id=@v", new { v }));
+        Assert.Null(await ScalarOrNull<string?>("SELECT document_review_status FROM vouchers WHERE id=@v", new { v }));
         Assert.Empty((await Settle().GetStatementLineContextAsync(_tenantId, _departmentId, v, rows[0].Id, default))!.Blockers);
         Assert.Equal("posted", (await Settle().PostStatementLineAsync(_tenantId, _departmentId, v, rows[0].Id, _adminId, new PostStatementLineRequest(null, false, false), default))!.Outcome);
     }

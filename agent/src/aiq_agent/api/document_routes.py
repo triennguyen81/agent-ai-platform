@@ -41,12 +41,16 @@ async def extract_document(
     if not data:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Empty file upload.")
     if len(data) > _MAX_BYTES:
-        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File exceeds the size limit.")
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File exceeds the size limit."
+        )
 
     pipeline = getattr(request.app.state, "ocr_pipeline", None)
 
     try:
-        result = await extract_document_text(filename=file.filename or "", data=data, pipeline=pipeline)
+        result = await extract_document_text(
+            filename=file.filename or "", data=data, pipeline=pipeline
+        )
     except DocumentExtractionError as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
 

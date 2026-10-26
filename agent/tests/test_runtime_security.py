@@ -85,7 +85,9 @@ class _FakeAsyncClient:
     async def __aexit__(self, *exc_info: object) -> bool:
         return False
 
-    async def get(self, url: str, headers: dict | None = None, params: dict | None = None) -> _FakeResponse:
+    async def get(
+        self, url: str, headers: dict | None = None, params: dict | None = None
+    ) -> _FakeResponse:
         self.requested_url = url
         self.requested_headers = headers
         self.requested_params = params
@@ -131,19 +133,27 @@ async def test_resolve_capability_agent_omits_preferred_param_when_not_given(mon
 
 
 @pytest.mark.asyncio
-async def test_resolve_capability_agent_forwards_preferred_agent_id_as_query_param(monkeypatch) -> None:
+async def test_resolve_capability_agent_forwards_preferred_agent_id_as_query_param(
+    monkeypatch,
+) -> None:
     fake_client = _patch_gateway_response(
         monkeypatch, _FakeResponse(200, {"agentId": "22222222-2222-2222-2222-222222222222"})
     )
     resolved = await resolve_capability_agent(
-        _principal(), "contract.processing", preferred_agent_id="22222222-2222-2222-2222-222222222222"
+        _principal(),
+        "contract.processing",
+        preferred_agent_id="22222222-2222-2222-2222-222222222222",
     )
     assert resolved == "22222222-2222-2222-2222-222222222222"
-    assert fake_client.requested_params == {"preferredAgentId": "22222222-2222-2222-2222-222222222222"}
+    assert fake_client.requested_params == {
+        "preferredAgentId": "22222222-2222-2222-2222-222222222222"
+    }
 
 
 @pytest.mark.asyncio
-async def test_resolve_capability_agent_rejects_unauthorized_preferred_agent_id(monkeypatch) -> None:
+async def test_resolve_capability_agent_rejects_unauthorized_preferred_agent_id(
+    monkeypatch,
+) -> None:
     # The Gateway is the one re-validating preferred_agent_id — this just
     # proves the 403 it returns for a rejected preference surfaces exactly
     # like any other denial, never silently falls back to a different agent.

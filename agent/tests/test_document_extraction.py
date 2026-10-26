@@ -28,7 +28,9 @@ def _minimal_text_pdf(text: str) -> bytes:
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     ]
     stream = f"BT /F1 12 Tf 20 250 Td ({text}) Tj ET".encode("latin-1")
-    objects.append(b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream")
+    objects.append(
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream"
+    )
 
     out = io.BytesIO()
     out.write(b"%PDF-1.4\n")
@@ -161,7 +163,9 @@ async def test_docx_extracts_paragraphs_and_table_cells() -> None:
     document.save(buf)
 
     result = await extract_document_text(
-        filename="contract.docx", data=buf.getvalue(), pipeline=None,
+        filename="contract.docx",
+        data=buf.getvalue(),
+        pipeline=None,
     )
 
     assert result.extraction_method == "docx_text"
@@ -173,7 +177,9 @@ async def test_docx_extracts_paragraphs_and_table_cells() -> None:
 async def test_image_routes_through_ocr_pipeline() -> None:
     pipeline = _StubPipeline("Text OCR'd from image")
 
-    result = await extract_document_text(filename="scan.png", data=_minimal_png(), pipeline=pipeline)
+    result = await extract_document_text(
+        filename="scan.png", data=_minimal_png(), pipeline=pipeline
+    )
 
     assert result.extraction_method == "image_ocr"
     assert result.text == "Text OCR'd from image"
@@ -211,7 +217,9 @@ async def test_empty_ocr_result_is_rejected_as_extraction_failure() -> None:
 async def test_malformed_pdf_bytes_are_rejected_not_crashed_on() -> None:
     # Starts with the PDF magic bytes but is not a parseable PDF.
     with pytest.raises(DocumentExtractionError) as exc_info:
-        await extract_document_text(filename="broken.pdf", data=b"%PDF-1.4\ngarbage not a real pdf", pipeline=None)
+        await extract_document_text(
+            filename="broken.pdf", data=b"%PDF-1.4\ngarbage not a real pdf", pipeline=None
+        )
 
     assert exc_info.value.status_code == 422
 
@@ -219,12 +227,14 @@ async def test_malformed_pdf_bytes_are_rejected_not_crashed_on() -> None:
 @pytest.mark.asyncio
 async def test_malformed_docx_bytes_are_rejected_not_crashed_on() -> None:
     with pytest.raises(DocumentExtractionError) as exc_info:
-        await extract_document_text(filename="broken.docx", data=b"PK\x03\x04not a real docx zip", pipeline=None)
+        await extract_document_text(
+            filename="broken.docx", data=b"PK\x03\x04not a real docx zip", pipeline=None
+        )
 
     assert exc_info.value.status_code == 422
 
 
-_SAMPLE_INVOICE_XML = """<?xml version="1.0" encoding="UTF-8"?>
+_SAMPLE_INVOICE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <HDon xmlns:ns="http://vietinvoice.example/invoice">
   <TTChung>
     <SoHDon>00012345</SoHDon>
@@ -243,12 +253,14 @@ _SAMPLE_INVOICE_XML = """<?xml version="1.0" encoding="UTF-8"?>
     </TToan>
   </NDHDon>
 </HDon>
-""".encode("utf-8")
+"""
 
 
 @pytest.mark.asyncio
 async def test_xml_invoice_is_flattened_to_readable_text() -> None:
-    result = await extract_document_text(filename="invoice.xml", data=_SAMPLE_INVOICE_XML, pipeline=None)
+    result = await extract_document_text(
+        filename="invoice.xml", data=_SAMPLE_INVOICE_XML, pipeline=None
+    )
 
     assert result.extraction_method == "xml_text"
     assert result.mime_type == "application/xml"
@@ -274,7 +286,9 @@ async def test_xml_detected_by_declaration_even_without_xml_extension() -> None:
 @pytest.mark.asyncio
 async def test_malformed_xml_is_rejected_not_crashed_on() -> None:
     with pytest.raises(DocumentExtractionError) as exc_info:
-        await extract_document_text(filename="broken.xml", data=b"<HDon><TTChung>not closed", pipeline=None)
+        await extract_document_text(
+            filename="broken.xml", data=b"<HDon><TTChung>not closed", pipeline=None
+        )
 
     assert exc_info.value.status_code == 422
 
@@ -283,11 +297,7 @@ async def test_malformed_xml_is_rejected_not_crashed_on() -> None:
 async def test_xml_with_doctype_is_rejected_as_untrusted_input() -> None:
     # Untrusted upload — DOCTYPE/ENTITY (XXE / billion-laughs vectors) must
     # be rejected outright, never parsed.
-    payload = (
-        b'<?xml version="1.0"?>'
-        b'<!DOCTYPE HDon [<!ENTITY x "boom">]>'
-        b"<HDon>&x;</HDon>"
-    )
+    payload = b'<?xml version="1.0"?><!DOCTYPE HDon [<!ENTITY x "boom">]><HDon>&x;</HDon>'
     with pytest.raises(DocumentExtractionError) as exc_info:
         await extract_document_text(filename="malicious.xml", data=payload, pipeline=None)
 

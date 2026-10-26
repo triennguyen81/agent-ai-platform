@@ -59,9 +59,12 @@ TT200_ACCOUNTS: dict[str, tuple[str, str | None, str]] = {
     "1562": ("Chi phí thu mua hàng hoá", "156", ""),
     "157": ("Hàng gửi đi bán", None, ""),
     "158": ("Hàng hoá kho bảo thuế", None, ""),
-
     # Loại 2 — Tài sản dài hạn
-    "211": ("TSCĐ hữu hình", None, "2111 nhà cửa · 2112 máy móc · 2113 phương tiện · 2114 thiết bị QL · 2118 khác"),
+    "211": (
+        "TSCĐ hữu hình",
+        None,
+        "2111 nhà cửa · 2112 máy móc · 2113 phương tiện · 2114 thiết bị QL · 2118 khác",
+    ),
     "213": ("TSCĐ vô hình", None, "2131 quyền SD đất · 2135 phần mềm · 2138 khác"),
     "214": ("Hao mòn TSCĐ", None, "Đối ứng với 211/213 — bên Có giảm giá trị TSCĐ"),
     "217": ("Bất động sản đầu tư", None, ""),
@@ -69,13 +72,25 @@ TT200_ACCOUNTS: dict[str, tuple[str, str | None, str]] = {
     "222": ("Đầu tư vào công ty liên kết", None, ""),
     "228": ("Đầu tư khác dài hạn", None, ""),
     "242": ("Chi phí trả trước dài hạn", None, ""),
-
     # Loại 3 — Nợ phải trả
     "331": ("Phải trả người bán", None, "Chi tiết từng NCC; có thể có dư Nợ (ứng trước)"),
-    "333": ("Thuế và các khoản phải nộp NN", None, "3331 GTGT · 3334 TNDN · 3335 TNCN · 3338 phí lệ phí"),
+    "333": (
+        "Thuế và các khoản phải nộp NN",
+        None,
+        "3331 GTGT · 3334 TNDN · 3335 TNCN · 3338 phí lệ phí",
+    ),
     "3331": ("Thuế GTGT phải nộp", "333", "33311 GTGT đầu ra · 33312 GTGT hàng nhập khẩu"),
-    "33311": ("Thuế GTGT đầu ra", "3331", "Dùng khi hạch toán VAT đầu ra của hoá đơn bán ra (invoice_vat_out) — Có 33311 khi ghi nhận doanh thu"),
-    "33312": ("Thuế GTGT hàng nhập khẩu", "3331", "VAT hàng nhập khẩu phải nộp ở khâu nhập khẩu, khác với 1331/1332 (VAT được khấu trừ)"),
+    "33311": (
+        "Thuế GTGT đầu ra",
+        "3331",
+        "Dùng khi hạch toán VAT đầu ra của hoá đơn bán ra (invoice_vat_out) — Có 33311 khi ghi "
+        "nhận doanh thu",
+    ),
+    "33312": (
+        "Thuế GTGT hàng nhập khẩu",
+        "3331",
+        "VAT hàng nhập khẩu phải nộp ở khâu nhập khẩu, khác với 1331/1332 (VAT được khấu trừ)",
+    ),
     "3332": ("Thuế tiêu thụ đặc biệt", "333", ""),
     "3333": ("Thuế xuất nhập khẩu", "333", ""),
     "3334": ("Thuế thu nhập doanh nghiệp", "333", ""),
@@ -91,21 +106,18 @@ TT200_ACCOUNTS: dict[str, tuple[str, str | None, str]] = {
     "3384": ("Bảo hiểm y tế", "338", ""),
     "3389": ("Bảo hiểm thất nghiệp", "338", ""),
     "341": ("Vay và nợ thuê tài chính", None, "Sau TT200 — gộp 311 cũ"),
-
     # Loại 4 — Vốn chủ sở hữu
     "411": ("Vốn đầu tư của chủ sở hữu", None, "4111 vốn góp · 4112 thặng dư · 4118 khác"),
     "412": ("Chênh lệch đánh giá lại tài sản", None, ""),
     "413": ("Chênh lệch tỷ giá hối đoái", None, ""),
     "414": ("Quỹ đầu tư phát triển", None, ""),
     "421": ("Lợi nhuận sau thuế chưa phân phối", None, "4211 năm trước · 4212 năm nay"),
-
     # Loại 5 — Doanh thu
     "511": ("Doanh thu bán hàng và cung cấp dịch vụ", None, ""),
     "515": ("Doanh thu hoạt động tài chính", None, ""),
     "5211": ("Chiết khấu thương mại", None, ""),
     "5212": ("Hàng bán bị trả lại", None, ""),
     "5213": ("Giảm giá hàng bán", None, ""),
-
     # Loại 6 — Chi phí
     "621": ("Chi phí nguyên vật liệu trực tiếp", None, ""),
     "622": ("Chi phí nhân công trực tiếp", None, ""),
@@ -114,12 +126,10 @@ TT200_ACCOUNTS: dict[str, tuple[str, str | None, str]] = {
     "635": ("Chi phí tài chính", None, "Lãi vay, chiết khấu thanh toán cho KH"),
     "641": ("Chi phí bán hàng", None, ""),
     "642": ("Chi phí quản lý doanh nghiệp", None, ""),
-
     # Loại 7-8
     "711": ("Thu nhập khác", None, "Thanh lý TSCĐ, hoàn nhập DP, được giảm phạt"),
     "811": ("Chi phí khác", None, ""),
     "821": ("Chi phí thuế TNDN", None, "8211 hiện hành · 8212 hoãn lại"),
-
     # Loại 9
     "911": ("Xác định kết quả kinh doanh", None, "Cuối kỳ kết chuyển doanh thu, chi phí"),
 }
@@ -386,11 +396,7 @@ def build_accounting_tools(*, token: str, gateway_base: str) -> list[Any]:
         rate_pct = int(args.get("rate_pct", 20))
 
         if rate_pct not in (5, 10, 15, 17, 20):
-            return {
-                "content": [
-                    {"type": "text", "text": "rate_pct chỉ chấp nhận 5/10/15/17/20"}
-                ]
-            }
+            return {"content": [{"type": "text", "text": "rate_pct chỉ chấp nhận 5/10/15/17/20"}]}
 
         taxable = revenue - expense - max(loss, 0)
         if taxable < 0:
@@ -460,9 +466,7 @@ def build_accounting_tools(*, token: str, gateway_base: str) -> list[Any]:
             return {"content": [{"type": "text", "text": text}]}
 
         name, parent, note = entry
-        children = [
-            (k, v[0]) for k, v in TT200_ACCOUNTS.items() if v[1] == code
-        ]
+        children = [(k, v[0]) for k, v in TT200_ACCOUNTS.items() if v[1] == code]
         lines = [f"**TK {code} — {name}**"]
         if parent:
             parent_name = TT200_ACCOUNTS.get(parent, (parent,))[0]
@@ -493,11 +497,7 @@ def build_accounting_tools(*, token: str, gateway_base: str) -> list[Any]:
         form_code = str(args.get("form_code", "")).strip().upper().replace(" ", "")
         period = str(args.get("period", "")).strip()
         if not form_code or not period:
-            return {
-                "content": [
-                    {"type": "text", "text": "form_code và period đều bắt buộc"}
-                ]
-            }
+            return {"content": [{"type": "text", "text": "form_code và period đều bắt buộc"}]}
 
         meta = FILING_DEADLINES.get(form_code)
         if not meta:
@@ -523,7 +523,9 @@ def build_accounting_tools(*, token: str, gateway_base: str) -> list[Any]:
                     next_month = end_month + (meta.get("quarterly_deadline_month_offset", 1))
                     target_year = year + (1 if next_month > 12 else 0)
                     target_month = ((next_month - 1) % 12) + 1
-                    deadline = f"{meta['quarterly_deadline_day']:02d}/{target_month:02d}/{target_year}"
+                    deadline = (
+                        f"{meta['quarterly_deadline_day']:02d}/{target_month:02d}/{target_year}"
+                    )
             elif period_upper.startswith("T") and "/" in period_upper:
                 month_num = int(period_upper[1:].split("/")[0])
                 year = int(period_upper.split("/")[1])
@@ -531,7 +533,9 @@ def build_accounting_tools(*, token: str, gateway_base: str) -> list[Any]:
                     target_month = month_num + 1
                     target_year = year + (1 if target_month > 12 else 0)
                     target_month = ((target_month - 1) % 12) + 1
-                    deadline = f"{meta['monthly_deadline_day']:02d}/{target_month:02d}/{target_year}"
+                    deadline = (
+                        f"{meta['monthly_deadline_day']:02d}/{target_month:02d}/{target_year}"
+                    )
             else:
                 # Annual
                 year = int(period_upper)
@@ -550,16 +554,15 @@ def build_accounting_tools(*, token: str, gateway_base: str) -> list[Any]:
             f"- Deadline: **{deadline}**",
             f"- Ghi chú: {meta['frequency_note']}",
             "",
-            "_Phạt chậm nộp: 2-25 triệu ₫ + 0,03%/ngày trên số tiền thuế chậm nộp (NĐ125/2020/NĐ-CP)._",
+            "_Phạt chậm nộp: 2-25 triệu ₫ + 0,03%/ngày trên số tiền thuế chậm nộp "
+            "(NĐ125/2020/NĐ-CP)._",
         ]
         return {
             "content": [
                 {"type": "text", "text": "\n".join(lines)},
                 {
                     "type": "text",
-                    "text": str(
-                        {"form_code": form_code, "period": period, "deadline": deadline}
-                    ),
+                    "text": str({"form_code": form_code, "period": period, "deadline": deadline}),
                 },
             ]
         }
@@ -574,11 +577,7 @@ def build_accounting_tools(*, token: str, gateway_base: str) -> list[Any]:
     async def journal_entry_validator(args: dict[str, Any]) -> dict[str, Any]:
         lines_in = args.get("lines") or []
         if not isinstance(lines_in, list) or not lines_in:
-            return {
-                "content": [
-                    {"type": "text", "text": "lines phải là list không rỗng"}
-                ]
-            }
+            return {"content": [{"type": "text", "text": "lines phải là list không rỗng"}]}
 
         errors: list[str] = []
         warnings: list[str] = []
@@ -725,14 +724,14 @@ def build_accounting_tools(*, token: str, gateway_base: str) -> list[Any]:
                 headers={"User-Agent": "AIQ-Agent/0.1 (+import_excel_ledger)"},
             )
         except SsrfBlockedError as exc:
-            return {"content": [{"type": "text", "text": f"URL bị chặn (chính sách an toàn): {exc}"}]}
+            return {
+                "content": [{"type": "text", "text": f"URL bị chặn (chính sách an toàn): {exc}"}]
+            }
         except SsrfFetchError as exc:
             return {"content": [{"type": "text", "text": f"Fetch error: {exc}"}]}
         if fetched.status_code >= 400:
             return {
-                "content": [
-                    {"type": "text", "text": f"HTTP {fetched.status_code} fetching {url}"}
-                ]
+                "content": [{"type": "text", "text": f"HTTP {fetched.status_code} fetching {url}"}]
             }
         raw_bytes = fetched.content
         content_type = fetched.content_type.lower()

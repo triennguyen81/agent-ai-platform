@@ -24,20 +24,29 @@ from .test_dynamic_runtime import manifest_data
 SKILLS_ROOT = Path(__file__).resolve().parents[1] / "skills"
 # The production "Trợ lý kế toán" skill set (read-only audit, 2026-10-11).
 LIVE_SKILLS = [
-    "accounting-vietnam", "accounting-vn-style", "compliance-citation", "contract-checklist-builder",
-    "contract-extractor", "tax-calculation", "url-ingest", "vietnamese-style", "voucher-invoice-vat",
+    "accounting-vietnam",
+    "accounting-vn-style",
+    "compliance-citation",
+    "contract-checklist-builder",
+    "contract-extractor",
+    "tax-calculation",
+    "url-ingest",
+    "vietnamese-style",
+    "voucher-invoice-vat",
 ]
 # Verbatim skill references of the Gateway extraction prompts
 # (DocumentExtraction.BuildManifestPrompt / VoucherExtractJobRunner.BuildExtractionPrompt).
 MANIFEST_PROMPT = (
-    "Bạn là chuyên viên kế toán VN. Xử lý raw OCR text của 1 chứng từ bên dưới.\n"
-    "**BLOCK 1** — Trích xuất fields theo đúng SCHEMA ...\n"
-    "**BLOCK 2** — Áp dụng skill `journal-entry-formatter` + `accounting-vietnam` để đề xuất bút toán N/C theo TT200\n"
-    "===== RAW OCR TEXT =====\nHOA DON GTGT ... hợp đồng số 12 ... thuế VAT 10%\n===== END =====\n"
+    "Bạn là chuyên viên kế toán VN. Xử lý raw OCR text của 1 chứng từ bên dưới.\n**BLOCK 1** — "
+    "Trích xuất fields theo đúng SCHEMA ...\n**BLOCK 2** — Áp dụng skill `journal-entry-formatter` "
+    "+ `accounting-vietnam` để đề xuất bút toán N/C theo TT200\n===== RAW OCR TEXT =====\nHOA DON "
+    "GTGT ... hợp đồng số 12 ... thuế VAT 10%\n===== END =====\n"
 )
 LEGACY_PROMPT = MANIFEST_PROMPT.replace(
     "**BLOCK 1** — Trích xuất fields theo đúng SCHEMA ...",
-    "**BLOCK 1** — Áp dụng skill `voucher-invoice-vat`, đúng phần mô tả cho voucher_type đã xác định")
+    "**BLOCK 1** — Áp dụng skill `voucher-invoice-vat`, đúng phần mô tả cho voucher_type đã xác "
+    "định",
+)
 
 
 def _snapshot(code: str, content: str, kind: str = "declarative") -> dict[str, Any]:
@@ -52,6 +61,7 @@ def _manifest(**overrides: Any) -> ExecutionManifest:
 
 # ------------------------------------------------------------------ Phase 2
 
+
 def test_lean_extraction_keeps_only_skills_the_prompt_names() -> None:
     lean = extraction_manifest(_manifest(), MANIFEST_PROMPT, lean=True)
     # Named and assigned → kept. Named but not assigned (journal-entry-formatter) → not added.
@@ -65,13 +75,29 @@ def test_lean_extraction_keeps_only_skills_the_prompt_names() -> None:
 
 
 def test_lean_extraction_is_a_subset_and_stays_tool_less() -> None:
-    m = _manifest(tools=[{"id": str(uuid4()), "code": "mcp__aiq__save_voucher", "name": "save", "description": None,
-                          "category": None, "riskTier": "write"}])
+    m = _manifest(
+        tools=[
+            {
+                "id": str(uuid4()),
+                "code": "mcp__aiq__save_voucher",
+                "name": "save",
+                "description": None,
+                "category": None,
+                "riskTier": "write",
+            }
+        ]
+    )
     for lean in (True, False):
         out = extraction_manifest(m, MANIFEST_PROMPT, lean=lean)
         assert set(out.skills) <= set(m.skills)
-        assert out.tools == [] and out.delegates == [] and out.workflow is None and out.maxTurns == 2
-        assert out.tenantId == m.tenantId and out.agent.id == m.agent.id and out.departmentId == m.departmentId
+        assert (
+            out.tools == [] and out.delegates == [] and out.workflow is None and out.maxTurns == 2
+        )
+        assert (
+            out.tenantId == m.tenantId
+            and out.agent.id == m.agent.id
+            and out.departmentId == m.departmentId
+        )
 
 
 def test_rollback_flag_keeps_every_skill_and_the_original_prompt() -> None:
@@ -81,19 +107,26 @@ def test_rollback_flag_keeps_every_skill_and_the_original_prompt() -> None:
 
 
 def test_declarative_tenant_skills_always_reach_extraction_but_never_twice() -> None:
-    m = _manifest(skills=[*LIVE_SKILLS, "kt-quy-tac", "kt-inline"],
-                  skillSnapshots=[_snapshot("kt-quy-tac", "QUY TẮC CÔNG TY"), _snapshot("kt-inline", "ĐÃ CHÈN")])
+    m = _manifest(
+        skills=[*LIVE_SKILLS, "kt-quy-tac", "kt-inline"],
+        skillSnapshots=[
+            _snapshot("kt-quy-tac", "QUY TẮC CÔNG TY"),
+            _snapshot("kt-inline", "ĐÃ CHÈN"),
+        ],
+    )
     prompt = MANIFEST_PROMPT + "===== SKILL kt-inline =====\nĐÃ CHÈN\n===== END SKILL =====\n"
     out = extraction_manifest(m, prompt, lean=True)
-    assert "kt-quy-tac" in out.skills          # unreferenced, but a tenant rule → kept
-    assert "kt-inline" not in out.skills       # already inlined by the Gateway → not duplicated
+    assert "kt-quy-tac" in out.skills  # unreferenced, but a tenant rule → kept
+    assert "kt-inline" not in out.skills  # already inlined by the Gateway → not duplicated
     assert [s.code for s in out.skillSnapshots] == ["kt-quy-tac"]
 
 
 def test_skill_reference_needs_an_exact_code_boundary() -> None:
     m = _manifest(skills=["accounting-vietnam"])
     assert extraction_manifest(m, "dùng accounting-vietnamese-v2", lean=True).skills == []
-    assert extraction_manifest(m, "dùng `accounting-vietnam`.", lean=True).skills == ["accounting-vietnam"]
+    assert extraction_manifest(m, "dùng `accounting-vietnam`.", lean=True).skills == [
+        "accounting-vietnam"
+    ]
 
 
 def test_lean_extraction_keeps_agent_rules_and_adds_extraction_instructions() -> None:
@@ -117,7 +150,7 @@ class _OptionsClient:
     def __init__(self, **kwargs: Any) -> None:
         self.captured.append(kwargs.get("options"))
 
-    async def __aenter__(self) -> "_OptionsClient":
+    async def __aenter__(self) -> _OptionsClient:
         return self
 
     async def __aexit__(self, *exc: Any) -> bool:
@@ -153,10 +186,16 @@ async def test_cli_skill_discovery_can_be_turned_off(monkeypatch) -> None:
 
 
 def test_unused_registry_is_harmless() -> None:
-    assert _resolve_skills(extraction_manifest(_manifest(skills=[]), "x", lean=True), SkillRegistry()).block == ""
+    assert (
+        _resolve_skills(
+            extraction_manifest(_manifest(skills=[]), "x", lean=True), SkillRegistry()
+        ).block
+        == ""
+    )
 
 
 # ------------------------------------------------------------------ Phase 3
+
 
 class _ScriptedLlm:
     """LlmService fake: replies from a queue, records each request."""
@@ -185,10 +224,12 @@ async def test_claude_cli_service_disables_builtin_tools(monkeypatch) -> None:
 
     _OptionsClient.captured = []
     monkeypatch.setattr(claude_cli, "ClaudeSDKClient", _OptionsClient)
-    await claude_cli.ClaudeCliLlmService(model="m").chat([ChatMessage("system", "s"), ChatMessage("user", "u")])
+    await claude_cli.ClaudeCliLlmService(model="m").chat(
+        [ChatMessage("system", "s"), ChatMessage("user", "u")]
+    )
 
     [options] = _OptionsClient.captured
-    assert options.tools == []          # → `--tools ""`: no Claude Code built-ins
+    assert options.tools == []  # → `--tools ""`: no Claude Code built-ins
     assert options.skills is None and options.setting_sources is None
 
 
@@ -205,7 +246,9 @@ async def test_batched_correction_splits_pages_by_marker_and_skips_empty_pages()
     from aiq_agent.ocr.corrector import DiacriticCorrector
 
     llm = _ScriptedLlm(["<<<PAGE 1>>>\nCông ty A\n<<<PAGE 3>>>\nTổng tiền"])
-    texts, usage = await DiacriticCorrector(llm).correct_many_with_usage(["Cong ty A", "   ", "Tong tien"])
+    texts, usage = await DiacriticCorrector(llm).correct_many_with_usage(
+        ["Cong ty A", "   ", "Tong tien"]
+    )
 
     assert texts == ["Công ty A", "   ", "Tổng tiền"]
     assert len(llm.requests) == 1 and usage.llm_call_count == 1
@@ -213,20 +256,27 @@ async def test_batched_correction_splits_pages_by_marker_and_skips_empty_pages()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad_reply", [
-    "Công ty A\nTổng tiền",                                  # markers dropped
-    "<<<PAGE 3>>>\nTổng tiền\n<<<PAGE 1>>>\nCông ty A",       # reordered
-    "Đây là bản sửa:\n<<<PAGE 1>>>\nA\n<<<PAGE 3>>>\nB",     # preamble
-    "<<<PAGE 1>>>\n\n<<<PAGE 3>>>\nTổng tiền",               # a page emptied
-])
+@pytest.mark.parametrize(
+    "bad_reply",
+    [
+        "Công ty A\nTổng tiền",  # markers dropped
+        "<<<PAGE 3>>>\nTổng tiền\n<<<PAGE 1>>>\nCông ty A",  # reordered
+        "Đây là bản sửa:\n<<<PAGE 1>>>\nA\n<<<PAGE 3>>>\nB",  # preamble
+        "<<<PAGE 1>>>\n\n<<<PAGE 3>>>\nTổng tiền",  # a page emptied
+    ],
+)
 async def test_malformed_batch_reply_falls_back_to_one_call_per_page(bad_reply: str) -> None:
     from aiq_agent.ocr.corrector import DiacriticCorrector
 
     llm = _ScriptedLlm([bad_reply, "Công ty A", "Tổng tiền"])
-    texts, usage = await DiacriticCorrector(llm).correct_many_with_usage(["Cong ty A", "", "Tong tien"])
+    texts, usage = await DiacriticCorrector(llm).correct_many_with_usage(
+        ["Cong ty A", "", "Tong tien"]
+    )
 
     assert texts == ["Công ty A", "", "Tổng tiền"]
-    assert len(llm.requests) == 3 and usage.llm_call_count == 3  # the failed batch call is still counted
+    assert (
+        len(llm.requests) == 3 and usage.llm_call_count == 3
+    )  # the failed batch call is still counted
 
 
 @pytest.mark.asyncio
@@ -236,11 +286,18 @@ async def test_pipeline_batch_mode_off_by_default_and_identical_output_when_on()
 
     pages = ["trang mot", "trang hai"]
     per_page = _ScriptedLlm(["trang một", "trang hai"])
-    default = OcrPipeline(extractor=StubOcrExtractor(pages), corrector=DiacriticCorrector(per_page),
-                          validator=PassthroughValidator())
+    default = OcrPipeline(
+        extractor=StubOcrExtractor(pages),
+        corrector=DiacriticCorrector(per_page),
+        validator=PassthroughValidator(),
+    )
     batched_llm = _ScriptedLlm(["<<<PAGE 1>>>\ntrang một\n<<<PAGE 2>>>\ntrang hai"])
-    batched = OcrPipeline(extractor=StubOcrExtractor(pages), corrector=DiacriticCorrector(batched_llm),
-                          validator=PassthroughValidator(), correction_batch_chars=8000)
+    batched = OcrPipeline(
+        extractor=StubOcrExtractor(pages),
+        corrector=DiacriticCorrector(batched_llm),
+        validator=PassthroughValidator(),
+        correction_batch_chars=8000,
+    )
 
     a = await default.run_pages([b"1", b"2"])
     b = await batched.run_pages([b"1", b"2"])
@@ -251,6 +308,7 @@ async def test_pipeline_batch_mode_off_by_default_and_identical_output_when_on()
 
 
 # ------------------------------------------------------------------ Phase 4
+
 
 class _PromptCapturingClient(_OptionsClient):
     """Also captures the system prompt file content and the query."""
@@ -268,7 +326,9 @@ class _PromptCapturingClient(_OptionsClient):
         self.queries.append(text)
 
 
-async def _run_chat(monkeypatch, prompt: str, *, dynamic: bool, manifest: ExecutionManifest | None = None):
+async def _run_chat(
+    monkeypatch, prompt: str, *, dynamic: bool, manifest: ExecutionManifest | None = None
+):
     from aiq_agent.runtime import executors as executors_module
 
     monkeypatch.setattr(executors_module, "ClaudeSDKClient", _PromptCapturingClient)
@@ -286,10 +346,12 @@ def _reset_capture() -> None:
 def test_skill_plan_inlines_rules_preselects_by_keyword_and_lists_the_rest() -> None:
     from aiq_agent.runtime.executors import _plan_skills
 
-    m = _manifest(skills=[*LIVE_SKILLS, "kt-quy-tac"], skillSnapshots=[_snapshot("kt-quy-tac", "QUY TẮC")])
+    m = _manifest(
+        skills=[*LIVE_SKILLS, "kt-quy-tac"], skillSnapshots=[_snapshot("kt-quy-tac", "QUY TẮC")]
+    )
     plan = _plan_skills(m, build_registry(SKILLS_ROOT), "Tính thuế GTGT phải nộp tháng này")
 
-    assert set(plan.inline.names) == {"vietnamese-style", "kt-quy-tac"}   # always_on + declarative
+    assert set(plan.inline.names) == {"vietnamese-style", "kt-quy-tac"}  # always_on + declarative
     assert "tax-calculation" in plan.preselected_names
     assert "contract-extractor" not in plan.preselected_names
     assert "contract-extractor" in plan.loadable and "contract-extractor" in plan.catalog
@@ -309,10 +371,14 @@ async def test_load_skill_returns_only_listed_skills() -> None:
     load = _build_load_skill_tool(plan, sink)
 
     ok = await load.handler({"name": "contract-extractor"})
-    assert "===== SKILL: contract-extractor =====" in ok["content"][0]["text"] and sink and sink[0] > 0
-    refused = await load.handler({"name": "voucher-universal-extractor"})   # not assigned to this agent
+    assert (
+        "===== SKILL: contract-extractor =====" in ok["content"][0]["text"] and sink and sink[0] > 0
+    )
+    refused = await load.handler(
+        {"name": "voucher-universal-extractor"}
+    )  # not assigned to this agent
     assert "Unknown" in refused["content"][0]["text"]
-    refused = await load.handler({"name": "vietnamese-style"})               # already inline
+    refused = await load.handler({"name": "vietnamese-style"})  # already inline
     assert "Unknown" in refused["content"][0]["text"]
 
 
@@ -324,12 +390,12 @@ async def test_dynamic_mode_keeps_system_prompt_stable_and_smaller(monkeypatch) 
     await _run_chat(monkeypatch, "Tính thuế GTGT tháng 9", dynamic=False)
 
     dyn_a, dyn_b, static = _PromptCapturingClient.systems
-    assert dyn_a == dyn_b                                # request-independent → cacheable prefix
+    assert dyn_a == dyn_b  # request-independent → cacheable prefix
     assert len(dyn_a) < 0.35 * len(static)
     q_tax, q_contract, q_static = _PromptCapturingClient.queries
     assert "===== SKILL: tax-calculation =====" in q_tax
     assert "===== SKILL: contract-checklist-builder =====" in q_contract
-    assert "===== SKILL:" not in q_static                 # static mode unchanged: skills only in system
+    assert "===== SKILL:" not in q_static  # static mode unchanged: skills only in system
     opts_dyn, _, opts_static = _PromptCapturingClient.captured
     assert "mcp__aiq__load_skill" in opts_dyn.allowed_tools and opts_dyn.skills is None
     assert "mcp__aiq__load_skill" not in opts_static.allowed_tools
@@ -339,7 +405,9 @@ async def test_dynamic_mode_keeps_system_prompt_stable_and_smaller(monkeypatch) 
 @pytest.mark.asyncio
 async def test_dynamic_mode_never_adds_tools_beyond_load_skill(monkeypatch) -> None:
     _reset_capture()
-    await _run_chat(monkeypatch, "lưu chứng từ vào hệ thống", dynamic=True, manifest=_manifest(tools=[]))
+    await _run_chat(
+        monkeypatch, "lưu chứng từ vào hệ thống", dynamic=True, manifest=_manifest(tools=[])
+    )
     [opts] = _PromptCapturingClient.captured
     assert opts.allowed_tools == ["mcp__aiq__load_skill"] and opts.tools == []
 
@@ -358,6 +426,7 @@ def test_dynamic_skill_loading_is_off_by_default() -> None:
 
 
 # ------------------------------------------------------------------ Phase 5
+
 
 @pytest.mark.asyncio
 async def test_no_agent_run_is_refused_unless_legacy_is_enabled(monkeypatch) -> None:
@@ -387,25 +456,31 @@ async def test_no_agent_run_is_refused_unless_legacy_is_enabled(monkeypatch) -> 
         await routes.agentic_run(body, admin, None, SkillRegistry(), None)
     assert refused.value.status_code == 403 and calls == []
 
-    monkeypatch.setattr(routes, "get_settings",
-                        lambda: Settings(embedding_enabled=False, legacy_agent_run_enabled=True))
+    monkeypatch.setattr(
+        routes,
+        "get_settings",
+        lambda: Settings(embedding_enabled=False, legacy_agent_run_enabled=True),
+    )
     response = await routes.agentic_run(body, admin, None, SkillRegistry(), None)
     assert response.final_answer == "ok" and calls == ["liệt kê công nợ"]
 
 
 # ------------------------------------------------------------------ Phase 6
 
+
 def test_history_window_keeps_newest_whole_messages_within_both_budgets() -> None:
     from aiq_agent.llm.base import ChatMessage
     from aiq_agent.memory.base import trim_history
 
-    history = [ChatMessage("user" if i % 2 == 0 else "assistant", f"m{i}-" + "x" * 96) for i in range(40)]
+    history = [
+        ChatMessage("user" if i % 2 == 0 else "assistant", f"m{i}-" + "x" * 96) for i in range(40)
+    ]
     by_count = trim_history(history, max_messages=6, max_chars=10_000)
     assert by_count == history[-6:]
-    by_chars = trim_history(history, max_messages=40, max_chars=450)   # 4 whole messages fit
+    by_chars = trim_history(history, max_messages=40, max_chars=450)  # 4 whole messages fit
     assert by_chars == history[-4:]
-    assert all(len(m.content) == 100 for m in by_chars)                 # never cut mid-message
-    odd = trim_history(history, max_messages=5, max_chars=10_000)       # would start with an answer
+    assert all(len(m.content) == 100 for m in by_chars)  # never cut mid-message
+    odd = trim_history(history, max_messages=5, max_chars=10_000)  # would start with an answer
     assert odd[0].role == "user" and odd == history[-4:]
     assert trim_history(history, max_messages=0, max_chars=10_000) == []
 
@@ -425,10 +500,18 @@ class _ToolRoundClient(_OptionsClient):
     async def receive_response(self):
         from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock
 
-        yield AssistantMessage(content=[TextBlock(text="Tôi sẽ tra cứu công nợ khách hàng A.")], model="m")
-        yield AssistantMessage(content=[ToolUseBlock(id="t1", name="mcp__aiq__get_customer_receivables",
-                                                     input={"q": "A"})], model="m")
-        yield AssistantMessage(content=[TextBlock(text="Công nợ của khách hàng A là 12.000.000 đ.")], model="m")
+        yield AssistantMessage(
+            content=[TextBlock(text="Tôi sẽ tra cứu công nợ khách hàng A.")], model="m"
+        )
+        yield AssistantMessage(
+            content=[
+                ToolUseBlock(id="t1", name="mcp__aiq__get_customer_receivables", input={"q": "A"})
+            ],
+            model="m",
+        )
+        yield AssistantMessage(
+            content=[TextBlock(text="Công nợ của khách hàng A là 12.000.000 đ.")], model="m"
+        )
 
 
 @pytest.mark.asyncio
@@ -436,20 +519,26 @@ async def test_history_keeps_the_final_answer_not_tool_round_narration(monkeypat
     from aiq_agent.runtime import executors as executors_module
 
     monkeypatch.setattr(executors_module, "ClaudeSDKClient", _ToolRoundClient)
-    result = await build_agent_executor(_manifest(skills=[]), Settings(embedding_enabled=False),
-                                        SkillRegistry()).execute(prompt="công nợ A?", token="t")
+    result = await build_agent_executor(
+        _manifest(skills=[]), Settings(embedding_enabled=False), SkillRegistry()
+    ).execute(prompt="công nợ A?", token="t")
 
-    assert "Tôi sẽ tra cứu" in result.final_answer          # the user still sees everything
+    assert "Tôi sẽ tra cứu" in result.final_answer  # the user still sees everything
     assert result.history_text == "Công nợ của khách hàng A là 12.000.000 đ."
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("configured", "expected"), [(8, 8), (12, 12), (20, 12)])
-async def test_turn_cap_bounds_configured_max_turns(monkeypatch, configured: int, expected: int) -> None:
+async def test_turn_cap_bounds_configured_max_turns(
+    monkeypatch, configured: int, expected: int
+) -> None:
     from aiq_agent.runtime import executors as executors_module
 
     _OptionsClient.captured = []
     monkeypatch.setattr(executors_module, "ClaudeSDKClient", _OptionsClient)
-    await build_agent_executor(_manifest(skills=[], maxTurns=configured), Settings(embedding_enabled=False),
-                               SkillRegistry()).execute(prompt="x", token="t")
+    await build_agent_executor(
+        _manifest(skills=[], maxTurns=configured),
+        Settings(embedding_enabled=False),
+        SkillRegistry(),
+    ).execute(prompt="x", token="t")
     assert _OptionsClient.captured[0].max_turns == expected

@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import os
 import asyncio
 import logging
-from contextlib import suppress
+import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
 
 from aiq_agent.api.document_routes import router as document_router
+from aiq_agent.api.knowledge_routes import router as knowledge_router
 from aiq_agent.api.ocr_routes import router as ocr_router
 from aiq_agent.api.routes import router
-from aiq_agent.api.knowledge_routes import router as knowledge_router
 from aiq_agent.audit import build_audit_store
 from aiq_agent.config import get_settings
 from aiq_agent.embeddings import build_embedding_service
@@ -26,13 +25,19 @@ from aiq_agent.observability import RecordedLlmService, configure_tracing, instr
 from aiq_agent.ocr import (
     DiacriticCorrector,
     OcrPipeline,
-    PassthroughValidator,
     PaddleOcrExtractor,
+    PassthroughValidator,
     RapidOcrExtractor,
 )
 from aiq_agent.ocr.concurrency import get_ocr_gate
 from aiq_agent.skills import build_registry as build_skill_registry
 from aiq_agent.tools import default_registry
+
+
+def _default_skills_root() -> Path:
+    repo_candidate = Path(__file__).resolve().parent.parent.parent / "skills"
+    container_candidate = Path("/app/skills")
+    return repo_candidate if repo_candidate.exists() else container_candidate
 
 
 @asynccontextmanager
@@ -74,9 +79,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if skills_root_env:
         skills_root = Path(skills_root_env)
     else:
-        repo_candidate = Path(__file__).resolve().parent.parent.parent / "skills"
-        container_candidate = Path("/app/skills")
-        skills_root = repo_candidate if repo_candidate.exists() else container_candidate
+        skills_root = await asyncio.to_thread(_default_skills_root)
     skill_registry = build_skill_registry(skills_root)
 
     # Audit store reuses the memory store's underlying Redis client when

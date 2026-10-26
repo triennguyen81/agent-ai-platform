@@ -20,20 +20,33 @@ from aiq_agent.api.schemas import AgentRunResponse, DocumentExtractRequest
 from aiq_agent.api.security import RuntimePrincipal
 from aiq_agent.runtime.executors import ExecutionResult, _resolve_workflow
 from aiq_agent.runtime.manifest import ExecutionManifest
-
 from tests.test_dynamic_runtime import manifest_data
 
 
 def document_processing(version_id: str, **type_overrides):
     doc_type = {
-        "code": "invoice_vat_out", "displayName": "Hóa đơn bán", "enabled": True,
+        "code": "invoice_vat_out",
+        "displayName": "Hóa đơn bán",
+        "enabled": True,
         "accountingHandler": "sales_invoice",
-        "fields": [{"name": "document_number", "label": "Số hóa đơn", "type": "string", "required": True,
-                    "description": None}],
-        "schema": {"type": "object", "properties": {"document_number": {"type": "string"}},
-                   "required": ["document_number"]},
-        "schemaSha256": "ab" * 32, "extractionInstructions": "Ghi đúng số liệu.",
-        "workflow": None, "skills": [],
+        "fields": [
+            {
+                "name": "document_number",
+                "label": "Số hóa đơn",
+                "type": "string",
+                "required": True,
+                "description": None,
+            }
+        ],
+        "schema": {
+            "type": "object",
+            "properties": {"document_number": {"type": "string"}},
+            "required": ["document_number"],
+        },
+        "schemaSha256": "ab" * 32,
+        "extractionInstructions": "Ghi đúng số liệu.",
+        "workflow": None,
+        "skills": [],
     }
     doc_type.update(type_overrides)
     return {"agentVersionId": version_id, "draft": False, "types": [doc_type]}
@@ -66,7 +79,11 @@ def test_manifest_without_document_processing_is_legacy() -> None:
 @pytest.mark.parametrize(
     "bad",
     [
-        {"fields": [{"name": "x", "label": "x", "type": "sql", "required": False, "description": None}]},
+        {
+            "fields": [
+                {"name": "x", "label": "x", "type": "sql", "required": False, "description": None}
+            ]
+        },
         {"debitAccount": "131"},  # no Dr/Cr or any unknown key can ride along
         {"skills": [{"code": "x", "sourceKind": "python"}]},
     ],
@@ -79,10 +96,15 @@ def test_manifest_document_type_is_strict(bad: dict) -> None:
 
 
 def test_require_review_workflow_step_is_known_and_inert_in_chat() -> None:
-    manifest = _manifest(workflow={
-        "id": str(uuid4()), "name": "Duyệt",
-        "definition": {"steps": [{"type": "require_review"}, {"type": "prompt", "text": "Kiểm tra MST"}]},
-    })
+    manifest = _manifest(
+        workflow={
+            "id": str(uuid4()),
+            "name": "Duyệt",
+            "definition": {
+                "steps": [{"type": "require_review"}, {"type": "prompt", "text": "Kiểm tra MST"}]
+            },
+        }
+    )
     block = _resolve_workflow(manifest)
     assert "Kiểm tra MST" in block
 
@@ -99,7 +121,9 @@ def test_agent_run_response_carries_provenance_fields() -> None:
 
 
 def _principal() -> RuntimePrincipal:
-    return RuntimePrincipal(token="signed.jwt", user_id="u-1", roles=frozenset({"admin"}), tenant_id="t-1")
+    return RuntimePrincipal(
+        token="signed.jwt", user_id="u-1", roles=frozenset({"admin"}), tenant_id="t-1"
+    )
 
 
 def _patch(monkeypatch, manifest: ExecutionManifest):
@@ -133,13 +157,24 @@ def _patch(monkeypatch, manifest: ExecutionManifest):
 
 async def test_document_extract_runs_without_any_tools(monkeypatch) -> None:
     manifest = _manifest(
-        tools=[{"id": str(uuid4()), "code": "mcp__aiq__save_voucher", "name": "save", "description": None,
-                "category": None, "riskTier": "write"}],
+        tools=[
+            {
+                "id": str(uuid4()),
+                "code": "mcp__aiq__save_voucher",
+                "name": "save",
+                "description": None,
+                "category": None,
+                "riskTier": "write",
+            }
+        ],
         delegates=[{"id": str(uuid4()), "slug": "spec", "name": "Spec", "description": None}],
     )
     calls = _patch(monkeypatch, manifest)
-    body = DocumentExtractRequest(agent_id=str(manifest.agent.id),
-                                  expected_version_id=str(manifest.publishedVersionId), task="TASK")
+    body = DocumentExtractRequest(
+        agent_id=str(manifest.agent.id),
+        expected_version_id=str(manifest.publishedVersionId),
+        task="TASK",
+    )
     response = await routes.document_extract(body, _principal(), None, SimpleNamespace(skills=[]))
 
     executed = calls["executed_manifests"][0]
@@ -155,7 +190,9 @@ async def test_document_extract_runs_without_any_tools(monkeypatch) -> None:
 async def test_document_extract_rejects_version_mismatch(monkeypatch) -> None:
     manifest = _manifest()
     calls = _patch(monkeypatch, manifest)
-    body = DocumentExtractRequest(agent_id=str(manifest.agent.id), expected_version_id=str(uuid4()), task="T")
+    body = DocumentExtractRequest(
+        agent_id=str(manifest.agent.id), expected_version_id=str(uuid4()), task="T"
+    )
     with pytest.raises(HTTPException) as info:
         await routes.document_extract(body, _principal(), None, SimpleNamespace(skills=[]))
     assert info.value.status_code == 409
@@ -165,8 +202,11 @@ async def test_document_extract_rejects_version_mismatch(monkeypatch) -> None:
 async def test_document_extract_requires_document_configuration(monkeypatch) -> None:
     manifest = _manifest(with_config=False)
     calls = _patch(monkeypatch, manifest)
-    body = DocumentExtractRequest(agent_id=str(manifest.agent.id),
-                                  expected_version_id=str(manifest.publishedVersionId), task="T")
+    body = DocumentExtractRequest(
+        agent_id=str(manifest.agent.id),
+        expected_version_id=str(manifest.publishedVersionId),
+        task="T",
+    )
     with pytest.raises(HTTPException) as info:
         await routes.document_extract(body, _principal(), None, SimpleNamespace(skills=[]))
     assert info.value.status_code == 409
@@ -176,8 +216,12 @@ async def test_document_extract_requires_document_configuration(monkeypatch) -> 
 async def test_document_extract_test_mode_asks_gateway_for_test_manifest(monkeypatch) -> None:
     manifest = _manifest()
     calls = _patch(monkeypatch, manifest)
-    body = DocumentExtractRequest(agent_id=str(manifest.agent.id),
-                                  expected_version_id=str(manifest.publishedVersionId), task="T", test=True)
+    body = DocumentExtractRequest(
+        agent_id=str(manifest.agent.id),
+        expected_version_id=str(manifest.publishedVersionId),
+        task="T",
+        test=True,
+    )
     await routes.document_extract(body, _principal(), None, SimpleNamespace(skills=[]))
     assert calls["require"] == [(str(manifest.agent.id), True)]
 
@@ -185,4 +229,10 @@ async def test_document_extract_test_mode_asks_gateway_for_test_manifest(monkeyp
 def test_document_extract_request_is_strict() -> None:
     with pytest.raises(ValidationError):
         DocumentExtractRequest.model_validate(
-            {"agent_id": "a", "expected_version_id": "v", "task": "t", "tools": ["mcp__aiq__save_voucher"]})
+            {
+                "agent_id": "a",
+                "expected_version_id": "v",
+                "task": "t",
+                "tools": ["mcp__aiq__save_voucher"],
+            }
+        )

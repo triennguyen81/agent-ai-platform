@@ -40,7 +40,9 @@ DateKind = Literal["fixed_date", "conditional_event", "derived_after_event"]
 # clause's own body (e.g. "...theo Điều 1 và Điều 8...") — which is never
 # the first thing on its own line in these documents — is not mistaken
 # for a new clause boundary.
-_CLAUSE_MARKER_RE = re.compile(r"^[ \t]*Điều[ \t]+(\d+)[ \t]*[.:\-–—]?[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE)
+_CLAUSE_MARKER_RE = re.compile(
+    r"^[ \t]*Điều[ \t]+(\d+)[ \t]*[.:\-–—]?[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE
+)
 
 
 def parse_date(value: Any) -> str | None:
@@ -247,11 +249,19 @@ def validate_extracted_payload(fields: dict[str, Any]) -> list[str]:
             if coerce_number(p.get("percentage")) is None:
                 issues.append(f"payment_terms[{i}] thiếu percentage hợp lệ")
             if p.get("trigger_event") and p.get("due_date"):
-                issues.append(f"payment_terms[{i}] có cả trigger_event và due_date — due_date sẽ bị bỏ")
+                issues.append(
+                    f"payment_terms[{i}] có cả trigger_event và due_date — due_date sẽ bị bỏ"
+                )
             if p.get("offset_days") and not p.get("trigger_event"):
-                issues.append(f"payment_terms[{i}] có offset_days nhưng không có trigger_event — offset_days sẽ bị bỏ")
+                issues.append(
+                    f"payment_terms[{i}] có offset_days nhưng không có trigger_event — offset_days "
+                    f"sẽ bị bỏ"
+                )
             if p.get("expected_date") and not p.get("trigger_event"):
-                issues.append(f"payment_terms[{i}] có expected_date nhưng không có trigger_event — expected_date sẽ bị bỏ")
+                issues.append(
+                    f"payment_terms[{i}] có expected_date nhưng không có trigger_event — "
+                    f"expected_date sẽ bị bỏ"
+                )
 
     milestones = fields.get("milestones")
     if milestones is not None and not isinstance(milestones, list):
@@ -262,8 +272,14 @@ def validate_extracted_payload(fields: dict[str, Any]) -> list[str]:
                 issues.append(f"milestones[{i}] thiếu name")
                 continue
             if m.get("duration_months") and not m.get("trigger_event"):
-                issues.append(f"milestones[{i}] có duration_months nhưng không có trigger_event — duration_months sẽ bị bỏ")
+                issues.append(
+                    f"milestones[{i}] có duration_months nhưng không có trigger_event — "
+                    f"duration_months sẽ bị bỏ"
+                )
             if m.get("expected_date") and not m.get("trigger_event"):
-                issues.append(f"milestones[{i}] có expected_date nhưng không có trigger_event — expected_date sẽ bị bỏ")
+                issues.append(
+                    f"milestones[{i}] có expected_date nhưng không có trigger_event — "
+                    f"expected_date sẽ bị bỏ"
+                )
 
     return issues

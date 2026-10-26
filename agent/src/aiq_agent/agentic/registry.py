@@ -24,7 +24,7 @@ async def fetch_allowed_tool_codes(
     gateway_base: str,
     user_token: str,
     agent_id: str,
-    timeout: float = 5.0,
+    http_timeout: float = 5.0,
 ) -> list[str] | None:
     """Return the list of tool codes the agent is allowed to invoke.
 
@@ -34,7 +34,7 @@ async def fetch_allowed_tool_codes(
     """
     url = f"{gateway_base.rstrip('/')}/runtime/agents/{agent_id}/authorization"
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             res = await client.get(
                 url,
                 headers={"Authorization": f"Bearer {user_token}"},
@@ -60,7 +60,7 @@ async def fetch_company_context_block(
     *,
     gateway_base: str,
     user_token: str,
-    timeout: float = 5.0,
+    http_timeout: float = 5.0,
 ) -> str:
     """Trusted, server-resolved company identity ("công ty chủ thể") for the
     generic no-agent-id chat path (runner.run_task) — mirrors
@@ -80,7 +80,7 @@ async def fetch_company_context_block(
     not_configured = f"{header}\ncompany_identity: not_configured"
     url = f"{gateway_base.rstrip('/')}/runtime/company-profile"
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             res = await client.get(url, headers={"Authorization": f"Bearer {user_token}"})
         if res.status_code != 200:
             return not_configured
@@ -106,7 +106,7 @@ async def fetch_agent_model(
     gateway_base: str,
     user_token: str,
     agent_id: str,
-    timeout: float = 5.0,
+    http_timeout: float = 5.0,
 ) -> str | None:
     """Read the per-agent model override from the agents table.
 
@@ -116,7 +116,7 @@ async def fetch_agent_model(
     """
     url = f"{gateway_base.rstrip('/')}/runtime/agents/{agent_id}/authorization"
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             res = await client.get(
                 url,
                 headers={"Authorization": f"Bearer {user_token}"},

@@ -69,11 +69,16 @@ def build_report_tools(*, token: str, gateway_base: str) -> list[Any]:
             return {"content": [{"type": "text", "text": f"HTTP {status}: {body}"}]}
         items = body.get("items", [])
         if not items:
-            return {"content": [{"type": "text", "text": f"Không tìm thấy khách hàng nào khớp '{q or ''}'."}]}
+            return {
+                "content": [
+                    {"type": "text", "text": f"Không tìm thấy khách hàng nào khớp '{q or ''}'."}
+                ]
+            }
         lines = [f"**{len(items)} khách hàng khớp '{q or ''}':**", ""]
         for c in items:
             lines.append(
-                f"- [{c['customerCode']}] **{c['name']}** (id={c['id']}, MST={c.get('mst') or '—'}) "
+                f"- [{c['customerCode']}] **{c['name']}** "
+                f"(id={c['id']}, MST={c.get('mst') or '—'}) "
                 f"— công nợ hiện tại: {_format_vnd(c['currentAr'])}"
             )
         return {
@@ -111,9 +116,12 @@ def build_report_tools(*, token: str, gateway_base: str) -> list[Any]:
             lines.append("**Hoá đơn mở:**")
             for inv in open_invoices:
                 remaining = inv["debit"] - inv.get("paidAmount", 0)
-                overdue_tag = f" — QUÁ HẠN {inv['daysOverdue']} ngày" if inv.get("daysOverdue", 0) > 0 else ""
+                overdue_tag = (
+                    f" — QUÁ HẠN {inv['daysOverdue']} ngày" if inv.get("daysOverdue", 0) > 0 else ""
+                )
                 lines.append(
-                    f"- {inv['documentNumber']} ngày {inv['documentDate']}, hạn {inv.get('dueDate') or '—'}: "
+                    f"- {inv['documentNumber']} ngày {inv['documentDate']}, "
+                    f"hạn {inv.get('dueDate') or '—'}: "
                     f"còn {_format_vnd(remaining)} ({inv.get('status', 'open')}){overdue_tag}"
                 )
         else:
@@ -144,12 +152,19 @@ def build_report_tools(*, token: str, gateway_base: str) -> list[Any]:
         items = body.get("items", [])
         if not items:
             if not q:
-                return {"content": [{"type": "text", "text": "Không có nhà cung cấp nào có công nợ."}]}
-            return {"content": [{"type": "text", "text": f"Không tìm thấy nhà cung cấp nào khớp '{q}'."}]}
+                return {
+                    "content": [{"type": "text", "text": "Không có nhà cung cấp nào có công nợ."}]
+                }
+            return {
+                "content": [
+                    {"type": "text", "text": f"Không tìm thấy nhà cung cấp nào khớp '{q}'."}
+                ]
+            }
         lines = [f"**{len(items)} nhà cung cấp" + (f" khớp '{q}'" if q else "") + ":**", ""]
         for s in items:
             lines.append(
-                f"- [{s['supplierCode']}] **{s['name']}** (id={s['id']}, MST={s.get('mst') or '—'}) "
+                f"- [{s['supplierCode']}] **{s['name']}** "
+                f"(id={s['id']}, MST={s.get('mst') or '—'}) "
                 f"— công nợ phải trả: {_format_vnd(s['currentAp'])}"
             )
         return {
@@ -185,9 +200,12 @@ def build_report_tools(*, token: str, gateway_base: str) -> list[Any]:
             lines.append("**Hoá đơn mở:**")
             for inv in open_invoices:
                 remaining = inv["credit"] - inv.get("paidAmount", 0)
-                overdue_tag = f" — QUÁ HẠN {inv['daysOverdue']} ngày" if inv.get("daysOverdue", 0) > 0 else ""
+                overdue_tag = (
+                    f" — QUÁ HẠN {inv['daysOverdue']} ngày" if inv.get("daysOverdue", 0) > 0 else ""
+                )
                 lines.append(
-                    f"- {inv['documentNumber']} ngày {inv['documentDate']}, hạn {inv.get('dueDate') or '—'}: "
+                    f"- {inv['documentNumber']} ngày {inv['documentDate']}, "
+                    f"hạn {inv.get('dueDate') or '—'}: "
                     f"còn {_format_vnd(remaining)} ({inv.get('status', 'open')}){overdue_tag}"
                 )
         else:
@@ -235,7 +253,13 @@ def build_report_tools(*, token: str, gateway_base: str) -> list[Any]:
         "q tìm theo số hoá đơn/tên-MST người bán. Dùng để tính doanh thu/chi "
         "phí/VAT tháng (cộng dồn totalAmount/vatAmount của kết quả trả về) "
         "hoặc để tìm 1 hoá đơn cụ thể theo số trước khi đề xuất định khoản.",
-        {"voucherType": str, "documentDateFrom": str, "documentDateTo": str, "q": str, "limit": int},
+        {
+            "voucherType": str,
+            "documentDateFrom": str,
+            "documentDateTo": str,
+            "q": str,
+            "limit": int,
+        },
     )
     async def list_vouchers(args: dict[str, Any]) -> dict[str, Any]:
         params = {
@@ -252,8 +276,9 @@ def build_report_tools(*, token: str, gateway_base: str) -> list[Any]:
         total_amount = sum((v.get("totalAmount") or 0) for v in items)
         total_vat = sum((v.get("vatAmount") or 0) for v in items)
         lines = [
-            f"**{len(items)} chứng từ khớp bộ lọc** (tenant/department hiện tại, "
-            f"tối đa {params['limit']} dòng — nếu total ở dưới lớn hơn số dòng trả về thì cần thu hẹp filter):",
+            f"**{len(items)} chứng từ khớp bộ lọc** (tenant/department hiện tại, tối đa "
+            f"{params['limit']} dòng — nếu total ở dưới lớn hơn số dòng trả về thì cần thu hẹp "
+            f"filter):",
             "",
             f"- Tổng totalAmount cộng dồn: **{_format_vnd(total_amount)}**",
             f"- Tổng vatAmount cộng dồn: **{_format_vnd(total_vat)}**",
@@ -261,9 +286,9 @@ def build_report_tools(*, token: str, gateway_base: str) -> list[Any]:
         ]
         for v in items[:30]:
             lines.append(
-                f"- [{v['voucherType']}] {v.get('documentNumber') or '(chưa có số)'} "
-                f"ngày {v.get('documentDate') or '—'}: {_format_vnd(v.get('totalAmount') or 0)} "
-                f"(VAT {_format_vnd(v.get('vatAmount') or 0)}) — status={v['status']} — id={v['id']}"
+                f"- [{v['voucherType']}] {v.get('documentNumber') or '(chưa có số)'} ngày "
+                f"{v.get('documentDate') or '—'}: {_format_vnd(v.get('totalAmount') or 0)} (VAT "
+                f"{_format_vnd(v.get('vatAmount') or 0)}) — status={v['status']} — id={v['id']}"
             )
         return {
             "content": [

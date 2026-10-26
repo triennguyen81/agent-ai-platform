@@ -22,7 +22,6 @@ from aiq_agent.agentic.contract_normalize import (
     validate_extracted_payload,
 )
 
-
 # ---------------------------------------------------------------------
 # coerce_number / coerce_positive_int
 # ---------------------------------------------------------------------
@@ -241,49 +240,70 @@ def test_validate_extracted_payload_flags_payment_term_missing_percentage():
 
 
 def test_validate_extracted_payload_flags_trigger_event_with_due_date():
-    issues = validate_extracted_payload({
-        "title": "T",
-        "payment_terms": [{"percentage": 100, "due_date": "2026-03-01", "trigger_event": "Ký biên bản"}],
-    })
+    issues = validate_extracted_payload(
+        {
+            "title": "T",
+            "payment_terms": [
+                {"percentage": 100, "due_date": "2026-03-01", "trigger_event": "Ký biên bản"}
+            ],
+        }
+    )
     assert any("trigger_event và due_date" in i for i in issues)
 
 
 def test_validate_extracted_payload_flags_offset_days_without_trigger_event():
-    issues = validate_extracted_payload({
-        "title": "T",
-        "payment_terms": [{"percentage": 100, "offset_days": 10}],
-    })
+    issues = validate_extracted_payload(
+        {
+            "title": "T",
+            "payment_terms": [{"percentage": 100, "offset_days": 10}],
+        }
+    )
     assert any("offset_days" in i for i in issues)
 
 
 def test_validate_extracted_payload_flags_duration_months_without_trigger_event():
-    issues = validate_extracted_payload({
-        "title": "T",
-        "milestones": [{"name": "Bảo hành", "duration_months": 24}],
-    })
+    issues = validate_extracted_payload(
+        {
+            "title": "T",
+            "milestones": [{"name": "Bảo hành", "duration_months": 24}],
+        }
+    )
     assert any("duration_months" in i for i in issues)
 
 
 def test_validate_extracted_payload_valid_minimal_payload_has_no_issues():
-    issues = validate_extracted_payload({
-        "title": "Hợp đồng mua bán",
-        "parties": [{"name": "A"}, {"name": "B"}],
-        "payment_terms": [{"percentage": 100, "due_date": "2026-03-01"}],
-        "milestones": [{"name": "Giao hàng", "due_date": "2026-09-25"}],
-    })
+    issues = validate_extracted_payload(
+        {
+            "title": "Hợp đồng mua bán",
+            "parties": [{"name": "A"}, {"name": "B"}],
+            "payment_terms": [{"percentage": 100, "due_date": "2026-03-01"}],
+            "milestones": [{"name": "Giao hàng", "due_date": "2026-09-25"}],
+        }
+    )
     assert issues == []
 
 
 def test_validate_extracted_payload_valid_conditional_payload_has_no_issues():
-    issues = validate_extracted_payload({
-        "title": "Hợp đồng mua bán",
-        "payment_terms": [
-            {"percentage": 70, "trigger_event": "Ký biên bản giao nhận", "offset_days": 10, "expected_date": "2026-10-05"},
-        ],
-        "milestones": [
-            {"name": "Bảo hành", "trigger_event": "Ký biên bản giao nhận", "duration_months": 24},
-        ],
-    })
+    issues = validate_extracted_payload(
+        {
+            "title": "Hợp đồng mua bán",
+            "payment_terms": [
+                {
+                    "percentage": 70,
+                    "trigger_event": "Ký biên bản giao nhận",
+                    "offset_days": 10,
+                    "expected_date": "2026-10-05",
+                },
+            ],
+            "milestones": [
+                {
+                    "name": "Bảo hành",
+                    "trigger_event": "Ký biên bản giao nhận",
+                    "duration_months": 24,
+                },
+            ],
+        }
+    )
     assert issues == []
 
 
@@ -299,7 +319,8 @@ _REAL_CONTRACT_EXCERPT = """HỢP ĐỒNG CUNG CẤP DỊCH VỤ
 Số: 016/2026/HĐDV-AI
 Hôm nay, ngày 16/09/2026, tại TP. Hồ Chí Minh, các bên gồm:
 ĐIỀU 1. PHẠM VI DỊCH VỤ
-Bên B cung cấp cho Bên A dịch vụ tư vấn, cấu hình và triển khai hệ thống trợ lý AI hỗ trợ xử lý chứng
+Bên B cung cấp cho Bên A dịch vụ tư vấn, cấu hình và triển khai hệ thống trợ lý AI hỗ trợ \
+xử lý chứng
 từ, hợp đồng, công nợ và báo cáo quản trị. Phạm vi chi tiết được mô tả tại Phụ lục 01 - Phạm vi công
 việc, là bộ phận không tách rời của Hợp đồng.
 ĐIỀU 2. GIÁ TRỊ HỢP ĐỒNG VÀ THUẾ

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -146,7 +145,8 @@ class PostgresMemoryStore(MemoryStore):
                 # to the same thread_id, mirroring title's set-once behavior.
                 await conn.execute(
                     """
-                    INSERT INTO chat_threads (thread_id, title, messages, message_count, mode, agent_id)
+                    INSERT INTO chat_threads (thread_id, title, messages, message_count,
+                      mode, agent_id)
                     VALUES ($1, $2, $3::jsonb, $4, $5, $6)
                     ON CONFLICT (thread_id) DO UPDATE
                     SET messages       = chat_threads.messages || EXCLUDED.messages,

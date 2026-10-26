@@ -24,7 +24,17 @@ public sealed class ExpenseClaimTestData(TaxVerificationDatabase fx)
     public ExpenseClaimRepository Claims() => new(Factory(), new EmployeeRepository(Factory()), new Aiq.Gateway.Suppliers.SupplierRepository(Factory()),
         new VoucherRepository(Factory()), new Aiq.Gateway.Contracts.NotificationRepository(Factory()));
 
-    public async Task<T> Scalar<T>(string sql, object? args = null)
+    /// <summary>For queries that must yield a value; NULL or no row fails the test loudly.</summary>
+    public async Task<T> Scalar<T>(string sql, object? args = null) where T : notnull
+    {
+        await using var c = new NpgsqlConnection(Cs);
+        await c.OpenAsync();
+        return await c.ExecuteScalarAsync<T>(sql, args)
+            ?? throw new InvalidOperationException($"Scalar query returned NULL or no row: {sql}");
+    }
+
+    /// <summary>For queries where SQL NULL / no row is a valid, asserted outcome.</summary>
+    public async Task<T?> ScalarOrNull<T>(string sql, object? args = null)
     {
         await using var c = new NpgsqlConnection(Cs);
         await c.OpenAsync();

@@ -46,7 +46,7 @@ class IngestNote:
     @property
     def hash(self) -> str:
         return hashlib.sha256(
-            f"{self.title}\n\n{self.content}".encode("utf-8")
+            f"{self.title}\n\n{self.content}".encode()
         ).hexdigest()[:32]
 
     @property
@@ -121,7 +121,14 @@ class EmbeddingService:
                 )
             # Idempotent for existing collections too: Phase 6 deployments
             # must not leave a legacy collection without tenant indexing.
-            for field_name in ("tenant_id", "user_id", "knowledge_base_id", "document_id", "document_version_id", "chunk_id"):
+            for field_name in (
+                "tenant_id",
+                "user_id",
+                "knowledge_base_id",
+                "document_id",
+                "document_version_id",
+                "chunk_id",
+            ):
                 client.create_payload_index(
                     collection_name=self._collection,
                     field_name=field_name,
@@ -143,9 +150,7 @@ class EmbeddingService:
             return []
         encoder = self._ensure_encoder()
         vectors = list(encoder.embed(texts))
-        return [
-            list(v.tolist() if hasattr(v, "tolist") else v) for v in vectors
-        ]
+        return [list(v.tolist() if hasattr(v, "tolist") else v) for v in vectors]
 
     def sync_notes(self, notes: list[IngestNote]) -> int:
         """Upsert any notes whose hash differs from what Qdrant has.
@@ -231,7 +236,7 @@ class EmbeddingService:
                     qmodels.FieldCondition(
                         key="user_id",
                         match=qmodels.MatchValue(value=user_id),
-                    )
+                    ),
                 ]
             ),
             limit=k,
@@ -250,63 +255,127 @@ class EmbeddingService:
     def index_chunks(self, chunks: list[dict]) -> None:
         """Reuse the configured encoder and collection; legacy points remain disjoint."""
         from qdrant_client.http import models as qm
-        required = ("tenant_id", "knowledge_base_id", "document_id", "document_version_id", "chunk_id")
+
+        required = (
+            "tenant_id",
+            "knowledge_base_id",
+            "document_id",
+            "document_version_id",
+            "chunk_id",
+        )
         if any(any(not c.get(key) for key in required) for c in chunks):
             raise ValueError("Complete chunk scope is required")
         for offset in range(0, len(chunks), 64):
-            batch = chunks[offset:offset + 64]
+            batch = chunks[offset : offset + 64]
             vectors = self._embed_many([c["content"] for c in batch])
-            points = [qm.PointStruct(id=c["chunk_id"], vector=v,
-                      payload={key: c[key] for key in required})
-                      for c, v in zip(batch, vectors, strict=True)]
+            points = [
+                qm.PointStruct(
+                    id=c["chunk_id"], vector=v, payload={key: c[key] for key in required}
+                )
+                for c, v in zip(batch, vectors, strict=True)
+            ]
             self._ensure_qdrant().upsert(collection_name=self._collection, points=points, wait=True)
 
-    def search_chunks(self, *, query: str, tenant_id: str, knowledge_base_ids: list[str],
-                      k: int = 8, threshold: float = 0.25,
-                      document_version_ids: list[str] | None = None) -> list[tuple[str, float]]:
+    def search_chunks(
+        self,
+        *,
+        query: str,
+        tenant_id: str,
+        knowledge_base_ids: list[str],
+        k: int = 8,
+        threshold: float = 0.25,
+        document_version_ids: list[str] | None = None,
+    ) -> list[tuple[str, float]]:
         from qdrant_client.http import models as qm
+
         if not tenant_id:
             raise ValueError("Tenant context is required")
         if not knowledge_base_ids or document_version_ids == []:
             return []
         result = self._ensure_qdrant().query_points(
-            collection_name=self._collection, query=self._embed_one(query),
-            query_filter=qm.Filter(must=[
-                qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
-                qm.FieldCondition(key="knowledge_base_id", match=qm.MatchAny(any=knowledge_base_ids)),
-                *([qm.FieldCondition(key="document_version_id", match=qm.MatchAny(any=document_version_ids))]
-                  if document_version_ids is not None else []),
-            ]), limit=min(max(k, 1), 100), score_threshold=threshold, with_payload=True)
-        return [(str(hit.payload["chunk_id"]), float(hit.score)) for hit in result.points
-                if hit.payload and hit.payload.get("chunk_id")]
+            collection_name=self._collection,
+            query=self._embed_one(query),
+            query_filter=qm.Filter(
+                must=[
+                    qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
+                    qm.FieldCondition(
+                        key="knowledge_base_id", match=qm.MatchAny(any=knowledge_base_ids)
+                    ),
+                    *(
+                        [
+                            qm.FieldCondition(
+                                key="document_version_id",
+                                match=qm.MatchAny(any=document_version_ids),
+                            )
+                        ]
+                        if document_version_ids is not None
+                        else []
+                    ),
+                ]
+            ),
+            limit=min(max(k, 1), 100),
+            score_threshold=threshold,
+            with_payload=True,
+        )
+        return [
+            (str(hit.payload["chunk_id"]), float(hit.score))
+            for hit in result.points
+            if hit.payload and hit.payload.get("chunk_id")
+        ]
 
     def missing_chunks(self, expected: list[dict]) -> set[str]:
         """Bounded reconciliation against committed Postgres chunk identities."""
         if not expected:
             return set()
-        found = self._ensure_qdrant().retrieve(collection_name=self._collection,
-            ids=[str(c["id"]) for c in expected], with_payload=True, with_vectors=False)
+        found = self._ensure_qdrant().retrieve(
+            collection_name=self._collection,
+            ids=[str(c["id"]) for c in expected],
+            with_payload=True,
+            with_vectors=False,
+        )
         payloads = {str(p.id): p.payload or {} for p in found}
-        return {str(c["document_id"]) for c in expected
-                if any(payloads.get(str(c["id"]), {}).get(key) != str(c[key])
-                       for key in ("document_id", "document_version_id", "knowledge_base_id", "tenant_id"))}
+        return {
+            str(c["document_id"])
+            for c in expected
+            if any(
+                payloads.get(str(c["id"]), {}).get(key) != str(c[key])
+                for key in ("document_id", "document_version_id", "knowledge_base_id", "tenant_id")
+            )
+        }
 
     def cleanup_document(self, document_id: str, keep_version: str | None) -> None:
         """Outbox-only mutation; also catches partial writes rolled back in Postgres."""
         from qdrant_client.http import models as qm
+
         if not document_id:
             raise ValueError("Document scope is required")
-        exclude = [qm.FieldCondition(key="document_version_id", match=qm.MatchValue(value=keep_version))] if keep_version else []
-        self._ensure_qdrant().delete(collection_name=self._collection,
-            points_selector=qm.FilterSelector(filter=qm.Filter(must=[
-                qm.FieldCondition(key="document_id", match=qm.MatchValue(value=document_id))],
-                must_not=exclude)), wait=True)
+        exclude = (
+            [qm.FieldCondition(key="document_version_id", match=qm.MatchValue(value=keep_version))]
+            if keep_version
+            else []
+        )
+        self._ensure_qdrant().delete(
+            collection_name=self._collection,
+            points_selector=qm.FilterSelector(
+                filter=qm.Filter(
+                    must=[
+                        qm.FieldCondition(key="document_id", match=qm.MatchValue(value=document_id))
+                    ],
+                    must_not=exclude,
+                )
+            ),
+            wait=True,
+        )
 
     def delete_chunks(self, ids: list[str]) -> None:
         from qdrant_client.http import models as qm
+
         if ids:
-            self._ensure_qdrant().delete(collection_name=self._collection,
-                points_selector=qm.PointIdsList(points=ids), wait=True)
+            self._ensure_qdrant().delete(
+                collection_name=self._collection,
+                points_selector=qm.PointIdsList(points=ids),
+                wait=True,
+            )
 
 
 def build_embedding_service(

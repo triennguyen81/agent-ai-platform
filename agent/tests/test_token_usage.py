@@ -29,8 +29,12 @@ def _result(**usage: Any) -> ResultMessage:
 
 
 def _assistant(text: str, message_id: str) -> AssistantMessage:
-    return AssistantMessage(content=[TextBlock(text=text)], model="claude-sonnet-x", message_id=message_id,
-                            usage={"input_tokens": 1})
+    return AssistantMessage(
+        content=[TextBlock(text=text)],
+        model="claude-sonnet-x",
+        message_id=message_id,
+        usage={"input_tokens": 1},
+    )
 
 
 class _ScriptedClient:
@@ -41,7 +45,7 @@ class _ScriptedClient:
     def __init__(self, **_kwargs: Any) -> None:
         pass
 
-    async def __aenter__(self) -> "_ScriptedClient":
+    async def __aenter__(self) -> _ScriptedClient:
         return self
 
     async def __aexit__(self, *exc: Any) -> bool:
@@ -65,7 +69,11 @@ def test_collector_counts_distinct_api_calls_and_keeps_token_classes_separate() 
     assert collector.llm_call_count == 2
     usage = collector.to_llm_usage()
     assert usage is not None
-    assert (usage.input_tokens, usage.cache_creation_input_tokens, usage.cache_read_input_tokens) == (12, 9000, 21000)
+    assert (
+        usage.input_tokens,
+        usage.cache_creation_input_tokens,
+        usage.cache_read_input_tokens,
+    ) == (12, 9000, 21000)
     # Disjoint classes: the full prompt is their plain sum, nothing counted twice.
     assert usage.prompt_tokens == 12 + 9000 + 21000
     assert usage.cost_usd == pytest.approx(0.0421)
@@ -80,11 +88,13 @@ def test_collector_without_result_reports_unknown_not_zero() -> None:
 
 
 def test_merge_usage_sums_calls_and_keeps_unknown_cost_unknown() -> None:
-    merged = merge_usage([
-        LlmUsage(1, 2, 3, 4, 1, 0.5),
-        None,
-        LlmUsage(10, 20, 30, 40, 2, None),
-    ])
+    merged = merge_usage(
+        [
+            LlmUsage(1, 2, 3, 4, 1, 0.5),
+            None,
+            LlmUsage(10, 20, 30, 40, 2, None),
+        ]
+    )
     assert merged == LlmUsage(11, 22, 33, 44, 3, 0.5)
     assert merge_usage([None, None]) is None
     assert merge_usage([LlmUsage(1, 1)]).cost_usd is None
@@ -94,13 +104,20 @@ def test_merge_usage_sums_calls_and_keeps_unknown_cost_unknown() -> None:
 async def test_claude_executor_records_real_usage_and_size_only_metrics(monkeypatch) -> None:
     from aiq_agent.runtime import executors as executors_module
 
-    _ScriptedClient.messages = [_assistant("bước 1", "msg_A"), _assistant("trả lời", "msg_B"), _result()]
+    _ScriptedClient.messages = [
+        _assistant("bước 1", "msg_A"),
+        _assistant("trả lời", "msg_B"),
+        _result(),
+    ]
     monkeypatch.setattr(executors_module, "ClaudeSDKClient", _ScriptedClient)
     registry = SkillRegistry((Skill("accounting-vietnam", "", "HƯỚNG DẪN " * 50),))
-    manifest = ExecutionManifest.model_validate(manifest_data(provider="claude_sdk", skills=["accounting-vietnam"]))
+    manifest = ExecutionManifest.model_validate(
+        manifest_data(provider="claude_sdk", skills=["accounting-vietnam"])
+    )
 
-    result = await build_agent_executor(manifest, Settings(embedding_enabled=False), registry).execute(
-        prompt=_SECRET, token="t")
+    result = await build_agent_executor(
+        manifest, Settings(embedding_enabled=False), registry
+    ).execute(prompt=_SECRET, token="t")
 
     assert result.llm_call_count == 2
     assert result.input_tokens == 12
@@ -143,8 +160,11 @@ async def test_ocr_pipeline_sums_correction_usage_over_pages() -> None:
         async def correct_with_usage(self, text: str) -> tuple[str, LlmUsage | None]:
             return text, (LlmUsage(1, 10, 100, 1000, 1, 0.01) if text.strip() else None)
 
-    pipeline = OcrPipeline(extractor=StubOcrExtractor(["trang 1", "  ", "trang 3"]),
-                           corrector=MeteredCorrector(), validator=PassthroughValidator())
+    pipeline = OcrPipeline(
+        extractor=StubOcrExtractor(["trang 1", "  ", "trang 3"]),
+        corrector=MeteredCorrector(),
+        validator=PassthroughValidator(),
+    )
     result = await pipeline.run_pages([b"1", b"2", b"3"])
 
     assert result.llm_usage == LlmUsage(2, 20, 200, 2000, 2, pytest.approx(0.02))
@@ -156,7 +176,7 @@ class _CapturingHttp:
     def __init__(self, **_kwargs: Any) -> None:
         pass
 
-    async def __aenter__(self) -> "_CapturingHttp":
+    async def __aenter__(self) -> _CapturingHttp:
         return self
 
     async def __aexit__(self, *exc: Any) -> bool:
@@ -183,13 +203,28 @@ async def test_report_usage_sends_cache_tokens_calls_and_numeric_metrics(monkeyp
     data["toolExecutionToken"] = "tool-token"
     manifest = ExecutionManifest.model_validate(data)
     result = ExecutionResult(
-        "trả lời", "claude_sdk", "m", input_tokens=12, output_tokens=300, estimated_cost_usd=0.04,
-        cache_creation_input_tokens=9000, cache_read_input_tokens=21000, llm_call_count=2, num_turns=2,
-        cost_source="claude_cli_total_cost_usd", prompt_metrics={"user_prompt_chars": 40},
+        "trả lời",
+        "claude_sdk",
+        "m",
+        input_tokens=12,
+        output_tokens=300,
+        estimated_cost_usd=0.04,
+        cache_creation_input_tokens=9000,
+        cache_read_input_tokens=21000,
+        llm_call_count=2,
+        num_turns=2,
+        cost_source="claude_cli_total_cost_usd",
+        prompt_metrics={"user_prompt_chars": 40},
     )
 
-    await usage_reporter.report_usage(manifest=manifest, result=result, event_type="chat",
-                                      total_latency_ms=100, gateway_base="http://gw", request_id=None)
+    await usage_reporter.report_usage(
+        manifest=manifest,
+        result=result,
+        event_type="chat",
+        total_latency_ms=100,
+        gateway_base="http://gw",
+        request_id=None,
+    )
 
     [(url, payload)] = _CapturingHttp.posts
     assert url.endswith(f"/runtime/agents/{manifest.agent.id}/usage")
@@ -206,14 +241,31 @@ async def test_unscoped_usage_goes_to_agentless_route_and_skips_unknown(monkeypa
     _CapturingHttp.posts = []
     monkeypatch.setattr(usage_reporter.httpx, "AsyncClient", _CapturingHttp)
 
-    await usage_reporter.report_unscoped_usage(token="t", event_type="plain_chat", usage=None, provider="p",
-                                               model="m", total_latency_ms=1, gateway_base="http://gw")
+    await usage_reporter.report_unscoped_usage(
+        token="t",
+        event_type="plain_chat",
+        usage=None,
+        provider="p",
+        model="m",
+        total_latency_ms=1,
+        gateway_base="http://gw",
+    )
     assert _CapturingHttp.posts == []
 
-    await usage_reporter.report_unscoped_usage(token="t", event_type="plain_chat", usage=LlmUsage(1, 2, 3, 4, 1, 0.1),
-                                               provider="claude_cli", model="m", total_latency_ms=1,
-                                               gateway_base="http://gw")
+    await usage_reporter.report_unscoped_usage(
+        token="t",
+        event_type="plain_chat",
+        usage=LlmUsage(1, 2, 3, 4, 1, 0.1),
+        provider="claude_cli",
+        model="m",
+        total_latency_ms=1,
+        gateway_base="http://gw",
+    )
     [(url, payload)] = _CapturingHttp.posts
     assert url == "http://gw/runtime/usage"
     assert payload["eventType"] == "plain_chat"
-    assert (payload["inputTokens"], payload["cacheCreationInputTokens"], payload["cacheReadInputTokens"]) == (1, 3, 4)
+    assert (
+        payload["inputTokens"],
+        payload["cacheCreationInputTokens"],
+        payload["cacheReadInputTokens"],
+    ) == (1, 3, 4)

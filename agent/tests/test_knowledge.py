@@ -229,45 +229,61 @@ async def test_legacy_note_read_tools_use_manifest_scope_not_notes_api(monkeypat
     monkeypatch.setattr('aiq_agent.runtime.executors.retrieve_context',scoped)
     manifest=ExecutionManifest.model_validate(manifest_data(knowledgeBaseIds=[str(uuid4())]))
     _,tools=_installed_tools('token','http://must-not-be-called')
-    for name,args in [('search_notes',{'query':'overdue','tenant_id':'forged'}),('get_note',{'note_id':str(uuid4()),'knowledge_base_id':'forged'})]:
-        handler=_scope_knowledge_tool(tools['mcp__aiq__'+name],manifest,'original user query')
-        result=await handler.handler(args)
-        assert result['content'][0]['text']=='bounded authorized chunks'
+    for name,args in [
+        ('search_notes',{'query':'overdue','tenant_id':'forged'}),
+        ('get_note',{'note_id':str(uuid4()),'knowledge_base_id':'forged'}),
+    ]:
+        handler = _scope_knowledge_tool(tools["mcp__aiq__" + name], manifest, "original user query")
+        result = await handler.handler(args)
+        assert result["content"][0]["text"] == "bounded authorized chunks"
     assert all(row[0] is manifest for row in captured)
-    assert captured[0][1]=='overdue'
-    assert captured[1][1]=='original user query'
-    assert captured[1][2]['document_id'] is not None
+    assert captured[0][1] == "overdue"
+    assert captured[1][1] == "original user query"
+    assert captured[1][2]["document_id"] is not None
 
 
 async def test_knowledge_docx_uses_existing_extractor_without_ocr():
     import io
-    from fastapi import UploadFile
+
     import docx
+    from fastapi import UploadFile
+
     from aiq_agent.api.knowledge_routes import extract_knowledge
     from aiq_agent.api.security import RuntimePrincipal
 
     document = docx.Document()
-    document.add_paragraph('Company policy: review overdue accounts.')
+    document.add_paragraph("Company policy: review overdue accounts.")
     table = document.add_table(rows=1, cols=1)
-    table.cell(0, 0).text = 'Escalate after 30 days'
+    table.cell(0, 0).text = "Escalate after 30 days"
     data = io.BytesIO()
     document.save(data)
     data.seek(0)
-    principal = RuntimePrincipal('token', 'user', frozenset({'admin'}), 'tenant', 'department')
+    principal = RuntimePrincipal("token", "user", frozenset({"admin"}), "tenant", "department")
     # No OCR state available: DOCX must use the existing text extraction path.
-    result = await extract_knowledge(SimpleNamespace(), UploadFile(filename='policy.DOCX', file=data), principal)
-    assert 'Company policy' in result['text']
-    assert 'Escalate after 30 days' in result['text']
-    assert result['mimeType'] == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    result = await extract_knowledge(
+        SimpleNamespace(), UploadFile(filename="policy.DOCX", file=data), principal
+    )
+    assert "Company policy" in result["text"]
+    assert "Escalate after 30 days" in result["text"]
+    assert (
+        result["mimeType"]
+        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
 
 
 async def test_knowledge_rejects_corrupt_docx():
     import io
-    from fastapi import UploadFile, HTTPException
+
+    from fastapi import HTTPException, UploadFile
+
     from aiq_agent.api.knowledge_routes import extract_knowledge
     from aiq_agent.api.security import RuntimePrincipal
 
-    principal = RuntimePrincipal('token', 'user', frozenset({'admin'}), 'tenant', 'department')
+    principal = RuntimePrincipal("token", "user", frozenset({"admin"}), "tenant", "department")
     with pytest.raises(HTTPException) as exc:
-        await extract_knowledge(SimpleNamespace(), UploadFile(filename='bad.docx', file=io.BytesIO(b'PK corrupt')), principal)
+        await extract_knowledge(
+            SimpleNamespace(),
+            UploadFile(filename="bad.docx", file=io.BytesIO(b"PK corrupt")),
+            principal,
+        )
     assert exc.value.status_code == 422

@@ -136,7 +136,7 @@ public sealed class ExpenseClaimMultiFileIntegrationTests(TaxVerificationDatabas
             var f = (await Intake().GetItemFileAsync(fx.Tenant, fx.Dept, claim, i.Id, default))!.Value;
             Assert.Equal($"%PDF-1.4 BILL:{i.OriginalFilename[..^4]}", Encoding.UTF8.GetString(storage.Objects[f.ObjectKey]));
         }
-        Assert.Null(await d.Scalar<Guid?>("SELECT id FROM expense_claim_results WHERE voucher_id=@claim", new { claim }));
+        Assert.Null(await d.ScalarOrNull<Guid?>("SELECT id FROM expense_claim_results WHERE voucher_id=@claim", new { claim }));
     }
 
     [Fact]
@@ -459,7 +459,7 @@ public sealed class ExpenseClaimMultiFileIntegrationTests(TaxVerificationDatabas
         Assert.Equal(ExpenseClaimItemStatuses.Ready, (await ItemAsync(claim, item)).Status);
         var result = (await d.Claims().GetByVoucherIdAsync(fx.Tenant, fx.Dept, claim, default))!;
         Assert.True(result.RequiresTaxVerification);            // a real invoice (tax code + number) → tax gate applies
-        Assert.Null(await d.Scalar<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@claim", new { claim }));
+        Assert.Null(await d.ScalarOrNull<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@claim", new { claim }));
         await d.Claims().DepartmentReviewAsync(fx.Tenant, fx.Dept, claim, fx.Admin, default);
         Assert.Equal("tax_verification_required", (await Assert.ThrowsAsync<ExpenseRecognitionException>(() =>
             d.Claims().AccountingReviewAsync(fx.Tenant, fx.Dept, claim, fx.Admin2, default))).Code);

@@ -14,10 +14,10 @@ from aiq_agent.api.schemas import (
     AgentRunResponse,
     AgentRunStep,
     AuditEntryResponse,
-    DocumentExtractRequest,
-    DocumentExtractResponse,
     ChatRequest,
     ChatResponse,
+    DocumentExtractRequest,
+    DocumentExtractResponse,
     EmbeddingQueryHit,
     EmbeddingQueryRequest,
     EmbeddingQueryResponse,
@@ -34,22 +34,22 @@ from aiq_agent.api.security import (
     require_principal,
     resolve_capability_agent,
 )
+from aiq_agent.audit import AuditStore
+from aiq_agent.config import get_settings
 from aiq_agent.embeddings import EmbeddingService
 from aiq_agent.embeddings.service import IngestNote
-from aiq_agent.config import get_settings
-from aiq_agent.audit import AuditStore
 from aiq_agent.llm.base import ChatMessage, LlmService
 from aiq_agent.memory.base import MemoryStore, trim_history
+from aiq_agent.observability.usage_reporter import report_unscoped_usage, report_usage
 from aiq_agent.orchestration import PlannerExecutorCritic
-from aiq_agent.skills import SkillRegistry, select_skills
-from aiq_agent.tools.registry import ToolExecutionError, ToolRegistry
 from aiq_agent.runtime import (
     ClaudeSdkConfigurationTooLargeError,
     ExecutionManifest,
     build_agent_executor,
     extraction_manifest,
 )
-from aiq_agent.observability.usage_reporter import report_unscoped_usage, report_usage
+from aiq_agent.skills import SkillRegistry, select_skills
+from aiq_agent.tools.registry import ToolExecutionError, ToolRegistry
 
 
 def _tenant_thread_id(principal: RuntimePrincipal, thread_id: str) -> str:
@@ -65,7 +65,8 @@ def _tenant_thread_prefix(principal: RuntimePrincipal) -> str:
 
 router = APIRouter()
 
-_DEFAULT_SYSTEM = """Bạn là trợ lý AI cá nhân thông minh, trả lời người dùng bằng tiếng Việt tự nhiên.
+_DEFAULT_SYSTEM = """Bạn là trợ lý AI cá nhân thông minh, trả lời người dùng bằng tiếng \
+Việt tự nhiên.
 
 RÀNG BUỘC NGÔN NGỮ (BẮT BUỘC):
 - Toàn bộ câu trả lời PHẢI 100% bằng tiếng Việt (bảng chữ Latin có dấu Việt).
@@ -78,7 +79,9 @@ PHẢI tuân thủ format trả lời:
 1. Bắt đầu bằng <thinking>...</thinking> ngắn (2-4 câu) tóm tắt cách bạn suy luận.
 2. Tiếp theo là câu trả lời chính bằng Markdown (heading, bullet, bảng nếu phù hợp).
 
-Nếu prompt có chứa USER KNOWLEDGE BASE thì luôn ưu tiên trích dẫn thông tin từ đó và ghi rõ tên Note đã tham chiếu (vd "theo Note 3"). Nếu câu hỏi không liên quan knowledge thì trả lời chung như AI thông thường.
+Nếu prompt có chứa USER KNOWLEDGE BASE thì luôn ưu tiên trích dẫn thông tin từ đó và ghi rõ \
+tên Note đã tham chiếu (vd "theo Note 3"). Nếu câu hỏi không liên quan knowledge thì trả \
+lời chung như AI thông thường.
 """
 
 
@@ -137,9 +140,15 @@ def _department_id_str(manifest: ExecutionManifest | None) -> str | None:
     return str(manifest.departmentId) if manifest is not None and manifest.departmentId else None
 
 
-def _history_window(messages: list[ChatMessage], *, max_messages: int | None = None) -> list[ChatMessage]:
+def _history_window(
+    messages: list[ChatMessage], *, max_messages: int | None = None
+) -> list[ChatMessage]:
     settings = get_settings()
-    cap = settings.history_max_messages if max_messages is None else min(max_messages, settings.history_max_messages)
+    cap = (
+        settings.history_max_messages
+        if max_messages is None
+        else min(max_messages, settings.history_max_messages)
+    )
     return trim_history(messages, max_messages=cap, max_chars=settings.history_max_chars)
 
 
@@ -206,7 +215,9 @@ async def chat(
 
     prior_history: list[ChatMessage] = []
     if body.thread_id:
-        prior_history = await memory.get(_tenant_thread_id(principal, body.thread_id), limit=body.memory_limit)
+        prior_history = await memory.get(
+            _tenant_thread_id(principal, body.thread_id), limit=body.memory_limit
+        )
         prior_history = _history_window(prior_history, max_messages=body.memory_limit)
 
     thinking: str | None = None
@@ -231,31 +242,43 @@ async def chat(
             # external HTTP response stays identically sanitized either way.
             if audit is not None:
                 await audit.write(
-                    event="claude_sdk_configuration_too_large", name="dynamic_chat",
+                    event="claude_sdk_configuration_too_large",
+                    name="dynamic_chat",
                     user_prefix=principal.user_id[:12],
-                    ms=int((_t.monotonic() - _started) * 1000), ok=False,
+                    ms=int((_t.monotonic() - _started) * 1000),
+                    ok=False,
                     detail=json.dumps(exc.diagnostics)[:200],
-                    user_id=str(manifest.userId), tenant_id=str(manifest.tenantId),
+                    user_id=str(manifest.userId),
+                    tenant_id=str(manifest.tenantId),
                     department_id=str(manifest.departmentId) if manifest.departmentId else None,
-                    agent_id=str(manifest.agent.id), version=manifest.version,
-                    provider=manifest.provider, model=manifest.model,
+                    agent_id=str(manifest.agent.id),
+                    version=manifest.version,
+                    provider=manifest.provider,
+                    model=manifest.model,
                 )
             raise HTTPException(status_code=502, detail="Dynamic agent execution failed") from exc
         except Exception as exc:  # fail closed and audit without prompt content
             if audit is not None:
                 await audit.write(
-                    event="agent_execution", name="dynamic_chat",
+                    event="agent_execution",
+                    name="dynamic_chat",
                     user_prefix=principal.user_id[:12],
-                    ms=int((_t.monotonic() - _started) * 1000), ok=False,
+                    ms=int((_t.monotonic() - _started) * 1000),
+                    ok=False,
                     detail=f"{exc.__class__.__name__}: {exc}"[:200],
-                    user_id=str(manifest.userId), tenant_id=str(manifest.tenantId),
+                    user_id=str(manifest.userId),
+                    tenant_id=str(manifest.tenantId),
                     department_id=str(manifest.departmentId) if manifest.departmentId else None,
-                    agent_id=str(manifest.agent.id), version=manifest.version,
-                    provider=manifest.provider, model=manifest.model,
+                    agent_id=str(manifest.agent.id),
+                    version=manifest.version,
+                    provider=manifest.provider,
+                    model=manifest.model,
                 )
             raise HTTPException(status_code=502, detail="Dynamic agent execution failed") from exc
         thinking, final_answer = _split_thinking(dynamic.final_answer)
-        remembered = _split_thinking(dynamic.history_text)[1] if dynamic.history_text else final_answer
+        remembered = (
+            _split_thinking(dynamic.history_text)[1] if dynamic.history_text else final_answer
+        )
         steps = [StepResponse(role=step.role, content=step.text) for step in dynamic.steps]
     elif body.tool:
         # Tool-augmented path keeps the Planner-Executor-Critic loop.
@@ -300,9 +323,7 @@ async def chat(
             prompt=body.prompt,
             has_knowledge_context=has_kb,
         )
-        skill_block = "\n\n".join(
-            f"===== SKILL: {s.name} =====\n{s.body}" for s in active_skills
-        )
+        skill_block = "\n\n".join(f"===== SKILL: {s.name} =====\n{s.body}" for s in active_skills)
 
         system_parts = [_DEFAULT_SYSTEM]
         if skill_block:
@@ -463,7 +484,11 @@ async def get_thread(
 
 
 @router.delete("/chat/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def clear_thread(thread_id: str, memory: MemoryStore = Depends(_memory), principal: RuntimePrincipal = Depends(require_principal)) -> None:
+async def clear_thread(
+    thread_id: str,
+    memory: MemoryStore = Depends(_memory),
+    principal: RuntimePrincipal = Depends(require_principal),
+) -> None:
     await memory.clear(_tenant_thread_id(principal, thread_id))
 
 
@@ -566,8 +591,10 @@ async def admin_audit(
     if audit is None:
         return []
     entries = await audit.list(
-        limit=max(1, min(limit, 500)), event=event,
-        tenant_id=effective_tenant, department_id=effective_department,
+        limit=max(1, min(limit, 500)),
+        event=event,
+        tenant_id=effective_tenant,
+        department_id=effective_department,
     )
     return [
         AuditEntryResponse(
@@ -634,7 +661,9 @@ async def agentic_run(
     # resolve_capability_agent's own doc comment.
     if body.capability:
         resolved_agent_id = await resolve_capability_agent(
-            principal, body.capability, body.preferred_agent_id,
+            principal,
+            body.capability,
+            body.preferred_agent_id,
         )
     else:
         resolved_agent_id = body.agent_id
@@ -743,7 +772,9 @@ async def agentic_run(
                 ChatMessage("user", body.task),
                 # Only the final answer (after the last tool call), not every
                 # intermediate narration block — token Phase 6.
-                ChatMessage("assistant", getattr(result, "history_text", None) or result.final_answer),
+                ChatMessage(
+                    "assistant", getattr(result, "history_text", None) or result.final_answer
+                ),
             ],
             # Explicit, never inferred — this is /agent/run, so every thread
             # it writes is mode='agentic' by construction. Chat's /chat
@@ -792,7 +823,9 @@ async def document_extract(
     settings = get_settings()
     started = _t.monotonic()
     manifest = await require_agent_execution(
-        principal, body.agent_id, test=body.test,
+        principal,
+        body.agent_id,
+        test=body.test,
         version_id=body.expected_version_id if body.pin_version and not body.test else None,
     )
     if str(manifest.publishedVersionId) != body.expected_version_id:
@@ -800,11 +833,17 @@ async def document_extract(
     if manifest.documentProcessing is None:
         raise HTTPException(status_code=409, detail="document_processing_not_configured")
 
-    extraction_manifest_ = extraction_manifest(manifest, body.task, lean=settings.extraction_lean_prompt)
+    extraction_manifest_ = extraction_manifest(
+        manifest, body.task, lean=settings.extraction_lean_prompt
+    )
     audit_fields = dict(
-        user_id=str(manifest.userId), tenant_id=str(manifest.tenantId),
-        department_id=_department_id_str(manifest), agent_id=str(manifest.agent.id),
-        version=manifest.version, provider=manifest.provider, model=manifest.model,
+        user_id=str(manifest.userId),
+        tenant_id=str(manifest.tenantId),
+        department_id=_department_id_str(manifest),
+        agent_id=str(manifest.agent.id),
+        version=manifest.version,
+        provider=manifest.provider,
+        model=manifest.model,
     )
     try:
         executor = build_agent_executor(extraction_manifest_, settings, skill_registry)
@@ -817,22 +856,36 @@ async def document_extract(
     except Exception as exc:  # noqa: BLE001 — fail closed, audit without prompt content
         if audit is not None:
             await audit.write(
-                event="document_extract", name="test" if body.test else "production",
-                user_prefix=principal.user_id[:12], ms=int((_t.monotonic() - started) * 1000), ok=False,
-                detail=f"{exc.__class__.__name__}: {exc}"[:200], **audit_fields,
+                event="document_extract",
+                name="test" if body.test else "production",
+                user_prefix=principal.user_id[:12],
+                ms=int((_t.monotonic() - started) * 1000),
+                ok=False,
+                detail=f"{exc.__class__.__name__}: {exc}"[:200],
+                **audit_fields,
             )
         raise HTTPException(status_code=502, detail="Document extraction failed") from exc
 
     if audit is not None:
         await audit.write(
-            event="document_extract", name="test" if body.test else "production",
-            user_prefix=principal.user_id[:12], ms=int((_t.monotonic() - started) * 1000), ok=True,
-            detail=None, input_tokens=result.input_tokens, output_tokens=result.output_tokens,
-            estimated_cost_usd=result.estimated_cost_usd, tools_used=result.tools_used, **audit_fields,
+            event="document_extract",
+            name="test" if body.test else "production",
+            user_prefix=principal.user_id[:12],
+            ms=int((_t.monotonic() - started) * 1000),
+            ok=True,
+            detail=None,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            estimated_cost_usd=result.estimated_cost_usd,
+            tools_used=result.tools_used,
+            **audit_fields,
         )
     await report_usage(
-        manifest=manifest, result=result, event_type="document_extract",
-        total_latency_ms=int((_t.monotonic() - started) * 1000), gateway_base=settings.gateway_base_url,
+        manifest=manifest,
+        result=result,
+        event_type="document_extract",
+        total_latency_ms=int((_t.monotonic() - started) * 1000),
+        gateway_base=settings.gateway_base_url,
         request_id=uuid.uuid4(),
     )
     return DocumentExtractResponse(

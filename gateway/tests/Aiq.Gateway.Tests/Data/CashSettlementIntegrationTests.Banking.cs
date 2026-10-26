@@ -40,8 +40,8 @@ public sealed partial class CashSettlementIntegrationTests
     }
 
     private async Task<string> AccountingSnapshotAsync() =>
-        string.Join("|", await Scalar<string>("SELECT string_agg(customer_code || '=' || current_ar, ',' ORDER BY customer_code) FROM sim_customers"),
-            await Scalar<string>("SELECT string_agg(supplier_code || '=' || current_ap, ',' ORDER BY supplier_code) FROM sim_suppliers"),
+        string.Join("|", await ScalarOrNull<string>("SELECT string_agg(customer_code || '=' || current_ar, ',' ORDER BY customer_code) FROM sim_customers"),
+            await ScalarOrNull<string>("SELECT string_agg(supplier_code || '=' || current_ap, ',' ORDER BY supplier_code) FROM sim_suppliers"),
             await Scalar<long>("SELECT COUNT(*) FROM sim_ar_ledger"), await Scalar<long>("SELECT COUNT(*) FROM sim_ap_ledger"),
             await Scalar<string>("SELECT COALESCE(string_agg(paid_amount::text || status, ',' ORDER BY id), '') FROM sim_ar_ledger"),
             await Scalar<long>("SELECT COUNT(*) FROM voucher_journal_suggestions"),

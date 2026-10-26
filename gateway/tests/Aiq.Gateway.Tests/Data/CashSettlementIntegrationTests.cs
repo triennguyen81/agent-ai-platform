@@ -266,7 +266,17 @@ public sealed partial class CashSettlementIntegrationTests : IAsyncLifetime
     private ISupplierRepository Suppliers() => new SupplierRepository(Factory());
     private static DateOnly Today => DateOnly.FromDateTime(DateTime.UtcNow.AddHours(7));
 
-    private async Task<T> Scalar<T>(string sql, object? args = null)
+    /// <summary>For queries that must yield a value; NULL or no row fails the test loudly.</summary>
+    private async Task<T> Scalar<T>(string sql, object? args = null) where T : notnull
+    {
+        await using var c = new NpgsqlConnection(_cs);
+        await c.OpenAsync();
+        return await c.ExecuteScalarAsync<T>(sql, args)
+            ?? throw new InvalidOperationException($"Scalar query returned NULL or no row: {sql}");
+    }
+
+    /// <summary>For queries where SQL NULL / no row is a valid, asserted outcome.</summary>
+    private async Task<T?> ScalarOrNull<T>(string sql, object? args = null)
     {
         await using var c = new NpgsqlConnection(_cs);
         await c.OpenAsync();

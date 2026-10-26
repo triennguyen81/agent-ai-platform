@@ -54,7 +54,12 @@ async def test_llm_saying_verified_only_creates_an_agent_proposal(monkeypatch) -
     tools = {t.name: t for t in build_voucher_tools(token="tok", gateway_base="http://gateway")}
     # The model "believes" the invoice is valid; the tool can still only propose.
     await tools["propose_tax_verification"].handler(
-        {"voucher_id": "v1", "tct_status": "http_200", "response_snippet": "Tax code verified successfully", "note": "verified=true"}
+        {
+            "voucher_id": "v1",
+            "tct_status": "http_200",
+            "response_snippet": "Tax code verified successfully",
+            "note": "verified=true",
+        }
     )
     (url, headers, body) = _Recorder.calls[-1]
     assert url == "http://gateway/vouchers/v1/tax-verification/propose"
@@ -65,15 +70,22 @@ async def test_llm_saying_verified_only_creates_an_agent_proposal(monkeypatch) -
 
 def test_legacy_confirm_tool_name_is_gone() -> None:
     # An old prompt asking for confirm_tax_verified(true) finds no such tool.
-    assert not any(t.name == "confirm_tax_verified" for t in build_voucher_tools(token="t", gateway_base="http://g"))
+    assert not any(
+        t.name == "confirm_tax_verified"
+        for t in build_voucher_tools(token="t", gateway_base="http://g")
+    )
 
 
 async def test_reject_tool_only_proposes_invalid_or_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(voucher_tools.httpx, "AsyncClient", _Recorder)
     _Recorder.calls.clear()
     tools = {t.name: t for t in build_voucher_tools(token="tok", gateway_base="http://gateway")}
-    await tools["reject_tax_verified"].handler({"voucher_id": "v2", "reason": "TCT trả 404", "provider_unavailable": False})
-    await tools["reject_tax_verified"].handler({"voucher_id": "v3", "reason": "network_error", "provider_unavailable": True})
+    await tools["reject_tax_verified"].handler(
+        {"voucher_id": "v2", "reason": "TCT trả 404", "provider_unavailable": False}
+    )
+    await tools["reject_tax_verified"].handler(
+        {"voucher_id": "v3", "reason": "network_error", "provider_unavailable": True}
+    )
     (u1, h1, b1), (u2, _, b2) = _Recorder.calls[-2:]
     assert u1 == "http://gateway/vouchers/v2/tax-verification/propose"
     assert u2 == "http://gateway/vouchers/v3/tax-verification/propose"
@@ -85,5 +97,7 @@ async def test_propose_recommendation_is_restricted_to_known_values(monkeypatch)
     monkeypatch.setattr(voucher_tools.httpx, "AsyncClient", _Recorder)
     _Recorder.calls.clear()
     tools = {t.name: t for t in build_voucher_tools(token="tok", gateway_base="http://gateway")}
-    await tools["propose_tax_verification"].handler({"voucher_id": "v4", "recommendation": "VERIFIED_FINAL!!"})
+    await tools["propose_tax_verification"].handler(
+        {"voucher_id": "v4", "recommendation": "VERIFIED_FINAL!!"}
+    )
     assert _Recorder.calls[-1][2]["recommendation"] is None

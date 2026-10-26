@@ -517,7 +517,7 @@ public sealed class ContractProcessingIntegrationTests : IAsyncLifetime
         Assert.False(tableExists);
     }
 
-    private async Task<T> GetScalarAsync<T>(string sql, object param)
+    private async Task<T?> GetScalarAsync<T>(string sql, object param)
     {
         await using var conn = new NpgsqlConnection(_scopedConnectionString!);
         return await conn.ExecuteScalarAsync<T>(sql, param);
@@ -541,8 +541,9 @@ public sealed class ContractProcessingIntegrationTests : IAsyncLifetime
             PaymentTerms:[new(1,"Một lần",100m,new DateOnly(2026,1,1))],Milestones:null);
         Assert.Equal("WAITING_REVIEW",(await repo.ProcessAsync(_tenantId,_departmentId,_userId,id,request,default))!.WorkflowState);
         Assert.Equal("APPROVED",await repo.ReviewAsync(_tenantId,_departmentId,_userId,id,true,"ok",default));
-        dynamic first=await repo.PrepareHandoffAsync(_tenantId,_departmentId,_userId,id,default);
-        dynamic retry=await repo.PrepareHandoffAsync(_tenantId,_departmentId,_userId,id,default);
+        dynamic? first=await repo.PrepareHandoffAsync(_tenantId,_departmentId,_userId,id,default);
+        dynamic? retry=await repo.PrepareHandoffAsync(_tenantId,_departmentId,_userId,id,default);
+        if(first is null||retry is null)Assert.Fail("PrepareHandoffAsync returned no package for an APPROVED/HANDED_OFF contract");
         Assert.Equal((Guid)first.Id,(Guid)retry.Id);
         Assert.Contains("EXPORT_ONLY",(string)first.Payload);
         Assert.Contains("paymentSchedules",(string)first.Payload);

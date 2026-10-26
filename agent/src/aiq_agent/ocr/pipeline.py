@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from aiq_agent.llm.base import LlmUsage
 from aiq_agent.observability.llm_usage import merge_usage
@@ -24,7 +24,7 @@ from aiq_agent.ocr.extractor import OcrExtractor, OcrPage
 from aiq_agent.ocr.validator import OcrValidator, ValidationReport
 
 
-class PipelineStage(str, Enum):
+class PipelineStage(StrEnum):
     TEXT_LAYER = "text_layer"
     RENDER = "render"
     EXTRACT = "extract"
@@ -105,15 +105,23 @@ class OcrPipeline:
 
         pages: list[OcrPage] = []
         corrected: list[str] = []
-        ocr_iter = iter(zip(ocr_result.pages, ocr_result.corrected_text_by_page, strict=True)) if ocr_result else iter(())
+        ocr_iter = (
+            iter(zip(ocr_result.pages, ocr_result.corrected_text_by_page, strict=True))
+            if ocr_result
+            else iter(())
+        )
         for number, page in enumerate(analysed, 1):
             if page["use_text_layer"]:
                 text = page["text"].replace("\r\n", "\n").strip()
-                pages.append(OcrPage(page_number=number, text=text, confidence=1.0, source="text_layer"))
+                pages.append(
+                    OcrPage(page_number=number, text=text, confidence=1.0, source="text_layer")
+                )
                 corrected.append(text)
             else:
                 ocr_page, fixed = next(ocr_iter)
-                pages.append(OcrPage(page_number=number, text=ocr_page.text, confidence=ocr_page.confidence))
+                pages.append(
+                    OcrPage(page_number=number, text=ocr_page.text, confidence=ocr_page.confidence)
+                )
                 corrected.append(fixed)
         # Validate the assembled document (page numbers of the OCR subset are
         # not the document's page numbers in a mixed PDF).

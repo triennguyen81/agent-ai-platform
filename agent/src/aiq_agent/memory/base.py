@@ -8,7 +8,6 @@ from dataclasses import dataclass
 
 from aiq_agent.llm.base import ChatMessage
 
-
 #: The only two valid values for a thread's persisted `mode`. Explicit and
 #: set once at creation (first `append()` call) — never inferred later from
 #: title text or message content. A thread with no stored mode (created
@@ -102,7 +101,9 @@ class MemoryStore(ABC):
         return None
 
 
-def trim_history(messages: list[ChatMessage], *, max_messages: int, max_chars: int) -> list[ChatMessage]:
+def trim_history(
+    messages: list[ChatMessage], *, max_messages: int, max_chars: int
+) -> list[ChatMessage]:
     """Newest whole messages within both budgets (token Phase 6).
 
     A leading assistant message is dropped so the window never starts with

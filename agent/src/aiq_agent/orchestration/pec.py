@@ -80,7 +80,9 @@ class PlannerExecutorCritic:
         tool_result: ToolResult | None = None
         if tool_name:
             tool_result = await self._tools.invoke(tool_name, tool_arguments or {})
-            executor_content = f"Ran tool {tool_name!r}: ok={tool_result.ok}, output={tool_result.output}"
+            executor_content = (
+                f"Ran tool {tool_name!r}: ok={tool_result.ok}, output={tool_result.output}"
+            )
         else:
             executor_content = "No tool invoked."
         steps.append(
@@ -107,7 +109,9 @@ class PlannerExecutorCritic:
         steps.append(AgentStep(role="critic", content=critique.content))
 
         final_answer = _extract_final_answer(critique.content)
-        return AgentRun(final_answer=final_answer, steps=steps, usage=merge_usage([plan.usage, critique.usage]))
+        return AgentRun(
+            final_answer=final_answer, steps=steps, usage=merge_usage([plan.usage, critique.usage])
+        )
 
 
 def _extract_final_answer(critique: str) -> str:

@@ -12,7 +12,9 @@ import io
 from aiq_agent.ocr.concurrency import PDFIUM_LOCK, run_ocr_native
 
 
-def render_pdf_pages(pdf_bytes: bytes, *, dpi: int = 200, max_pages: int | None = None) -> list[bytes]:
+def render_pdf_pages(
+    pdf_bytes: bytes, *, dpi: int = 200, max_pages: int | None = None
+) -> list[bytes]:
     """Render every page of a PDF to a list of PNG byte strings.
 
     Holds PDFIUM_LOCK for the whole document: PDFium is not thread-safe.
@@ -42,7 +44,9 @@ def render_pdf_pages(pdf_bytes: bytes, *, dpi: int = 200, max_pages: int | None 
     return pages
 
 
-async def render_pdf_pages_async(pdf_bytes: bytes, *, dpi: int = 200, max_pages: int | None = None) -> list[bytes]:
+async def render_pdf_pages_async(
+    pdf_bytes: bytes, *, dpi: int = 200, max_pages: int | None = None
+) -> list[bytes]:
     return await run_ocr_native(render_pdf_pages, pdf_bytes, dpi=dpi, max_pages=max_pages)
 
 
@@ -81,7 +85,9 @@ def extract_pdf_text_layer(pdf_bytes: bytes, *, max_pages: int | None = None) ->
     return texts
 
 
-async def extract_pdf_text_layer_async(pdf_bytes: bytes, *, max_pages: int | None = None) -> list[str]:
+async def extract_pdf_text_layer_async(
+    pdf_bytes: bytes, *, max_pages: int | None = None
+) -> list[str]:
     return await run_ocr_native(extract_pdf_text_layer, pdf_bytes, max_pages=max_pages)
 
 
@@ -109,7 +115,9 @@ def usable_text_layer(text: str) -> bool:
     return bad / len(visible) < 0.01 and alnum / len(visible) >= 0.5
 
 
-def analyse_pdf_pages(pdf_bytes: bytes, *, dpi: int = 200, max_pages: int | None = None) -> list[dict]:
+def analyse_pdf_pages(
+    pdf_bytes: bytes, *, dpi: int = 200, max_pages: int | None = None
+) -> list[dict]:
     """One PDFium pass: per page, its text layer, image coverage, and — only
     for pages that need OCR — a rendered PNG.
 
@@ -152,11 +160,20 @@ def analyse_pdf_pages(pdf_bytes: bytes, *, dpi: int = 200, max_pages: int | None
                     buffer = io.BytesIO()
                     image.save(buffer, format="PNG")
                     png = buffer.getvalue()
-                out.append({"text": text, "image_coverage": coverage, "use_text_layer": use_text, "png": png})
+                out.append(
+                    {
+                        "text": text,
+                        "image_coverage": coverage,
+                        "use_text_layer": use_text,
+                        "png": png,
+                    }
+                )
         finally:
             pdf.close()
     return out
 
 
-async def analyse_pdf_pages_async(pdf_bytes: bytes, *, dpi: int = 200, max_pages: int | None = None) -> list[dict]:
+async def analyse_pdf_pages_async(
+    pdf_bytes: bytes, *, dpi: int = 200, max_pages: int | None = None
+) -> list[dict]:
     return await run_ocr_native(analyse_pdf_pages, pdf_bytes, dpi=dpi, max_pages=max_pages)

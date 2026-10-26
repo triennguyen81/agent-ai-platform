@@ -152,7 +152,8 @@ async def run_task(
             )
         else:
             raise PermissionError(
-                f"Tool authorization lookup failed for agent {agent_id}; refusing fail-open execution"
+                f"Tool authorization lookup failed for agent {agent_id}; refusing fail-open "
+                f"execution"
             )
 
         if resolved_model is None:
@@ -202,5 +203,9 @@ async def run_task(
                         final_chunks.append(text)
 
     final_answer = "\n\n".join(final_chunks).strip() or "(Agent không trả lời gì.)"
-    return AgenticRunResult(final_answer=final_answer, steps=steps,
-                            usage=collector.to_llm_usage(), model=collector.model or resolved_model)
+    return AgenticRunResult(
+        final_answer=final_answer,
+        steps=steps,
+        usage=collector.to_llm_usage(),
+        model=collector.model or resolved_model,
+    )

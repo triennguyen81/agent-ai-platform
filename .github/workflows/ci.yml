@@ -22,9 +22,10 @@ jobs:
     # DB-backed integration tests (department/tenant isolation, capability
     # resolution, ACL V2 ownership, legacy-agent migration, etc.) actually
     # run in CI instead of silently no-oping — see D8_PRODUCTION_READINESS_AUDIT.md
-    # §2. serial.runsettings (checked into the test project) works around
-    # the documented shared-Postgres connection-ceiling race by disabling
-    # parallel test execution rather than requiring a custom Postgres image.
+    # §2. serial.runsettings + xunit.runner.json run the suite serially, but
+    # the per-class test databases still peak at ~414 concurrent connections
+    # (measured), so the "Raise PostgreSQL connection limit" step lifts the
+    # default max_connections=100 that otherwise fails fixtures with 53300.
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -51,15 +52,36 @@ jobs:
         run: dotnet restore
       - name: Build
         run: dotnet build --configuration Release --no-restore -warnaserror
+      - name: Raise PostgreSQL connection limit
+        # Service containers cannot take server flags, so set it and restart.
+        # TCP readiness (-h 127.0.0.1) skips the image's socket-only init server.
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          ready() {
+            for _ in $(seq 1 60); do
+              docker exec "$PG_CONTAINER" pg_isready -h 127.0.0.1 -U postgres -q && return 0
+              sleep 1
+            done
+            echo "::error::PostgreSQL service did not become ready"; return 1
+          }
+          ready
+          docker exec "$PG_CONTAINER" psql -h 127.0.0.1 -U postgres -c "ALTER SYSTEM SET max_connections = 1000"
+          docker restart "$PG_CONTAINER"
+          ready
+          test "$(docker exec "$PG_CONTAINER" psql -h 127.0.0.1 -U postgres -Atc 'SHOW max_connections')" = 1000
       - name: Test
         env:
           AIQ_TEST_POSTGRES: "Host=localhost;Port=5432;Database=aiq_gw_test;Username=postgres;Password=testpass"
         run: |
-          if ls tests/*.csproj 2>/dev/null | grep -q .; then
-            dotnet test --configuration Release --no-build --logger "trx" --settings tests/Aiq.Gateway.Tests/serial.runsettings
-          else
-            echo "No gateway test project yet — skipping."
+          mapfile -t projects < <(find tests -name '*.Tests.csproj' | sort)
+          if [ "${#projects[@]}" -eq 0 ]; then
+            echo "::error::No Gateway test project found under gateway/tests — refusing to skip tests."
+            exit 1
           fi
+          for project in "${projects[@]}"; do
+            dotnet test "$project" --configuration Release --no-build --logger "trx" --settings tests/Aiq.Gateway.Tests/serial.runsettings
+          done
 
   agent-lint:
     name: Agent · lint (ruff)

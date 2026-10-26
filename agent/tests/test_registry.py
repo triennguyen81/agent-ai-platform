@@ -107,6 +107,8 @@ async def test_all_fields_blank_renders_not_configured_not_an_empty_block(monkey
         "registeredAddress": None, "legalRepresentative": None, "representativeTitle": None,
         "phone": None, "email": None, "website": None,
     }
-    monkeypatch.setattr(registry_module.httpx, "AsyncClient", _fake_client({"profile": empty_profile}))
+    monkeypatch.setattr(
+        registry_module.httpx, "AsyncClient", _fake_client({"profile": empty_profile})
+    )
     block = await fetch_company_context_block(gateway_base="http://gw", user_token="t")
     assert block.endswith("company_identity: not_configured")

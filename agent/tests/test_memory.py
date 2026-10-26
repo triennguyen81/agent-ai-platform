@@ -159,7 +159,9 @@ async def test_agent_id_is_set_once_and_never_changed_by_a_later_append() -> Non
 async def test_list_threads_filters_by_agent_id_without_mixing() -> None:
     store = InMemoryMemoryStore()
     await store.append("zzz-1", [ChatMessage("user", "zzz question")], agent_id="agent-zzz")
-    await store.append("acct-1", [ChatMessage("user", "accounting question")], agent_id="agent-accounting")
+    await store.append(
+        "acct-1", [ChatMessage("user", "accounting question")], agent_id="agent-accounting"
+    )
 
     zzz_only = await store.list_threads(agent_id="agent-zzz")
     acct_only = await store.list_threads(agent_id="agent-accounting")
@@ -187,8 +189,12 @@ async def test_list_threads_agent_filter_excludes_legacy_no_agent_threads() -> N
 async def test_list_threads_combines_mode_and_agent_id_filters() -> None:
     store = InMemoryMemoryStore()
     await store.append("zzz-chat", [ChatMessage("user", "q1")], mode="chat", agent_id="agent-zzz")
-    await store.append("zzz-agentic", [ChatMessage("user", "q2")], mode="agentic", agent_id="agent-zzz")
-    await store.append("acct-chat", [ChatMessage("user", "q3")], mode="chat", agent_id="agent-accounting")
+    await store.append(
+        "zzz-agentic", [ChatMessage("user", "q2")], mode="agentic", agent_id="agent-zzz"
+    )
+    await store.append(
+        "acct-chat", [ChatMessage("user", "q3")], mode="chat", agent_id="agent-accounting"
+    )
 
     result = await store.list_threads(mode="chat", agent_id="agent-zzz")
 

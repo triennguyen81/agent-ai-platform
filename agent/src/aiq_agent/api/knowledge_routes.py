@@ -3,9 +3,9 @@
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from aiq_agent.api.security import RuntimePrincipal, require_principal
+from aiq_agent.documents.extraction import DocumentExtractionError, extract_document_text
 from aiq_agent.ocr.concurrency import OcrBusyError, OcrTimeoutError, run_ocr_native
 from aiq_agent.ocr.pdf import render_pdf_pages
-from aiq_agent.documents.extraction import DocumentExtractionError, extract_document_text
 
 router = APIRouter()
 

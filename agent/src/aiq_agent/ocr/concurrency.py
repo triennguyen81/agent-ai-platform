@@ -76,7 +76,9 @@ class OcrWorkGate:
         self.max_concurrent = max_concurrent
         self.queue_capacity = queue_capacity
         self.timeout_seconds = timeout_seconds
-        self._executor = ThreadPoolExecutor(max_workers=max_concurrent, thread_name_prefix="ocr-native")
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_concurrent, thread_name_prefix="ocr-native"
+        )
         self._lock = threading.Lock()
         self._pending = 0  # submitted and not yet finished (running + queued)
 
@@ -115,9 +117,7 @@ class OcrWorkGate:
             return await asyncio.wait_for(asyncio.shield(result), self.timeout_seconds)
         except TimeoutError as exc:
             abandoned.set()
-            raise OcrTimeoutError(
-                f"OCR did not finish within {self.timeout_seconds:g}s."
-            ) from exc
+            raise OcrTimeoutError(f"OCR did not finish within {self.timeout_seconds:g}s.") from exc
         except asyncio.CancelledError:
             abandoned.set()
             raise
@@ -139,7 +139,7 @@ def get_ocr_gate() -> OcrWorkGate:
     )
 
 
-async def run_ocr_native(fn: Callable[..., T], /, *args: object, **kwargs: object) -> T:
+async def run_ocr_native[T](fn: Callable[..., T], /, *args: object, **kwargs: object) -> T:
     return await get_ocr_gate().run(fn, *args, **kwargs)
 
 

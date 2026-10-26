@@ -8,7 +8,11 @@ import httpx
 from fastapi import HTTPException, Request, status
 
 from aiq_agent.config import get_settings
-from aiq_agent.runtime.manifest import ExecutionManifest, ManifestLookupError, fetch_execution_manifest
+from aiq_agent.runtime.manifest import (
+    ExecutionManifest,
+    ManifestLookupError,
+    fetch_execution_manifest,
+)
 
 
 class RuntimeAuthorizationError(ValueError):
@@ -65,12 +69,18 @@ async def require_principal(request: Request) -> RuntimePrincipal:
         department_id=str(department_id) if department_id else None,
     )
     if not principal.user_id or (principal.is_user_only and not principal.tenant_id):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid tenant-bound session")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid tenant-bound session"
+        )
     return principal
 
 
 async def require_agent_execution(
-    principal: RuntimePrincipal, agent_id: str, *, test: bool = False, version_id: str | None = None,
+    principal: RuntimePrincipal,
+    agent_id: str,
+    *,
+    test: bool = False,
+    version_id: str | None = None,
 ) -> ExecutionManifest:
     settings = get_settings()
     try:
@@ -82,13 +92,15 @@ async def require_agent_execution(
             version_id=version_id,
         )
     except ManifestLookupError as exc:
-        raise HTTPException(status_code=403, detail="Agent execution is not allowed")
+        raise HTTPException(status_code=403, detail="Agent execution is not allowed") from exc
     except Exception as exc:  # validation and protocol errors fail closed
         raise HTTPException(status_code=503, detail="Authorization service unavailable") from exc
 
 
 async def resolve_capability_agent(
-    principal: RuntimePrincipal, capability: str, preferred_agent_id: str | None = None,
+    principal: RuntimePrincipal,
+    capability: str,
+    preferred_agent_id: str | None = None,
 ) -> str:
     """D4: resolve a business capability code to an authorized agent id.
 
@@ -111,7 +123,9 @@ async def resolve_capability_agent(
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(
-                url, headers={"Authorization": f"Bearer {principal.token}"}, params=params,
+                url,
+                headers={"Authorization": f"Bearer {principal.token}"},
+                params=params,
             )
     except httpx.RequestError as exc:
         raise HTTPException(status_code=503, detail="Authorization service unavailable") from exc

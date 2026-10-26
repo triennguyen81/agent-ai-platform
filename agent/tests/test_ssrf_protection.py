@@ -22,7 +22,9 @@ from aiq_agent.security.ssrf import (
 
 
 def _fake_addrinfo(ip: str, family: int = socket.AF_INET):
-    return [(family, socket.SOCK_STREAM, 6, "", (ip, 0) if family == socket.AF_INET else (ip, 0, 0, 0))]
+    return [
+        (family, socket.SOCK_STREAM, 6, "", (ip, 0) if family == socket.AF_INET else (ip, 0, 0, 0))
+    ]
 
 
 def _patch_transport(monkeypatch: pytest.MonkeyPatch, handler) -> None:
@@ -59,7 +61,9 @@ def _patch_dns(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, str]) -> None
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://example.test/x", "gopher://example.test/x"])
+@pytest.mark.parametrize(
+    "url", ["file:///etc/passwd", "ftp://example.test/x", "gopher://example.test/x"]
+)
 async def test_blocks_non_http_scheme(url: str) -> None:
     with pytest.raises(SsrfBlockedError, match="scheme"):
         await validate_url(url)
@@ -171,7 +175,9 @@ async def test_redirect_chain_revalidates_each_hop_and_blocks_private_target(
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "public-hop1.example.test":
             return httpx.Response(302, headers={"location": "http://internal-hop2.example.test/x"})
-        raise AssertionError("must never reach the redirect target — blocked before the 2nd request")
+        raise AssertionError(
+            "must never reach the redirect target — blocked before the 2nd request"
+        )
 
     _patch_transport(monkeypatch, handler)
 
@@ -220,13 +226,13 @@ async def test_response_size_cap_enforced_incrementally(monkeypatch: pytest.Monk
         await safe_get("http://host.example.test/x", max_bytes=1_048_576)
 
 
-async def test_declared_content_length_over_cap_blocked_early(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_declared_content_length_over_cap_blocked_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _patch_dns(monkeypatch, {"host.example.test": "93.184.216.34"})
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, headers={"content-length": "5000000"}, content=b"x" * 100
-        )
+        return httpx.Response(200, headers={"content-length": "5000000"}, content=b"x" * 100)
 
     _patch_transport(monkeypatch, handler)
     with pytest.raises(SsrfBlockedError, match="Content-Length"):

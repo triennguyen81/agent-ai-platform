@@ -40,6 +40,9 @@ pip install '.[dev]'
 
 # Run the pipeline unit tests (no heavy deps required)
 pytest tests/
+
+# Lint exactly as CI does (ruff is pinned in the dev extra)
+ruff check src tests
 ```
 
 ## OCR pipeline smoke run

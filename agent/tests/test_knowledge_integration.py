@@ -1,9 +1,11 @@
 """Run against an isolated schema and Qdrant collection; never touches application rows.
 
-TEST_KNOWLEDGE_DSN=postgresql://... TEST_QDRANT_URL=http://... pytest tests/test_knowledge_integration.py
+TEST_KNOWLEDGE_DSN=postgresql://... TEST_QDRANT_URL=http://... \
+pytest tests/test_knowledge_integration.py
 Omit TEST_QDRANT_URL to use Qdrant's real local implementation.
 """
 
+import asyncio
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,19 +51,24 @@ async def kb():
             await conn.execute("""
                 CREATE TABLE tenants(id uuid PRIMARY KEY);
                 CREATE TABLE users(id uuid PRIMARY KEY);
-                CREATE TABLE departments(id uuid PRIMARY KEY,tenant_id uuid NOT NULL,UNIQUE(id,tenant_id));
+                CREATE TABLE departments(id uuid PRIMARY KEY,tenant_id uuid NOT
+                  NULL,UNIQUE(id,tenant_id));
                 CREATE TABLE agents(id uuid PRIMARY KEY);
                 CREATE TABLE notes(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),tenant_id uuid,
-                  department_id uuid,user_id uuid,created_by uuid,title text NOT NULL,content text NOT NULL,
-                  tags text[] NOT NULL DEFAULT '{}',scope text NOT NULL DEFAULT 'department',is_archived boolean NOT NULL DEFAULT false);
-                CREATE TABLE agent_knowledge(agent_id uuid,note_id uuid,PRIMARY KEY(agent_id,note_id));
+                  department_id uuid,user_id uuid,created_by uuid,title text NOT
+                    NULL,content text NOT NULL,
+                  tags text[] NOT NULL DEFAULT '{}',scope text NOT NULL DEFAULT
+                    'department',is_archived boolean NOT NULL DEFAULT false);
+                CREATE TABLE agent_knowledge(agent_id uuid,note_id uuid,PRIMARY
+                  KEY(agent_id,note_id));
             """)
             tenant, other, department, agent, unattached = [uuid4() for _ in range(5)]
             await conn.executemany("INSERT INTO tenants VALUES($1)", [(tenant,), (other,)])
             await conn.execute("INSERT INTO departments VALUES($1,$2)", department, tenant)
             await conn.executemany("INSERT INTO agents VALUES($1)", [(agent,), (unattached,)])
             note = await conn.fetchval(
-                "INSERT INTO notes(tenant_id,department_id,title,content) VALUES($1,$2,'Overdue policy','Contact customers after 30 days overdue.') RETURNING id",
+                "INSERT INTO notes(tenant_id,department_id,title,content) VALUES($1,$2,'Overdue "
+                "policy','Contact customers after 30 days overdue.') RETURNING id",
                 tenant,
                 department,
             )
@@ -72,7 +79,7 @@ async def kb():
                     "/repo/gateway/src/Aiq.Gateway/Data/Migrations/047_knowledge_rag.sql",
                 )
             )
-            await conn.execute(migration.read_text())
+            await conn.execute(await asyncio.to_thread(migration.read_text))
         client.create_collection(
             collection, vectors_config=qm.VectorParams(size=2, distance=qm.Distance.COSINE)
         )
@@ -126,14 +133,18 @@ async def drain(kb):
 async def test_legacy_ingestion_retrieval_and_isolation(kb):
     async with kb.pool.acquire() as conn:
         foreign_note = await conn.fetchval(
-            "INSERT INTO notes(tenant_id,scope,title,content) VALUES($1,'tenant','Secret','Other tenant overdue policy') RETURNING id",
+            "INSERT INTO notes(tenant_id,scope,title,content) VALUES($1,'tenant','Secret','Other "
+            "tenant overdue policy') RETURNING id",
             kb.other,
         )
     await drain(kb)
     hits = await kb.service.retrieve(kb.manifest, "overdue")
     assert hits and hits[0]["version"] == 1 and hits[0]["page"] == 1
     forged_refs = kb.manifest.model_copy(update={"knowledgeBaseIds": [kb.note, foreign_note]})
-    assert all(hit["document_id"] == str(kb.note) for hit in await kb.service.retrieve(forged_refs, "overdue"))
+    assert all(
+        hit["document_id"] == str(kb.note)
+        for hit in await kb.service.retrieve(forged_refs, "overdue")
+    )
     other_agent = kb.manifest.model_copy(deep=True)
     other_agent.agent.id = kb.unattached
     assert await kb.service.retrieve(other_agent, "overdue") == []
@@ -190,7 +201,8 @@ async def test_disable_delete_reindex_and_retry(kb):
     assert initial
     async with kb.pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO indexing_jobs(document_id,document_version_id) SELECT id,current_version_id FROM notes WHERE id=$1",
+            "INSERT INTO indexing_jobs(document_id,document_version_id) SELECT "
+            "id,current_version_id FROM notes WHERE id=$1",
             kb.note,
         )
     await drain(kb)
@@ -215,21 +227,26 @@ async def test_disable_delete_reindex_and_retry(kb):
 
 
 async def test_create_kb_attach_detach_deactivate_and_cross_tenant_constraint(kb):
+    import asyncpg
+
     async with kb.pool.acquire() as conn:
         base = await conn.fetchval(
-            "INSERT INTO knowledge_bases(tenant_id,department_id,name) VALUES($1,$2,'Company policies') RETURNING id",
+            "INSERT INTO knowledge_bases(tenant_id,department_id,name) VALUES($1,$2,'Company "
+            "policies') RETURNING id",
             kb.tenant,
             kb.department,
         )
         await conn.execute(
-            "INSERT INTO notes(tenant_id,department_id,knowledge_base_id,title,content) VALUES($1,$2,$3,'Policy','Do not put live accounting transactions in KB.')",
+            "INSERT INTO notes(tenant_id,department_id,knowledge_base_id,title,content) "
+            "VALUES($1,$2,$3,'Policy','Do not put live accounting transactions in KB.')",
             kb.tenant,
             kb.department,
             base,
         )
-        with pytest.raises(Exception):
+        with pytest.raises(asyncpg.ForeignKeyViolationError):
             await conn.execute(
-                "INSERT INTO agent_knowledge_bases(agent_id,tenant_id,knowledge_base_id) VALUES($1,$2,$3)",
+                "INSERT INTO agent_knowledge_bases(agent_id,tenant_id,knowledge_base_id) "
+                "VALUES($1,$2,$3)",
                 kb.agent,
                 kb.other,
                 base,
@@ -239,7 +256,8 @@ async def test_create_kb_attach_detach_deactivate_and_cross_tenant_constraint(kb
     assert await kb.service.retrieve(manifest, "policy") == []
     async with kb.pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO agent_knowledge_bases(agent_id,tenant_id,knowledge_base_id) VALUES($1,$2,$3)",
+            "INSERT INTO agent_knowledge_bases(agent_id,tenant_id,knowledge_base_id) "
+            "VALUES($1,$2,$3)",
             kb.agent,
             kb.tenant,
             base,
@@ -306,7 +324,8 @@ async def test_partial_replacement_failure_keeps_old_evidence_and_delete_cleans_
 
     async with kb.pool.acquire() as conn:
         await conn.execute(
-            "UPDATE notes SET content='Replacement policy. ' || repeat('new evidence ',30) WHERE id=$1",
+            "UPDATE notes SET content='Replacement policy. ' || repeat('new evidence ',30) WHERE "
+            "id=$1",
             kb.note,
         )
     kb.embeddings.index_chunks = partial_then_fail
@@ -322,8 +341,13 @@ async def test_partial_replacement_failure_keeps_old_evidence_and_delete_cleans_
 
 async def test_explicit_document_read_cannot_widen_manifest_scope(kb):
     await drain(kb)
-    assert await kb.service.retrieve(kb.manifest,'policy',document_id=kb.note)
+    assert await kb.service.retrieve(kb.manifest, "policy", document_id=kb.note)
     async with kb.pool.acquire() as conn:
-        hidden=await conn.fetchval("INSERT INTO notes(tenant_id,department_id,title,content) VALUES($1,$2,'Private','Private policy') RETURNING id",kb.tenant,kb.department)
+        hidden = await conn.fetchval(
+            "INSERT INTO notes(tenant_id,department_id,title,content) "
+            "VALUES($1,$2,'Private','Private policy') RETURNING id",
+            kb.tenant,
+            kb.department,
+        )
     await drain(kb)
-    assert await kb.service.retrieve(kb.manifest,'policy',document_id=hidden)==[]
+    assert await kb.service.retrieve(kb.manifest, "policy", document_id=hidden) == []

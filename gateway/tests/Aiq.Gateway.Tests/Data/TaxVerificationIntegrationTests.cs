@@ -154,7 +154,17 @@ public sealed class TaxVerificationIntegrationTests(TaxVerificationDatabase fx) 
     private ITaxVerificationRepository Repo() => new TaxVerificationRepository(Factory());
     private IVoucherRepository Vouchers() => new VoucherRepository(Factory());
 
-    private async Task<T> Scalar<T>(string sql, object? args = null)
+    /// <summary>For queries that must yield a value; NULL or no row fails the test loudly.</summary>
+    private async Task<T> Scalar<T>(string sql, object? args = null) where T : notnull
+    {
+        await using var c = new NpgsqlConnection(_cs);
+        await c.OpenAsync();
+        return await c.ExecuteScalarAsync<T>(sql, args)
+            ?? throw new InvalidOperationException($"Scalar query returned NULL or no row: {sql}");
+    }
+
+    /// <summary>For queries where SQL NULL / no row is a valid, asserted outcome.</summary>
+    private async Task<T?> ScalarOrNull<T>(string sql, object? args = null)
     {
         await using var c = new NpgsqlConnection(_cs);
         await c.OpenAsync();
@@ -280,7 +290,7 @@ public sealed class TaxVerificationIntegrationTests(TaxVerificationDatabase fx) 
         var ex = await Assert.ThrowsAsync<TaxVerificationException>(() => Repo().ConfirmAsync(_tenant, _dept, id, _admin,
             new TaxConfirmRequest(source, note, checkedOnPortal, new[] { Inv("0312345678", _inv, InvDate, 11_000_000m, "1C26TAA") }), default));
         Assert.Equal(code, ex.Code);
-        Assert.Null(await Scalar<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@id", new { id }));
+        Assert.Null(await ScalarOrNull<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@id", new { id }));
     }
 
     [Fact]
@@ -303,7 +313,7 @@ public sealed class TaxVerificationIntegrationTests(TaxVerificationDatabase fx) 
             Evidence(Inv("0312345678", _inv, InvDate, 11_000_000m, "1C26TBB")), default));
         Assert.Contains("invoice_series", JsonSerializer.Serialize(wrongSeries.Details));
 
-        Assert.Null(await Scalar<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@id", new { id }));
+        Assert.Null(await ScalarOrNull<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@id", new { id }));
         Assert.Equal(0, await EventsAsync(id, "verified"));
     }
 
@@ -383,7 +393,7 @@ public sealed class TaxVerificationIntegrationTests(TaxVerificationDatabase fx) 
         var id = await InvoiceVoucherAsync(_inv, 11_000_000m);
         await Repo().ConfirmAsync(_tenant, _dept, id, _admin, InvoiceEvidence(), default);
         Assert.True(await Vouchers().SetVoucherTypeClassificationAsync(_tenant, _dept, id, "receipt", "{}", default));
-        Assert.Null(await Scalar<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@id", new { id }));
+        Assert.Null(await ScalarOrNull<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@id", new { id }));
         Assert.Equal(1, await EventsAsync(id, "invalidated"));
     }
 
@@ -406,7 +416,7 @@ public sealed class TaxVerificationIntegrationTests(TaxVerificationDatabase fx) 
     private static TaxRejectRequest AdminReject(string reason = "Tra cứu cổng TCT: hoá đơn đã bị thay thế", bool unavailable = false) =>
         new(reason, unavailable, TaxVerificationSources.TctPortal, "LOOKUP-NEG");
 
-    private Task<string?> StatusAsync(Guid id) => Scalar<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@id", new { id });
+    private Task<string?> StatusAsync(Guid id) => ScalarOrNull<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@id", new { id });
 
     [Fact]
     public async Task UserOrAgentReject_IsRefused_NoAuthoritativeMutation()
@@ -433,7 +443,7 @@ public sealed class TaxVerificationIntegrationTests(TaxVerificationDatabase fx) 
         var view = (await Repo().ProposeAsync(_tenant, _dept, id, _user, "agent", "user", recommendation,
             """{"tool":"verify_einvoice_tct","note":"TCT trả 404"}""", "TCT trả 404", default))!;
         Assert.Equal((TaxVerificationStatuses.PendingReview, recommendation), (view.Status, view.ProposedRecommendation));
-        Assert.Null(await Scalar<string?>("SELECT tax_verification_evidence::text FROM vouchers WHERE id=@id", new { id }));
+        Assert.Null(await ScalarOrNull<string?>("SELECT tax_verification_evidence::text FROM vouchers WHERE id=@id", new { id }));
         var evt = await Scalar<string>("SELECT source || '|' || (evidence->>'recommendation') FROM voucher_tax_verification_events WHERE voucher_id=@id", new { id });
         Assert.Equal($"agent_proposal|{recommendation}", evt);
         // Neither opens nor "closes" the gate authoritatively: still the not-yet-decided state.
@@ -520,7 +530,7 @@ public sealed class TaxVerificationIntegrationTests(TaxVerificationDatabase fx) 
         Assert.Null(await Repo().GetAsync(_tenant, _otherDept, id, default));
         Assert.Null(await Repo().ConfirmAsync(_tenant, _otherDept, id, _admin, InvoiceEvidence(), default));
         Assert.Null(await Repo().ConfirmAsync(Guid.NewGuid(), _dept, id, _admin, InvoiceEvidence(), default));
-        Assert.Null(await Scalar<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@id", new { id }));
+        Assert.Null(await ScalarOrNull<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@id", new { id }));
     }
 
     [Fact]
@@ -649,6 +659,6 @@ public sealed class TaxVerificationIntegrationTests(TaxVerificationDatabase fx) 
         var id = await InvoiceVoucherAsync(_inv, 11_000_000m);
         Assert.Equal("evidence_required", (await Assert.ThrowsAsync<TaxVerificationException>(() =>
             Repo().ConfirmAsync(_tenant, _dept, id, _admin, null!, default))).Code);
-        Assert.Null(await Scalar<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@id", new { id }));
+        Assert.Null(await ScalarOrNull<string?>("SELECT tax_verification_status FROM vouchers WHERE id=@id", new { id }));
     }
 }

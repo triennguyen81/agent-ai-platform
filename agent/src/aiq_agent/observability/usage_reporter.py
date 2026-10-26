@@ -50,7 +50,7 @@ async def report_usage(
     event_type: str,
     total_latency_ms: int,
     gateway_base: str,
-    timeout: float = 5.0,
+    http_timeout: float = 5.0,
     request_id: uuid.UUID | None = None,
 ) -> None:
     """Best-effort, non-blocking usage report. Swallows and logs every
@@ -96,7 +96,7 @@ async def report_usage(
         "metrics": dict(result.prompt_metrics),
     }
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             res = await client.post(
                 f"{gateway_base.rstrip('/')}/runtime/agents/{manifest.agent.id}/usage",
                 headers={"Authorization": f"Bearer {token}"},
@@ -120,7 +120,7 @@ async def report_unscoped_usage(
     total_latency_ms: int,
     gateway_base: str,
     request_id: uuid.UUID | None = None,
-    timeout: float = 5.0,
+    http_timeout: float = 5.0,
 ) -> None:
     """Usage of an LLM call that has no agent manifest (plain / PEC chat,
     the legacy agentic runtime). Reported with the caller's own token —
@@ -145,7 +145,7 @@ async def report_unscoped_usage(
         "totalLatencyMs": total_latency_ms,
     }
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             res = await client.post(
                 f"{gateway_base.rstrip('/')}/runtime/usage",
                 headers={"Authorization": f"Bearer {token}"},
