@@ -18,6 +18,8 @@ const REASONS: Record<string, string> = {
   processing_agent_unavailable: "Không thể chạy trợ lý đã ghi nhận cho chứng từ này",
   processing_agent_version_unavailable: "Không thể chạy phiên bản Agent đã ghi nhận",
   processing_provenance_invalid: "Thông tin phiên bản xử lý của chứng từ không hợp lệ",
+  period_locked:
+    "Ngày trên chứng từ thuộc kỳ kế toán đã khoá — đặt ngày hạch toán trong kỳ đang mở, hoặc nhờ ADMIN mở lại kỳ, rồi trích xuất lại",
 };
 
 export function ExtractionFailureBanner({

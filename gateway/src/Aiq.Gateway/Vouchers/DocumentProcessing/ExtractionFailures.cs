@@ -15,6 +15,8 @@ public static class ExtractionFailures
     public const string ProviderTimeout = "provider_timeout";
     public const string AgentExecutionFailed = "agent_execution_failed";
     public const string OutputInvalid = "extraction_output_invalid";
+    /// <summary>Chứng từ flow v2 PR4: the extracted accounting date falls in a closed period (stage "save").</summary>
+    public const string PeriodLocked = "period_locked";
 
     public static string Classify(Exception ex) => ex switch
     {

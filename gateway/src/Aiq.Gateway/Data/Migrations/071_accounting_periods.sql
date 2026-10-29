@@ -221,3 +221,14 @@ DROP TRIGGER IF EXISTS trg_journal_period_lock ON voucher_journal_suggestions;
 CREATE TRIGGER trg_journal_period_lock
 BEFORE INSERT OR UPDATE OR DELETE ON voucher_journal_suggestions
 FOR EACH ROW EXECUTE FUNCTION journal_period_lock();
+
+-- ---------------------------------------------------------------- extraction failure code
+-- The extract job records an extraction whose date falls in a closed period as
+-- a safe failure ('period_locked', stage 'save') instead of retrying forever.
+ALTER TABLE vouchers DROP CONSTRAINT IF EXISTS chk_vouchers_extraction_error_code;
+ALTER TABLE vouchers ADD CONSTRAINT chk_vouchers_extraction_error_code CHECK (
+    extraction_error_code IS NULL OR extraction_error_code IN (
+        'provider_unavailable', 'provider_rate_limited', 'provider_session_limit', 'provider_timeout',
+        'agent_execution_failed', 'extraction_output_invalid',
+        'processing_agent_unavailable', 'processing_agent_version_unavailable', 'processing_provenance_invalid',
+        'period_locked'));

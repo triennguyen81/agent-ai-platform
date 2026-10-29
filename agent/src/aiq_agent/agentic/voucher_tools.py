@@ -512,6 +512,8 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
                 headers=auth_headers,
                 json=body,
             )
+        if res.status_code == 409:
+            return {"content": [{"type": "text", "text": _conflict_text(res)}]}
         if res.status_code not in (200, 201):
             return {
                 "content": [
@@ -543,7 +545,7 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
 
 
 def _conflict_text(res: httpx.Response) -> str:
-    """A Gateway 409 on save is final: posted, locked or duplicate, never retried."""
+    """A Gateway 409 on save is final: posted, locked, closed period or duplicate, never retried."""
     try:
         body = res.json()
     except ValueError:
@@ -561,6 +563,13 @@ def _conflict_text(res: httpx.Response) -> str:
             f"⛔ {message} Chứng từ đang chờ duyệt / đã duyệt / đã đảo: "
             "KHÔNG thử lại, KHÔNG tạo chứng từ mới. "
             "Báo người dùng — muốn sửa thì ADMIN phải trả lại chứng từ trước."
+        )
+    if body.get("error") == "period_locked":
+        period = body.get("period") or "?"
+        return (
+            f"⛔ {message} Kỳ kế toán {period} đã khoá: KHÔNG thử lại, KHÔNG đổi ngày để lách. "
+            "Báo người dùng — chọn ngày hạch toán trong kỳ đang mở, "
+            "hoặc nhờ ADMIN của phòng mở lại kỳ (có lý do)."
         )
     if body.get("error") == "duplicate_voucher":
         existing = body.get("existingVoucherId")

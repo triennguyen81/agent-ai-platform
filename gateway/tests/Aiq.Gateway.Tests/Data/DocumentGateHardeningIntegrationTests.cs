@@ -299,6 +299,45 @@ public sealed class DocumentGateHardeningIntegrationTests(DocumentProcessingData
         Assert.Equal(status, await Reviews.GetGateStatusAsync(fx.TenantA, v, default));
     }
 
+    /// <summary>
+    /// Chứng từ flow v2 PR4: the extracted date falls in a closed period (2026-10).
+    /// The result is not saved, the job records a safe failure and does not throw
+    /// (no Hangfire retry loop); the uploader sets an accounting date and re-extracts.
+    /// </summary>
+    [Fact]
+    public async Task An_extraction_dated_in_a_closed_period_is_a_safe_failure_not_a_retry_loop()
+    {
+        if (fx.ConnectionString is null) return;
+        var v = await OcrCompleteVoucherAsync();
+        await using (var conn = new NpgsqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("""
+                INSERT INTO tenant_feature_flags(tenant_id, flag, enabled) VALUES (@t, 'voucher_flow_v2', true)
+                ON CONFLICT (tenant_id, flag) DO UPDATE SET enabled = true;
+                INSERT INTO accounting_periods(tenant_id, department_id, year, month, status, closed_at) VALUES (@t, @d, 2026, 10, 'closed', NOW())
+                ON CONFLICT (tenant_id, department_id, year, month) DO UPDATE SET status = 'closed', closed_at = NOW();
+                """, new { t = fx.TenantA, d = fx.Kt });
+        }
+        try
+        {
+            await Runner(new ScriptedAgent()).RunAsync(v, fx.UserKt, fx.TenantA, "receipt", "token", default);
+
+            var failed = await StateAsync(v);
+            Assert.Equal(("extraction_failed", ExtractionFailures.PeriodLocked, "save"), (failed.Status, failed.Code, failed.Stage));
+            Assert.Null(await Scalar<DateTime?>("SELECT document_date FROM vouchers WHERE id=@v", new { v }));
+        }
+        finally
+        {
+            await using var conn = new NpgsqlConnection(fx.ConnectionString);
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("""
+                UPDATE tenant_feature_flags SET enabled = false WHERE tenant_id=@t;
+                UPDATE accounting_periods SET status = 'open' WHERE tenant_id=@t;
+                """, new { t = fx.TenantA });
+        }
+    }
+
     [Fact]
     public async Task Successful_extraction_without_l2_need_never_sets_the_l2_blocker_and_legacy_voucher_is_unblocked()
     {

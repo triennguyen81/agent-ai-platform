@@ -95,3 +95,39 @@ async def test_successful_save_is_unchanged(monkeypatch) -> None:
 
     assert text.startswith("✓ Đã tạo chứng từ id=v-new")
     assert json.loads(seen[0].content)["documentNumber"] == "123"
+
+
+async def test_period_locked_tells_the_model_to_stop_and_names_the_period(monkeypatch) -> None:
+    # Chứng từ flow v2 PR4: a closed accounting period refuses the write.
+    body = {"error": "period_locked", "period": "2026-09", "message": "Kỳ kế toán 2026-09 đã khoá."}
+    seen = _gateway(monkeypatch, httpx.Response(409, json=body))
+
+    text = await _save({"fields": _FIELDS})
+
+    assert len(seen) == 1
+    assert "2026-09" in text
+    assert "KHÔNG thử lại" in text
+    assert "ADMIN" in text
+    assert "✓" not in text
+
+
+async def test_journal_save_in_a_locked_period_stops_too(monkeypatch) -> None:
+    body = {"error": "period_locked", "period": "2026-09", "message": "Kỳ kế toán 2026-09 đã khoá."}
+    seen = _gateway(monkeypatch, httpx.Response(409, json=body))
+    tools = {t.name: t for t in build_voucher_tools(token="tok", gateway_base="http://gateway")}
+
+    entry = {"debit_account": "1561", "credit_account": "331", "amount": 100}
+    save = tools["save_journal_suggestions"].handler
+    result = await save({"voucher_id": "v-sep", "entries": [entry]})
+    text = result["content"][0]["text"]
+
+    assert len(seen) == 1 and seen[0].url.path == "/vouchers/v-sep/journal-suggestions"
+    assert "2026-09" in text and "KHÔNG thử lại" in text
+    assert "✓" not in text
+
+
+def test_the_agent_has_no_tool_to_close_or_reopen_a_period() -> None:
+    names = {t.name for t in build_voucher_tools(token="tok", gateway_base="http://gateway")}
+    assert not {n for n in names if "period" in n}
+    source = json.dumps(sorted(names))
+    assert "accounting-periods" not in source

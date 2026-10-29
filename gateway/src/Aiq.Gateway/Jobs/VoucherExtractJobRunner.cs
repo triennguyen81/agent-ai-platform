@@ -622,7 +622,22 @@ public sealed class VoucherExtractJobRunner
             policy?.TypeConfig?.Workflow?.VersionId, resolution.ConfigSource, reviewRequired, reviewTaskId,
             blockingReasons.Count > 0, string.Join(",", blockingReasons), reextract);
 
-        if (!await _vouchers.ReplaceExtractedAsync(tenantIdValue, userId, voucherId, applyRequest, ct))
+        bool replaced;
+        try
+        {
+            replaced = await _vouchers.ReplaceExtractedAsync(tenantIdValue, userId, voucherId, applyRequest, ct);
+        }
+        catch (Npgsql.PostgresException ex) when (Aiq.Gateway.Vouchers.Periods.AccountingPeriodErrors.LockedPeriodOf(ex) is { } period)
+        {
+            // Chứng từ flow v2 PR4: the extracted date is in a closed period. Not saved;
+            // a safe failure, not a retry — the uploader sets an accounting date in an
+            // open period (or an ADMIN reopens the period) and re-extracts.
+            _logger.LogWarning("Voucher {VoucherId}: extracted date falls in closed period {Period} — result not saved", voucherId, period);
+            await FailExtractionAsync(tenantIdValue, stub.Voucher.DepartmentId, actorId, voucherId, resolution, executed,
+                ExtractionFailures.PeriodLocked, "save", triggerKind, ct);
+            return;
+        }
+        if (!replaced)
         {
             // Posted or submitted while the Agent was running: that wins, drop this result.
             _logger.LogWarning("Voucher {VoucherId} was posted or locked during extraction — result discarded", voucherId);
@@ -653,6 +668,10 @@ public sealed class VoucherExtractJobRunner
                 catch (Aiq.Gateway.Vouchers.Lifecycle.VoucherLockedException)
                 {
                     _logger.LogWarning("Voucher {VoucherId} was submitted during extraction — journal suggestions discarded", voucherId);
+                }
+                catch (Npgsql.PostgresException ex) when (Aiq.Gateway.Vouchers.Periods.AccountingPeriodErrors.LockedPeriodOf(ex) is { } period)
+                {
+                    _logger.LogWarning("Voucher {VoucherId}: period {Period} was closed during extraction — journal suggestions discarded", voucherId, period);
                 }
             }
         }
