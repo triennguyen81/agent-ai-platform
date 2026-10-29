@@ -37,10 +37,16 @@ public static class VoucherEndpoints
             .RequireRateLimiting("default")
             .RequireBusinessCapability("voucher.processing")
             // A recognized expense claim's document/amounts are frozen by DB
-            // triggers (migration 059): every edit path answers 409, never 500.
+            // triggers (migration 059), a closed accounting period by 071:
+            // every edit path answers 409, never 500.
             .AddEndpointFilter(async (invocation, next) =>
             {
                 try { return await next(invocation); }
+                // Chứng từ flow v2 PR4: a closed period refuses the write in its own transaction (migration 071).
+                catch (Npgsql.PostgresException ex) when (AccountingPeriodEndpoints.PeriodLockedResult(ex) is { } locked)
+                {
+                    return locked;
+                }
                 catch (Npgsql.PostgresException ex) when (ex.SqlState == "23001" && ex.MessageText.StartsWith("journal_posting_immutable", StringComparison.Ordinal))
                 {
                     return Results.Conflict(new { error = "journal_posting_immutable", message = "Bút toán đã ghi sổ không thể sửa hoặc xoá — chỉ có thể đảo bằng bút toán mới." });
@@ -807,6 +813,8 @@ public static class VoucherEndpoints
         Aiq.Gateway.Customers.ICustomerRepository customers,
         Aiq.Gateway.Governance.ITenantCompanyProfileRepository companyProfiles,
         Aiq.Gateway.Vouchers.DocumentProcessing.IDocumentReviewRepository reviews,
+        Aiq.Gateway.Vouchers.Lifecycle.ITenantFeatureFlags flags,
+        Aiq.Gateway.Vouchers.Periods.IAccountingPeriodRepository periods,
         HttpContext ctx,
         CancellationToken ct)
     {
@@ -814,6 +822,8 @@ public static class VoucherEndpoints
 
         var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (voucher is null) return Results.NotFound();
+        if (await AccountingPeriodEndpoints.LockedBeforePostingAsync(voucher.Voucher, tenantId, departmentId, flags, periods, ct) is { } locked)
+            return locked;
         // Final voucher_type must be confirmed before any posting.
         if (Aiq.Gateway.Vouchers.VoucherTypeClassification.FromExtractedFields(voucher.Voucher.ExtractedFieldsJson) is { BlocksPosting: true })
         {
@@ -1005,6 +1015,8 @@ public static class VoucherEndpoints
         Aiq.Gateway.Employees.IExpenseClaimRepository expenseClaims,
         Aiq.Gateway.Governance.ITenantCompanyProfileRepository companyProfiles,
         Aiq.Gateway.Vouchers.DocumentProcessing.IDocumentReviewRepository reviews,
+        Aiq.Gateway.Vouchers.Lifecycle.ITenantFeatureFlags flags,
+        Aiq.Gateway.Vouchers.Periods.IAccountingPeriodRepository periods,
         HttpContext ctx,
         CancellationToken ct)
     {
@@ -1012,6 +1024,8 @@ public static class VoucherEndpoints
 
         var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (voucher is null) return Results.NotFound();
+        if (await AccountingPeriodEndpoints.LockedBeforePostingAsync(voucher.Voucher, tenantId, departmentId, flags, periods, ct) is { } locked)
+            return locked;
         // Final voucher_type must be confirmed before any posting.
         if (Aiq.Gateway.Vouchers.VoucherTypeClassification.FromExtractedFields(voucher.Voucher.ExtractedFieldsJson) is { BlocksPosting: true })
         {
@@ -1701,6 +1715,11 @@ public static class VoucherEndpoints
                 || await flags.IsEnabledAsync(tenantId, Aiq.Gateway.Vouchers.Lifecycle.TenantFeatureFlags.VoucherFlowV2, ct)))
         {
             return Results.BadRequest(new { error = "status_not_editable", message = "Không đổi trạng thái chứng từ qua PATCH." });
+        }
+        if (request.AccountingDate is not null
+            && !await flags.IsEnabledAsync(tenantId, Aiq.Gateway.Vouchers.Lifecycle.TenantFeatureFlags.VoucherFlowV2, ct))
+        {
+            return Results.BadRequest(new { error = "accounting_date_requires_v2", message = "Ngày hạch toán chỉ dùng được khi tenant bật quy trình chứng từ v2." });
         }
         var updated = await repo.UpdateAsync(tenantId, existing.Voucher.UserId, id, request, ct);
         if (updated is null) return await EditRefusedAsync(repo, tenantId, departmentId, id, ct);

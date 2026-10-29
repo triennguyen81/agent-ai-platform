@@ -189,6 +189,7 @@ builder.Services.AddScoped<Aiq.Gateway.Vouchers.Validation.IVoucherValidationRep
 builder.Services.AddScoped<Aiq.Gateway.Vouchers.Validation.VoucherValidationService>();
 builder.Services.AddScoped<Aiq.Gateway.Vouchers.Lifecycle.ITenantFeatureFlags, Aiq.Gateway.Vouchers.Lifecycle.TenantFeatureFlagRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Vouchers.Lifecycle.IVoucherLifecycleRepository, Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleRepository>();
+builder.Services.AddScoped<Aiq.Gateway.Vouchers.Periods.IAccountingPeriodRepository, Aiq.Gateway.Vouchers.Periods.AccountingPeriodRepository>();
 builder.Services.TryAddSingleton(TimeProvider.System);
 builder.Services.AddScoped<Aiq.Gateway.Vouchers.ITaxVerificationRepository, Aiq.Gateway.Vouchers.TaxVerificationRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Vouchers.VoucherExportService>();
@@ -449,6 +450,8 @@ static string PartitionKeyFor(HttpContext httpContext)
     return $"ip:{ip}";
 }
 
+// Chứng từ flow v2 PR4: a closed accounting period answers 409 period_locked, never 500.
+builder.Services.AddExceptionHandler<Aiq.Gateway.Endpoints.PeriodLockedExceptionHandler>();
 builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
@@ -512,6 +515,7 @@ app.MapContractEndpoints();
 app.MapExpenseClaimEndpoints();
 app.MapChecklistEndpoints();
 app.MapVoucherEndpoints();
+app.MapAccountingPeriodEndpoints();
 app.MapCustomerEndpoints();
 app.MapSupplierEndpoints();
 app.MapReportsEndpoints();

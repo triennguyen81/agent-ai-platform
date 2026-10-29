@@ -209,6 +209,7 @@ public sealed class VoucherRepository : IVoucherRepository
             approved_by       AS ApprovedBy,
             approved_at       AS ApprovedAt,
             posted_at         AS PostedAt,
+            accounting_date   AS AccountingDate,
             deleted_at        AS DeletedAt,
             supersedes_id     AS SupersedesId
         """;
@@ -305,7 +306,7 @@ public sealed class VoucherRepository : IVoucherRepository
                 payment_method, subtotal, vat_rate, vat_amount,
                 discount_amount, total_amount, currency, amount_in_words,
                 source_file_path, source_file_name, source_mime_type,
-                raw_ocr_text, ocr_confidence, extracted_fields, tags
+                raw_ocr_text, ocr_confidence, extracted_fields, tags, accounting_date
             ) VALUES (
                 @tenantId, @departmentId, @userId, @voucherType, 'extracted',
                 @documentNumber, @documentSeries, @documentDate,
@@ -314,7 +315,8 @@ public sealed class VoucherRepository : IVoucherRepository
                 @paymentMethod, @subtotal, @vatRate, @vatAmount,
                 @discountAmount, @totalAmount, @currency, @amountInWords,
                 @sourceFilePath, @sourceFileName, @sourceMimeType,
-                @rawOcrText, @ocrConfidence, @extractedJson::jsonb, @tags
+                @rawOcrText, @ocrConfidence, @extractedJson::jsonb, @tags,
+                CASE WHEN voucher_flow_v2_enabled(@tenantId) THEN CAST(@accountingDate AS date) END
             )
             ON CONFLICT (tenant_id, seller_mst, document_number, document_date)
             WHERE tenant_id IS NOT NULL
@@ -355,6 +357,7 @@ public sealed class VoucherRepository : IVoucherRepository
             ocrConfidence = request.OcrConfidence,
             extractedJson,
             tags = request.Tags ?? Array.Empty<string>(),
+            accountingDate = request.AccountingDate,
         };
 
         // An existing voucher with the same identity is never overwritten —
@@ -461,7 +464,8 @@ public sealed class VoucherRepository : IVoucherRepository
                 raw_ocr_text     = @rawOcrText,
                 ocr_confidence   = COALESCE(@ocrConfidence, ocr_confidence),
                 extracted_fields = @extractedJson::jsonb,
-                tags             = @tags
+                tags             = @tags,
+                accounting_date  = CASE WHEN voucher_flow_v2_enabled(tenant_id) THEN COALESCE(CAST(@accountingDate AS date), accounting_date) ELSE accounting_date END
             WHERE id = @id AND tenant_id = @tenantId AND user_id = @userId
               AND {VoucherPostingGuard.NotPostedSql}
               AND {Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.NotLockedSql};
@@ -497,6 +501,7 @@ public sealed class VoucherRepository : IVoucherRepository
                 ocrConfidence = request.OcrConfidence,
                 extractedJson,
                 tags = request.Tags ?? Array.Empty<string>(),
+                accountingDate = request.AccountingDate,
             },
             transaction: tx,
             cancellationToken: ct));
@@ -714,7 +719,8 @@ public sealed class VoucherRepository : IVoucherRepository
                 currency        = COALESCE(@currency, currency),
                 amount_in_words = COALESCE(@amountInWords, amount_in_words),
                 error_message   = COALESCE(@errorMessage, error_message),
-                tags            = COALESCE(@tags, tags)
+                tags            = COALESCE(@tags, tags),
+                accounting_date = CASE WHEN voucher_flow_v2_enabled(tenant_id) THEN COALESCE(CAST(@accountingDate AS date), accounting_date) ELSE accounting_date END
             WHERE id = @id
               AND user_id = @userId
               AND tenant_id = @tenantId
@@ -753,6 +759,7 @@ public sealed class VoucherRepository : IVoucherRepository
                     amountInWords = request.AmountInWords,
                     errorMessage = request.ErrorMessage,
                     tags = request.Tags,
+                    accountingDate = request.AccountingDate,
                 },
                 tx,
                 cancellationToken: ct));

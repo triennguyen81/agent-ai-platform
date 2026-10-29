@@ -71,6 +71,8 @@ public sealed class VoucherRecord
     public DateTime? ApprovedAt { get; init; }
     /// <summary>First time the voucher was ever posted; never cleared.</summary>
     public DateTime? PostedAt { get; init; }
+    /// <summary>Chứng từ flow v2 PR4: ngày hạch toán; null = theo document_date (§10.1 P1).</summary>
+    public DateOnly? AccountingDate { get; init; }
     public DateTime? DeletedAt { get; init; }
     public Guid? SupersedesId { get; init; }
 }
@@ -154,7 +156,9 @@ public sealed record CreateVoucherRequest(
     decimal? OcrConfidence,
     object? ExtractedFields,
     string[]? Tags,
-    IReadOnlyList<CreateVoucherLineItemDto>? LineItems);
+    IReadOnlyList<CreateVoucherLineItemDto>? LineItems,
+    // Chứng từ flow v2 PR4 (§10.1 P1): ignored for tenants without the v2 flag.
+    DateOnly? AccountingDate = null);
 
 public sealed record UpdateVoucherRequest(
     string? Status,
@@ -176,7 +180,9 @@ public sealed record UpdateVoucherRequest(
     string? Currency,
     string? AmountInWords,
     string? ErrorMessage,
-    string[]? Tags);
+    string[]? Tags,
+    // Chứng từ flow v2 PR4 (§10.1 P1): v2 tenants only (PATCH answers 400 otherwise).
+    DateOnly? AccountingDate = null);
 
 public sealed record SaveJournalSuggestionDto(
     int EntryNo,
