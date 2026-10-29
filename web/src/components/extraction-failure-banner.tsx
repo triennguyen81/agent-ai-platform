@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Loader2, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { gatewayErrorMessage } from "@/lib/voucher-view";
 
 // Safe reason per server code — the provider's own message never reaches
 // the browser (see Gateway ExtractionFailures).
@@ -47,7 +48,13 @@ export function ExtractionFailureBanner({
         body: JSON.stringify({ voucherType }),
       });
       if (!res.ok) {
-        setError(res.status === 403 ? "Bạn không có quyền trích xuất lại chứng từ này." : `HTTP ${res.status}`);
+        setError(
+          res.status === 403
+            ? "Bạn không có quyền trích xuất lại chứng từ này."
+            : res.status === 409
+              ? gatewayErrorMessage(await res.text())
+              : `HTTP ${res.status}`,
+        );
         return;
       }
       router.refresh();

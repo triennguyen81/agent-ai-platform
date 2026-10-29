@@ -6,7 +6,12 @@ namespace Aiq.Gateway.Vouchers;
 
 public interface IVoucherRepository
 {
-    Task<VoucherDetail> CreateAsync(
+    /// <summary>
+    /// Inserts a new voucher. Returns null and writes nothing when a voucher
+    /// with the same (seller_mst, document_number, document_date) already
+    /// exists in the tenant — never an upsert over it (chứng từ flow v2 PR1).
+    /// </summary>
+    Task<VoucherDetail?> CreateAsync(
         Guid tenantId,
         Guid departmentId,
         Guid userId,
@@ -62,7 +67,11 @@ public interface IVoucherRepository
         Guid tenantId, Guid departmentId, Guid id, string voucherType, string classificationJson, CancellationToken ct,
         bool reprocessing = false);
 
-    Task ReplaceExtractedAsync(
+    /// <summary>
+    /// Writes an extraction result over the voucher. Returns false and writes
+    /// nothing once it carries an accounting effect (<see cref="VoucherPostingGuard"/>).
+    /// </summary>
+    Task<bool> ReplaceExtractedAsync(
         Guid tenantId, Guid userId, Guid id,
         CreateVoucherRequest request,
         CancellationToken ct);
@@ -79,6 +88,7 @@ public interface IVoucherRepository
         AcceptJournalRequest request,
         CancellationToken ct);
 
+    /// <summary>False (nothing deleted) when missing or posted (<see cref="VoucherPostingGuard"/>).</summary>
     Task<bool> DeleteAsync(Guid tenantId, Guid userId, Guid id, CancellationToken ct);
 
     // Tax verification state is owned by ITaxVerificationRepository
@@ -102,7 +112,8 @@ public interface IVoucherRepository
 
     // P1 async OCR: called from Hangfire job (no tenant/user context).
     // Updates just status + rawText + confidence + errorMessage. Idempotent.
-    Task UpdateOcrResultAsync(
+    // Returns false and writes nothing on a posted voucher (VoucherPostingGuard).
+    Task<bool> UpdateOcrResultAsync(
         Guid id,
         string status,
         string? rawText,
@@ -264,7 +275,7 @@ public sealed class VoucherRepository : IVoucherRepository
                 cancellationToken: ct));
     }
 
-    public async Task<VoucherDetail> CreateAsync(
+    public async Task<VoucherDetail?> CreateAsync(
         Guid tenantId,
         Guid departmentId,
         Guid userId,
@@ -301,27 +312,7 @@ public sealed class VoucherRepository : IVoucherRepository
               AND seller_mst IS NOT NULL
               AND document_number IS NOT NULL
               AND document_date IS NOT NULL
-            DO UPDATE SET
-                status           = 'extracted',
-                document_series  = COALESCE(EXCLUDED.document_series, vouchers.document_series),
-                seller_name      = COALESCE(EXCLUDED.seller_name, vouchers.seller_name),
-                seller_address   = COALESCE(EXCLUDED.seller_address, vouchers.seller_address),
-                buyer_name       = COALESCE(EXCLUDED.buyer_name, vouchers.buyer_name),
-                buyer_mst        = COALESCE(EXCLUDED.buyer_mst, vouchers.buyer_mst),
-                buyer_address    = COALESCE(EXCLUDED.buyer_address, vouchers.buyer_address),
-                payment_method   = COALESCE(EXCLUDED.payment_method, vouchers.payment_method),
-                subtotal         = COALESCE(EXCLUDED.subtotal, vouchers.subtotal),
-                vat_rate         = COALESCE(EXCLUDED.vat_rate, vouchers.vat_rate),
-                vat_amount       = COALESCE(EXCLUDED.vat_amount, vouchers.vat_amount),
-                discount_amount  = COALESCE(EXCLUDED.discount_amount, vouchers.discount_amount),
-                total_amount     = COALESCE(EXCLUDED.total_amount, vouchers.total_amount),
-                currency         = EXCLUDED.currency,
-                amount_in_words  = COALESCE(EXCLUDED.amount_in_words, vouchers.amount_in_words),
-                raw_ocr_text     = COALESCE(EXCLUDED.raw_ocr_text, vouchers.raw_ocr_text),
-                ocr_confidence   = COALESCE(EXCLUDED.ocr_confidence, vouchers.ocr_confidence),
-                extracted_fields = EXCLUDED.extracted_fields,
-                tags             = EXCLUDED.tags,
-                updated_at       = NOW()
+            DO NOTHING
             RETURNING {VoucherSelectColumns};
             """;
 
@@ -357,15 +348,11 @@ public sealed class VoucherRepository : IVoucherRepository
             tags = request.Tags ?? Array.Empty<string>(),
         };
 
-        var voucher = await conn.QuerySingleAsync<VoucherRecord>(
+        // An existing voucher with the same identity is never overwritten —
+        // it may be posted, or belong to another department (P3).
+        var voucher = await conn.QuerySingleOrDefaultAsync<VoucherRecord>(
             new CommandDefinition(insertSql, parameters, transaction: tx, cancellationToken: ct));
-        // The ON CONFLICT path updates an existing (possibly verified) voucher.
-        await TaxVerificationRepository.InvalidateIfIdentityChangedAsync(conn, tx, tenantId, voucher.Id, ct);
-
-        // Replace line items (idempotent: delete then insert)
-        const string deleteLines = "DELETE FROM voucher_line_items WHERE voucher_id = @voucherId;";
-        await conn.ExecuteAsync(new CommandDefinition(
-            deleteLines, new { voucherId = voucher.Id }, transaction: tx, cancellationToken: ct));
+        if (voucher is null) { await tx.RollbackAsync(ct); return null; }
 
         var lineItems = new List<VoucherLineItemRecord>();
         if (request.LineItems is { Count: > 0 })
@@ -432,7 +419,7 @@ public sealed class VoucherRepository : IVoucherRepository
         return rows == 1;
     }
 
-    public async Task ReplaceExtractedAsync(
+    public async Task<bool> ReplaceExtractedAsync(
         Guid tenantId, Guid userId, Guid id,
         CreateVoucherRequest request,
         CancellationToken ct)
@@ -440,7 +427,7 @@ public sealed class VoucherRepository : IVoucherRepository
         // Update existing stub row with extracted fields.
         var extractedJson = SerializeExtracted(request.ExtractedFields);
 
-        const string updateSql = """
+        const string updateSql = $"""
             UPDATE vouchers SET
                 status           = 'extracted',
                 voucher_type     = @voucherType,
@@ -462,16 +449,17 @@ public sealed class VoucherRepository : IVoucherRepository
                 currency         = @currency,
                 amount_in_words  = @amountInWords,
                 raw_ocr_text     = @rawOcrText,
-                ocr_confidence   = @ocrConfidence,
+                ocr_confidence   = COALESCE(@ocrConfidence, ocr_confidence),
                 extracted_fields = @extractedJson::jsonb,
                 tags             = @tags
-            WHERE id = @id AND tenant_id = @tenantId AND user_id = @userId;
+            WHERE id = @id AND tenant_id = @tenantId AND user_id = @userId
+              AND {VoucherPostingGuard.NotPostedSql};
             """;
 
         await using var conn = await _factory.OpenAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
-        await conn.ExecuteAsync(new CommandDefinition(
+        var updated = await conn.ExecuteAsync(new CommandDefinition(
             updateSql,
             new
             {
@@ -501,6 +489,7 @@ public sealed class VoucherRepository : IVoucherRepository
             },
             transaction: tx,
             cancellationToken: ct));
+        if (updated == 0) { await tx.RollbackAsync(ct); return false; }
         // Re-extraction may change the invoice identity a tax verification covers.
         await TaxVerificationRepository.InvalidateIfIdentityChangedAsync(conn, tx, tenantId, id, ct);
 
@@ -546,6 +535,7 @@ public sealed class VoucherRepository : IVoucherRepository
         }
 
         await tx.CommitAsync(ct);
+        return true;
     }
 
     public async Task<VoucherDetail?> FindAsync(
@@ -884,11 +874,13 @@ public sealed class VoucherRepository : IVoucherRepository
         // (VoucherEndpoints.DeleteAsync) is responsible for resolving the
         // voucher's actual creator via FindInDepartmentAsync first and
         // passing that id through, not the deleting admin's own id.
-        const string sql = """
+        // A posted voucher is audit history: reverse it, never delete it (P5).
+        const string sql = $"""
             DELETE FROM vouchers
             WHERE id = @id
               AND user_id = @userId
-              AND tenant_id = @tenantId;
+              AND tenant_id = @tenantId
+              AND {VoucherPostingGuard.NotPostedSql};
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.ExecuteAsync(
@@ -922,7 +914,7 @@ public sealed class VoucherRepository : IVoucherRepository
         return rows > 0;
     }
 
-    public async Task UpdateOcrResultAsync(
+    public async Task<bool> UpdateOcrResultAsync(
         Guid id,
         string status,
         string? rawText,
@@ -930,7 +922,7 @@ public sealed class VoucherRepository : IVoucherRepository
         string? errorMessage,
         CancellationToken ct)
     {
-        const string sql = """
+        const string sql = $"""
             UPDATE vouchers
             SET status         = @status,
                 raw_ocr_text   = COALESCE(@rawText, raw_ocr_text),
@@ -938,12 +930,13 @@ public sealed class VoucherRepository : IVoucherRepository
                 error_message  = @errorMessage,
                 updated_at     = NOW()
             WHERE id = @id
+              AND {VoucherPostingGuard.NotPostedSql}
             """;
         await using var conn = await _factory.OpenAsync(ct);
-        await conn.ExecuteAsync(new CommandDefinition(
+        return await conn.ExecuteAsync(new CommandDefinition(
             sql,
             new { id, status, rawText, ocrConfidence, errorMessage },
-            cancellationToken: ct));
+            cancellationToken: ct)) == 1;
     }
 
     public async Task<bool> TryUpdateOcrJobResultAsync(

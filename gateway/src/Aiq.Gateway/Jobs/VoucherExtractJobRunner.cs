@@ -119,6 +119,13 @@ public sealed class VoucherExtractJobRunner
             _logger.LogWarning("Voucher {VoucherId} not found — extract skipped", voucherId);
             return;
         }
+        // P2: a posted voucher is never re-extracted — refuse before any side
+        // effect (bank statement import, review gate, L2 enqueue, provenance).
+        if (VoucherPostingGuard.IsPostedStatus(stub.Voucher.Status))
+        {
+            _logger.LogWarning("Voucher {VoucherId} status={Status} is posted — extract skipped", voucherId, stub.Voucher.Status);
+            return;
+        }
         // The actor id comes from the enqueueing endpoint's authenticated
         // principal; still refuse anything that is not an active user of THIS
         // tenant (defense in depth against a tampered job payload).
@@ -606,7 +613,12 @@ public sealed class VoucherExtractJobRunner
             policy?.TypeConfig?.Workflow?.VersionId, resolution.ConfigSource, reviewRequired, reviewTaskId,
             blockingReasons.Count > 0, string.Join(",", blockingReasons), reextract);
 
-        await _vouchers.ReplaceExtractedAsync(tenantIdValue, userId, voucherId, applyRequest, ct);
+        if (!await _vouchers.ReplaceExtractedAsync(tenantIdValue, userId, voucherId, applyRequest, ct))
+        {
+            // Posted while the Agent was running: the posting wins, drop this result.
+            _logger.LogWarning("Voucher {VoucherId} was posted during extraction — result discarded", voucherId);
+            return;
+        }
         await RecordProvenanceAsync(tenantIdValue, stub.Voucher.DepartmentId, actorId, voucherId, resolution, executed, policy, classification,
             triggerKind, reviewTaskId, ct);
 

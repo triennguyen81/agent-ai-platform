@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   buildPartyCards,
+  gatewayErrorMessage,
   overlayLiveAp,
   overlayLiveAr,
   partyTitles,
@@ -126,5 +127,20 @@ describe("document reference vs selected invoice", () => {
   });
   test("no reference on document: nothing to compare", () => {
     expect(selectionMismatchesReference({ ...ref, documentReferences: [] }, ["X"])).toBe(false);
+  });
+});
+
+describe("gateway error message", () => {
+  test("prefers the Gateway's human message over its error code", () => {
+    const body = JSON.stringify({ error: "voucher_posted", message: "Chứng từ đã ghi sổ — không thể sửa." });
+    expect(gatewayErrorMessage(body)).toBe("Chứng từ đã ghi sổ — không thể sửa.");
+  });
+  test("falls back to error, then detail, then the raw text", () => {
+    expect(gatewayErrorMessage(JSON.stringify({ error: "rawText quá ngắn" }))).toBe("rawText quá ngắn");
+    expect(gatewayErrorMessage(JSON.stringify({ detail: "boom" }))).toBe("boom");
+    expect(gatewayErrorMessage("plain failure")).toBe("plain failure");
+  });
+  test("truncates long non-JSON bodies", () => {
+    expect(gatewayErrorMessage("x".repeat(500))).toHaveLength(300);
   });
 });

@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Label, Textarea } from "@/components/ui/input";
+import { gatewayErrorMessage } from "@/lib/voucher-view";
 
 interface VoucherExtractFormProps {
   voucherId: string;
@@ -86,12 +87,7 @@ export function VoucherExtractForm({
             ? "Extract chạy quá 100s — hệ thống chuyển sang chế độ nền, thử refresh trang sau 30-60s."
             : "Máy chủ tạm thời không phản hồi. Vui lòng thử lại sau ít giây.";
         } else {
-          try {
-            const parsed = JSON.parse(text) as { error?: string; detail?: string };
-            msg = parsed.error ?? parsed.detail ?? text.slice(0, 300);
-          } catch {
-            msg = text.slice(0, 300);
-          }
+          msg = gatewayErrorMessage(text);
         }
         setError(`Lỗi ${res.status}: ${msg}`);
         return;

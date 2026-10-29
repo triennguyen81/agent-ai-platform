@@ -350,7 +350,7 @@ public static class VoucherEndpoints
         return Results.Ok(new { task = decided, reviewStatus = await reviews.GetGateStatusAsync(tenantId, id, ct) });
     }
 
-    private sealed record ReextractRequest(string? RawText, string? VoucherType);
+    internal sealed record ReextractRequest(string? RawText, string? VoucherType);
 
     private sealed record SetVoucherTypeRequest(string? VoucherType);
 
@@ -1227,7 +1227,7 @@ public static class VoucherEndpoints
         return Results.Ok(payload);
     }
 
-    private static async Task<IResult> ReextractAsync(
+    internal static async Task<IResult> ReextractAsync(
         Guid id,
         ReextractRequest? request,
         IVoucherRepository repo,
@@ -1250,6 +1250,8 @@ public static class VoucherEndpoints
         {
             return Results.Forbid();
         }
+        // A posted voucher is never re-extracted — not even its raw text (P2).
+        if (VoucherPostingGuard.IsPostedStatus(voucher.Voucher.Status)) return VoucherPostingGuard.Conflict();
         if (await ExpenseClaimItemGateAsync(ctx, id, requireResolved: false, ct) is { } managed) return managed;
         // The background job would only fail on the frozen row: refuse up front.
         if (voucher.Voucher.VoucherType == "expense_claim"
@@ -1267,15 +1269,16 @@ public static class VoucherEndpoints
         // the voucher first so the extract job reads it from DB just like
         // OCR-populated rows.
         var newRawText = request?.RawText?.Trim() ?? "";
-        if (newRawText.Length >= 20)
-        {
-            await repo.UpdateOcrResultAsync(
+        if (newRawText.Length >= 20
+            && !await repo.UpdateOcrResultAsync(
                 id,
                 status: "ocr_complete",
                 rawText: newRawText,
                 ocrConfidence: 1.0m,   // user-verified text is 100% by definition
                 errorMessage: null,
-                ct);
+                ct))
+        {
+            return VoucherPostingGuard.Conflict();
         }
 
         // Explicit type in the request = a user hint. Otherwise keep what the
@@ -1565,7 +1568,7 @@ public static class VoucherEndpoints
         return Results.Empty;
     }
 
-    private static async Task<IResult> CreateAsync(
+    internal static async Task<IResult> CreateAsync(
         CreateVoucherRequest request,
         IVoucherRepository repo,
         HttpContext ctx,
@@ -1582,7 +1585,15 @@ public static class VoucherEndpoints
         if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
 
         var created = await repo.CreateAsync(tenantId, departmentId, userId, request, ct);
-        return Results.Created($"/vouchers/{created.Voucher.Id}", created);
+        if (created is not null) return Results.Created($"/vouchers/{created.Voucher.Id}", created);
+
+        // Same (MST, số, ngày) already exists: never overwrite it (P3). Its id
+        // is disclosed only inside the caller's own department.
+        var existing = await repo.FindDuplicateAsync(tenantId, request.SellerMst!, request.DocumentNumber!, excludeId: Guid.Empty, ct);
+        const string message = "Chứng từ trùng (MST, số, ngày) đã tồn tại — không ghi đè.";
+        return existing?.DepartmentId == departmentId
+            ? Results.Conflict(new { error = "duplicate_voucher", message, existingVoucherId = existing.Id })
+            : Results.Conflict(new { error = "duplicate_voucher", message });
     }
 
     private static async Task<IResult> GetAsync(
@@ -1732,7 +1743,7 @@ public static class VoucherEndpoints
         return Results.File(File.OpenRead(path), contentType, downloadName);
     }
 
-    private static async Task<IResult> ApplyExtractionAsync(
+    internal static async Task<IResult> ApplyExtractionAsync(
         Guid id,
         CreateVoucherRequest request,
         IVoucherRepository repo,
@@ -1743,18 +1754,20 @@ public static class VoucherEndpoints
         {
             return Results.ValidationProblem(errors);
         }
-        if (!TryGetUserId(ctx, out var userId))
-        {
-            return Results.Unauthorized();
-        }
-        var tenantId = TenantContext.Require(ctx);
+        // Same creator-scoped-USER / same-department-ADMIN rule as reextract.
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
 
-        // Ownership check — 404 if the caller doesn't own the stub.
-        var existing = await repo.FindAsync(tenantId, userId, id, ct);
+        var existing = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (existing is null)
         {
             return Results.NotFound();
         }
+        if (!principal.IsInRole("admin") && existing.Voucher.UserId != principal.UserId)
+        {
+            return Results.Forbid();
+        }
+        // P1: an extraction never overwrites a posted voucher.
+        if (VoucherPostingGuard.IsPostedStatus(existing.Voucher.Status)) return VoucherPostingGuard.Conflict();
 
         // UC-ACC-001 E2: chống kê khai trùng — cùng seller_mst + document_number.
         // Search hoá đơn khác cùng cặp (loại trừ chính stub này). If found,
@@ -1776,12 +1789,17 @@ public static class VoucherEndpoints
             }
         }
 
-        await repo.ReplaceExtractedAsync(tenantId, userId, id, request, ct);
-        var updated = await repo.FindAsync(tenantId, userId, id, ct);
+        // The repository re-checks the posting guard in the UPDATE itself, so a
+        // posting that lands between the check above and this write still wins.
+        if (!await repo.ReplaceExtractedAsync(tenantId, existing.Voucher.UserId, id, request, ct))
+        {
+            return VoucherPostingGuard.Conflict();
+        }
+        var updated = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
 
-    private static async Task<IResult> DeleteAsync(
+    internal static async Task<IResult> DeleteAsync(
         Guid id,
         IVoucherRepository repo,
         HttpContext ctx,
@@ -1795,6 +1813,8 @@ public static class VoucherEndpoints
         if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
         var existing = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (existing is null) return Results.NotFound();
+        // P5: a posted voucher (invoice AR/AP included) is reversed, never deleted.
+        if (VoucherPostingGuard.IsPostedStatus(existing.Voucher.Status)) return VoucherPostingGuard.Conflict();
 
         // A receipt/payment that ever carried an accounting effect (posted or
         // reversed) is audit history — cash_transactions references it with

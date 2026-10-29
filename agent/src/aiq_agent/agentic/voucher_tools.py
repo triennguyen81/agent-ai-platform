@@ -212,6 +212,8 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
         async with httpx.AsyncClient(timeout=20) as client:
             res = await client.request(verb, url, headers=auth_headers, json=body)
 
+        if res.status_code == 409:
+            return {"content": [{"type": "text", "text": _conflict_text(res)}]}
         if res.status_code not in (200, 201, 204):
             return {
                 "content": [
@@ -538,6 +540,30 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
         suggest_journal_entry,
         save_journal_suggestions,
     ]
+
+
+def _conflict_text(res: httpx.Response) -> str:
+    """A Gateway 409 on save is final: posted or duplicate, never retried."""
+    try:
+        body = res.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    message = str(body.get("message") or res.text[:200])
+    if body.get("error") == "voucher_posted":
+        return (
+            f"⛔ {message} Chứng từ đã ghi sổ: KHÔNG thử lại, KHÔNG tạo chứng từ mới thay thế. "
+            "Báo người dùng — muốn sửa thì kế toán phải đảo bút toán trước."
+        )
+    if body.get("error") == "duplicate_voucher":
+        existing = body.get("existingVoucherId")
+        ref = f" (id={existing})" if existing else ""
+        return (
+            f"⛔ {message}{ref} Chứng từ trùng đã tồn tại: KHÔNG thử lại, KHÔNG lưu đè. "
+            "Báo người dùng kiểm tra chứng từ đã có."
+        )
+    return f"⛔ Gateway từ chối lưu chứng từ (409): {message} KHÔNG thử lại; báo người dùng."
 
 
 def _recommendation(value: Any) -> str | None:

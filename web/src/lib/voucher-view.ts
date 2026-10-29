@@ -239,3 +239,24 @@ export function selectionMismatchesReference(reference: ReferenceCheckView | nul
   const refs = new Set([...reference.documentReferences, ...reference.referencedInvoices.map((r) => r.documentNumber)].map(norm));
   return selectedDocNumbers.some((d) => !refs.has(norm(d)));
 }
+
+// ---------------------------------------------------------------------------
+// Gateway error bodies
+// ---------------------------------------------------------------------------
+
+/**
+ * Human-readable text of a Gateway error body: its `message` (e.g. the 409
+ * voucher_posted / duplicate_voucher refusals), else `error` / `detail`,
+ * else the raw text.
+ */
+export function gatewayErrorMessage(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as { message?: unknown; error?: unknown; detail?: unknown };
+    for (const value of [parsed.message, parsed.error, parsed.detail]) {
+      if (typeof value === "string" && value.trim()) return value;
+    }
+  } catch {
+    // not JSON
+  }
+  return text.slice(0, 300);
+}
