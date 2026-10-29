@@ -171,7 +171,7 @@ Viết thành class thuần `VoucherValidator` (không I/O) để unit test dễ
 | `VAT_RATE` | Thuế suất tra trong bảng `vat_rates(code, rate, effective_from, effective_to, legal_ref)` **theo ngày hoá đơn**. Không hard-code trong code. Ví dụ dòng seed: `8%` hiệu lực 01/07/2025–31/12/2026 (NĐ 174/2025) | error | **[QĐ 11]**; các dòng còn lại (0, 5, 10, KCT, KKKNT…) kế toán duyệt khi seed |
 | `AMOUNT_IN_WORDS` | Số tiền bằng chữ khớp số (nếu có) | warning | **[GIẢ ĐỊNH]** |
 | `PERIOD_OPEN` | Ngày hạch toán thuộc kỳ (tháng) chưa khoá | error | **[QĐ 12]** |
-| `DATE_FUTURE` | Ngày chứng từ không quá "hôm nay" theo giờ `Asia/Ho_Chi_Minh` + 1 ngày | error | **[User 2026-10-29: cho phép lệch 1 ngày]** |
+| `DATE_FUTURE` | Ngày chứng từ không quá "hôm nay" theo giờ `Asia/Ho_Chi_Minh` + 1 ngày | error | **[QĐ 25]** |
 | `DUPLICATE` | Trùng khoá ở §3.1 | error | Hiện có, sửa khoá |
 | `JOURNAL_ACCOUNT` | TK Nợ/Có tồn tại và được phép hạch toán trong hệ thống TK áp dụng cho **năm tài chính của ngày hạch toán** (§3.4) | error | **[CHỜ kế toán xác nhận bảng TK, QĐ 14]** |
 | `JOURNAL_LINE` | Từng dòng bút toán gợi ý: có TK Nợ, TK Có, hai TK khác nhau, số tiền > 0 | error | |
@@ -415,9 +415,9 @@ Mỗi PR: viết test trước; chạy `dotnet test`, `pytest`, `vitest`, `ruff`
 | 22 | Concurrency | `PATCH` bắt buộc `If-Match`; lệch version → 412 | §5, PR5, PR10 |
 | 23 | `X-AIQ-Actor` | Lớp phụ tạm thời; Gateway xoá header ở mọi request bên ngoài, chỉ nhận từ mạng nội bộ của agent; có test | §6.3, PR3 |
 | 24 | `journalized` | Bỏ, kèm migration chuyển dữ liệu nếu có bản ghi | §4.2, PR3 |
+| 25 | Ngày ở tương lai | `DATE_FUTURE` là lỗi chặn khi ngày chứng từ > "hôm nay" theo giờ `Asia/Ho_Chi_Minh` + 1 ngày (cho phép lệch 1 ngày). Quyết định của user ngày 29/10/2026 | §3.3, PR2.x |
 
 Còn chờ: **QĐ 8** (danh sách trường bắt buộc theo loại) và **QĐ 14** (bảng TK TT99/TT133 + ánh xạ) cần kế toán xác nhận. Giả định mới phát sinh khi chi tiết hoá, chưa được duyệt:
-- `DATE_FUTURE` là lỗi chặn (§3.3) — đã chốt kèm dung sai 1 ngày theo giờ VN (2026-10-29).
 - Chỉ tạo index trùng unique sau khi đã xử lý trùng cũ (§4.1, 074).
 - Mạng docker riêng hoặc IP cố định cho agent (§6.3).
 - Mã 428 khi thiếu `If-Match` (§5).

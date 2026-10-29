@@ -53,7 +53,7 @@ Phạm vi (§9 + QĐ 8, 9, 10, 11): validator thuần, chỉ tham khảo, chưa 
 - Bước 5: `Vouchers/Validation/VoucherValidationService.cs` (repo `IVoucherValidationRepository` + service; "hôm nay" = UTC+7, không cần tzdata; `TimeProvider` đăng ký ở `Program.cs`). Route `GET /vouchers/{id}/validation` → `VoucherEndpoints.ValidationAsync` (TryScope: USER/ADMIN cùng phòng ban; khác phòng ban 404; TENANT_OWNER/SUPER_ADMIN 403). Mỗi lần GET tính lại + upsert `voucher_validations`, không ghi vào `vouchers`. Test `Data/VoucherValidationIntegrationTests.cs` xanh.
 - Bước 6: gateway Release `-warnaserror` + full suite serial **969/969**; agent ruff sạch, pytest 407 pass / 8 skip; web tsc sạch, vitest 102/102. Đã đồng bộ `chung-tu-proposed.md` (§3.3, §4.1, §9). Container `aiq-test-pg` + network `aiq-test-net` đã xoá.
 
-## PR2.x — Sửa sau review PR2 ✅ code + push `cbd9f83` · ⏸ CI chưa kiểm được
+## PR2.x — Sửa sau review PR2 ✅ (push `38f6404`; user 2026-10-29: chỉ test local, không cần kiểm CI)
 
 Yêu cầu user (2026-10-29): (1) GET validation không ghi DB, chỉ lưu khi chứng từ đổi + khi submit (PR3), thêm snapshot phiên bản chứng từ (migration mới + down); (2) `JOURNAL_TOTAL` → warning vĩnh viễn, thêm ERROR tổng Nợ = tổng Có; (3) "hôm nay" theo Asia/Ho_Chi_Minh, cho phép lệch 1 ngày, test 23:30 / 00:30 giờ VN; (4) test VAT_RATE dùng vat_rates riêng, không dựa seed 068; (5) ghi mục chờ người dùng.
 
@@ -70,12 +70,29 @@ Yêu cầu user (2026-10-29): (1) GET validation không ghi DB, chỉ lưu khi c
 - Bước 4: `VoucherValidationIntegrationTests` dùng `IAsyncLifetime` thay bảng `vat_rates` bằng dữ liệu riêng (3 đợt 8% có khoảng trống) trước mỗi test; Theory 5 ngày (trong/ngoài đợt). 116 test liên quan xanh.
 - Bước 5: full suite — gateway Release `-warnaserror` serial **987/987**; agent ruff sạch, pytest 407 pass / 8 skip; web tsc sạch, vitest 102/102. Đồng bộ `chung-tu-proposed.md` (§3.3 bảng quy tắc, §4.1 thêm 069, §5 GET chỉ đọc, §9 PR2). **Đánh lại số migration dự kiến**: lifecycle 067 → **070** (067 tạo sau 068/069 sẽ chạy lệch thứ tự giữa DB mới và DB đã migrate), accounting_periods → 071, chart_of_accounts → 072, posting_integrity → 073, dedup_v2 → 074.
 - CI: `ci.yml` chỉ chạy khi push `master`, PR vào `master` hoặc `workflow_dispatch` — push branch **không** kích CI. Máy không có `gh`.
-- "lệch 1 ngày": không tìm thấy trong §10 hay transcript — coi yêu cầu 2026-10-29 là quyết định, ghi vào tài liệu.
+- "lệch 1 ngày": user xác nhận là quyết định của họ ngày 29/10 → **QĐ 25** trong §10.
 
 ## Đang chờ người dùng / kế toán
-- **CI cho PR2.x (chặn PR3):** máy không có `gh`, repo private (API công khai 404), và `ci.yml` không chạy khi push branch. Cần user: cài + `gh auth login`, hoặc mở PR (draft) vào `master` / chạy `workflow_dispatch` cho branch, hoặc tự gửi kết quả `gh run list --branch feat/chung-tu-flow-v2 --limit 3`.
 - Kế toán bổ sung các đợt giảm thuế GTGT 8% trước 07/2025 theo từng nghị quyết/nghị định (thêm dòng `vat_rates`, không sửa code).
 - Xác nhận trường bắt buộc cho phiếu thu/chi (`document_date`, `document_number`, `total_amount`) và đề nghị thanh toán (`document_date`, `total_amount`) — hiện là [GIẢ ĐỊNH].
 - QĐ 8 (danh sách trường bắt buộc chính thức), QĐ 14 (bảng TK TT99/TT133 + ánh xạ, trước PR8), thuật toán checksum MST.
 
-## PR3 — Vòng đời + audit (chưa bắt đầu — sau PR2.x khi CI xanh)
+## PR3 — Vòng đời + audit ⏳
+
+Phạm vi (§2, §3.7, §4.1 `070`, §4.2, §5, §6.3, QĐ 1, 2, 3, 20, 23, 24): chỉ test local (không kiểm CI).
+Ngoài PR3: `post`/`reverse`/`{post:true}`/alias `apply-*` + gate L2 + `If-Match` (PR5), kỳ kế toán (PR4), `supersede` (PR6), unique dedup bỏ qua xoá mềm (PR7).
+
+- [x] 1. QĐ 25 vào §10; ghi nhớ "chỉ test local"; kế hoạch PR3
+- [ ] 2. `VoucherStateMachine` thuần + test ma trận trạng thái × hành động × vai trò (ADMIN tự duyệt chứng từ của mình; `reversed`/`rejected` cuối; agent bị từ chối)
+- [ ] 3. Migration `070_voucher_lifecycle.sql` + down: cột vòng đời, `voucher_events` append-only, `tenant_feature_flags`, trigger đồng bộ `status`→`lifecycle_state` (+ `lifecycle_version`, `posted_at`), trigger ghi event (actor từ `set_config`), backfill (không đổi `updated_at`), chuyển `journalized`; test up→down→up
+- [ ] 4. Repository vòng đời (chuyển trạng thái nguyên tử + event cùng transaction, đọc events, cờ tenant) + guard `voucher_locked` trên các đường sửa (PATCH, apply-extraction, reextract, job, bút toán, đổi loại) + thông báo agent/web
+- [ ] 5. Validator → vòng đời (khi bật cờ): `extracted`/`needs_fix`/`validated` theo kết quả
+- [ ] 6. Endpoint `submit`/`approve`/`return`/`reject` + `GET /events`, theo cờ `voucher_flow_v2`; test ACL (ADMIN tự duyệt OK, USER không duyệt, TO/SA 403, khác phòng 404, header agent bị từ chối)
+- [ ] 7. Xoá mềm (khi bật cờ) + lọc `deleted_at` ở các đường đọc + chặn xoá chứng từ đã từng ghi sổ
+- [ ] 8. Middleware xoá `X-AIQ-Actor` (QĐ 23) + `Security:AgentInternalNetworks` + test 4 trường hợp
+- [ ] 9. Bỏ nhánh `journalized` trong code; chạy đủ test; đồng bộ tài liệu; commit; báo cáo
+
+### Ghi chú PR3
+- Thiết kế: một trigger AFTER ghi `voucher_events` `state_change` cho MỌI thay đổi `lifecycle_state` (đường cũ = `system`; đường v2 đặt `aiq.actor_id/actor_type/reason` bằng `set_config(..., true)` trong transaction) → một nơi ghi duy nhất, luôn cùng transaction.
+- `voucher_events.voucher_id` không FK (lịch sử sống sót khi tenant chưa bật cờ còn xoá cứng); append-only, chỉ cho DELETE khi tenant đã bị xoá (cascade).
+- Trigger 059 chỉ chặn khi đổi cột nội dung → cập nhật cột vòng đời không vướng.
