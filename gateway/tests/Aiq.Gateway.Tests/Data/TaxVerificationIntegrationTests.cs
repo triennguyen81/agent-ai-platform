@@ -50,6 +50,9 @@ public sealed class TaxVerificationDatabase : IAsyncLifetime
         return Directory.Exists(output) ? output : RepoPath("gateway", "src", "Aiq.Gateway", "Data", "Migrations");
     }
 
+    /// <summary>A hand-run down script (never copied to the output, never run by the migrator).</summary>
+    public static string DownScript(string file) => RepoPath("gateway", "src", "Aiq.Gateway", "Data", "Migrations", "down", file);
+
     /// <summary>
     /// Gateway migrations: one transaction per file, as DatabaseMigrator does.
     /// Init scripts: plain execution, as psql/docker-entrypoint does (some

@@ -7,7 +7,7 @@
 BEGIN;
 
 DO $$
-DECLARE suffix TEXT := to_char(NOW(), 'YYYYMMDDHH24MISS');
+DECLARE suffix TEXT := to_char(clock_timestamp(), 'YYYYMMDDHH24MISSUS');
 BEGIN
   IF to_regclass('public.vat_rates') IS NOT NULL THEN
     EXECUTE format('CREATE TABLE %I AS TABLE vat_rates', 'vat_rates_backup_' || suffix);
