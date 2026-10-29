@@ -28,9 +28,9 @@ docker rm -f aiq-test-pg; docker network rm aiq-test-net
 
 Test DB-backed tự bỏ qua (pass rỗng) nếu thiếu `AIQ_TEST_POSTGRES` — kiểm tra log Postgres có `CREATE DATABASE`.
 
-## PR1 — Guard an toàn ✅ (commit `addd106`, chờ review)
+## PR1 — Guard an toàn ✅ (commit `addd106`, user duyệt 2026-10-29)
 
-## PR2 — Validator ✅ (chờ review)
+## PR2 — Validator ✅ (user duyệt 2026-10-29, sửa tiếp ở PR2.x)
 
 Phạm vi (§9 + QĐ 8, 9, 10, 11): validator thuần, chỉ tham khảo, chưa chặn. Migration 068 + down. `GET /vouchers/{id}/validation`.
 
@@ -53,4 +53,22 @@ Phạm vi (§9 + QĐ 8, 9, 10, 11): validator thuần, chỉ tham khảo, chưa 
 - Bước 5: `Vouchers/Validation/VoucherValidationService.cs` (repo `IVoucherValidationRepository` + service; "hôm nay" = UTC+7, không cần tzdata; `TimeProvider` đăng ký ở `Program.cs`). Route `GET /vouchers/{id}/validation` → `VoucherEndpoints.ValidationAsync` (TryScope: USER/ADMIN cùng phòng ban; khác phòng ban 404; TENANT_OWNER/SUPER_ADMIN 403). Mỗi lần GET tính lại + upsert `voucher_validations`, không ghi vào `vouchers`. Test `Data/VoucherValidationIntegrationTests.cs` xanh.
 - Bước 6: gateway Release `-warnaserror` + full suite serial **969/969**; agent ruff sạch, pytest 407 pass / 8 skip; web tsc sạch, vitest 102/102. Đã đồng bộ `chung-tu-proposed.md` (§3.3, §4.1, §9). Container `aiq-test-pg` + network `aiq-test-net` đã xoá.
 
-## PR3 — Vòng đời + audit (chưa bắt đầu — chờ user review PR1, PR2)
+## PR2.x — Sửa sau review PR2 ⏳
+
+Yêu cầu user (2026-10-29): (1) GET validation không ghi DB, chỉ lưu khi chứng từ đổi + khi submit (PR3), thêm snapshot phiên bản chứng từ (migration mới + down); (2) `JOURNAL_TOTAL` → warning vĩnh viễn, thêm ERROR tổng Nợ = tổng Có; (3) "hôm nay" theo Asia/Ho_Chi_Minh, cho phép lệch 1 ngày, test 23:30 / 00:30 giờ VN; (4) test VAT_RATE dùng vat_rates riêng, không dựa seed 068; (5) ghi mục chờ người dùng.
+
+- [ ] 1. Validator: `JOURNAL_TOTAL` warning; `JOURNAL_BALANCE` = tổng Nợ = tổng Có (error), kiểm từng dòng đổi tên `JOURNAL_LINE`; `DATE_FUTURE` > hôm nay VN + 1 ngày; `Version` = 2; test unit trước
+- [ ] 2. Migration `069_voucher_validation_snapshot.sql` (+ down) thêm `voucher_updated_at`, `voucher_fingerprint` vào `voucher_validations`; test up→down→up
+- [ ] 3. Service tách `ComputeAsync` (GET, không ghi) / `RecordAsync` (lưu); gọi Record sau tạo / PATCH / apply-extraction / job trích xuất (upload + reextract) / bút toán gợi ý / đổi loại; test tích hợp
+- [ ] 4. Test tích hợp VAT_RATE với bảng `vat_rates` của riêng test (các đợt 8% không liên tục)
+- [ ] 5. Chạy đủ test, đồng bộ tài liệu, commit, push, kiểm tra GitHub Actions (`gh run list --branch feat/chung-tu-flow-v2 --limit 3`); đỏ thì sửa
+
+### Ghi chú PR2.x
+- "lệch 1 ngày": không tìm thấy trong §10 hay transcript — coi yêu cầu 2026-10-29 là quyết định, ghi vào tài liệu.
+
+## Đang chờ người dùng / kế toán
+- Kế toán bổ sung các đợt giảm thuế GTGT 8% trước 07/2025 theo từng nghị quyết/nghị định (thêm dòng `vat_rates`, không sửa code).
+- Xác nhận trường bắt buộc cho phiếu thu/chi (`document_date`, `document_number`, `total_amount`) và đề nghị thanh toán (`document_date`, `total_amount`) — hiện là [GIẢ ĐỊNH].
+- QĐ 8 (danh sách trường bắt buộc chính thức), QĐ 14 (bảng TK TT99/TT133 + ánh xạ, trước PR8), thuật toán checksum MST.
+
+## PR3 — Vòng đời + audit (chưa bắt đầu — sau PR2.x khi CI xanh)
