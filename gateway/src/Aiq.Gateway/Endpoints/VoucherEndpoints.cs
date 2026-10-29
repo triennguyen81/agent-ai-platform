@@ -205,6 +205,14 @@ public static class VoucherEndpoints
         return app;
     }
 
+    /// <summary>A guarded write changed no row: say whether the lifecycle lock or the posting guard refused it.</summary>
+    private static async Task<IResult> EditRefusedAsync(IVoucherRepository repo, Guid tenantId, Guid departmentId, Guid id, CancellationToken ct)
+    {
+        var now = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (now is null) return Results.NotFound();
+        return Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.IsLocked(now.Voucher) ? Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.Conflict() : VoucherPostingGuard.Conflict();
+    }
+
     /// <summary>'agent' when the Agent's tool says so — a label for the audit trail only, never an authority.</summary>
     private static string ActorType(HttpContext ctx) =>
         string.Equals(ctx.Request.Headers["X-AIQ-Actor"].ToString(), "agent", StringComparison.OrdinalIgnoreCase) ? "agent" : "user";
@@ -371,6 +379,7 @@ public static class VoucherEndpoints
 
         var voucher = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (voucher is null) return Results.NotFound();
+        if (Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.IsLocked(voucher.Voucher)) return Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.Conflict();
 
         var current = Aiq.Gateway.Vouchers.VoucherTypeClassification.FromExtractedFields(voucher.Voucher.ExtractedFieldsJson)
             ?? new Aiq.Gateway.Vouchers.VoucherTypeClassification { VoucherType = voucher.Voucher.VoucherType };
@@ -1258,6 +1267,7 @@ public static class VoucherEndpoints
         }
         // A posted voucher is never re-extracted — not even its raw text (P2).
         if (VoucherPostingGuard.IsPostedStatus(voucher.Voucher.Status)) return VoucherPostingGuard.Conflict();
+        if (Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.IsLocked(voucher.Voucher)) return Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.Conflict();
         if (await ExpenseClaimItemGateAsync(ctx, id, requireResolved: false, ct) is { } managed) return managed;
         // The background job would only fail on the frozen row: refuse up front.
         if (voucher.Voucher.VoucherType == "expense_claim"
@@ -1284,7 +1294,7 @@ public static class VoucherEndpoints
                 errorMessage: null,
                 ct))
         {
-            return VoucherPostingGuard.Conflict();
+            return await EditRefusedAsync(repo, tenantId, departmentId, id, ct);
         }
 
         // Explicit type in the request = a user hint. Otherwise keep what the
@@ -1666,6 +1676,7 @@ public static class VoucherEndpoints
         UpdateVoucherRequest request,
         IVoucherRepository repo,
         Aiq.Gateway.Vouchers.Validation.VoucherValidationService validation,
+        Aiq.Gateway.Vouchers.Lifecycle.ITenantFeatureFlags flags,
         HttpContext ctx,
         CancellationToken ct)
     {
@@ -1677,9 +1688,20 @@ public static class VoucherEndpoints
         var existing = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (existing is null) return Results.NotFound();
         if (!principal.IsInRole("admin") && existing.Voucher.UserId != userId) return Results.Forbid();
-        if (existing.Voucher.Status is "verified" or "journalized" or "rejected") return Results.Conflict(new { error = "voucher_finalized" });
+        if (existing.Voucher.Status is "verified" or "rejected") return Results.Conflict(new { error = "voucher_finalized" });
+        if (Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.IsLocked(existing.Voucher)) return Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.Conflict();
+        // Posting is never a field edit: 'verified' through PATCH would be a
+        // self-approval with no accounting gate. Lifecycle moves go through the
+        // transition endpoints (submit / approve / …), never PATCH.
+        // With the v2 flag on, PATCH changes no status at all.
+        if (request.Status is { } wanted && !string.Equals(wanted, existing.Voucher.Status, StringComparison.Ordinal)
+            && (wanted is "verified" or "journalized"
+                || await flags.IsEnabledAsync(tenantId, Aiq.Gateway.Vouchers.Lifecycle.TenantFeatureFlags.VoucherFlowV2, ct)))
+        {
+            return Results.BadRequest(new { error = "status_not_editable", message = "Không đổi trạng thái chứng từ qua PATCH." });
+        }
         var updated = await repo.UpdateAsync(tenantId, existing.Voucher.UserId, id, request, ct);
-        if (updated is null) return Results.NotFound();
+        if (updated is null) return await EditRefusedAsync(repo, tenantId, departmentId, id, ct);
         await validation.TryRecordAsync(tenantId, departmentId, id, ct);
         return Results.Ok(updated);
     }
@@ -1796,6 +1818,7 @@ public static class VoucherEndpoints
         }
         // P1: an extraction never overwrites a posted voucher.
         if (VoucherPostingGuard.IsPostedStatus(existing.Voucher.Status)) return VoucherPostingGuard.Conflict();
+        if (Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.IsLocked(existing.Voucher)) return Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.Conflict();
 
         // UC-ACC-001 E2: chống kê khai trùng — cùng seller_mst + document_number.
         // Search hoá đơn khác cùng cặp (loại trừ chính stub này). If found,
@@ -1821,7 +1844,7 @@ public static class VoucherEndpoints
         // posting that lands between the check above and this write still wins.
         if (!await repo.ReplaceExtractedAsync(tenantId, existing.Voucher.UserId, id, request, ct))
         {
-            return VoucherPostingGuard.Conflict();
+            return await EditRefusedAsync(repo, tenantId, departmentId, id, ct);
         }
         await validation.TryRecordAsync(tenantId, departmentId, id, ct);
         var updated = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
@@ -1844,6 +1867,7 @@ public static class VoucherEndpoints
         if (existing is null) return Results.NotFound();
         // P5: a posted voucher (invoice AR/AP included) is reversed, never deleted.
         if (VoucherPostingGuard.IsPostedStatus(existing.Voucher.Status)) return VoucherPostingGuard.Conflict();
+        if (Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.IsLocked(existing.Voucher)) return Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.Conflict();
 
         // A receipt/payment that ever carried an accounting effect (posted or
         // reversed) is audit history — cash_transactions references it with
@@ -1883,7 +1907,8 @@ public static class VoucherEndpoints
         // creator-scoped rule as PATCH /vouchers/{id}: ADMIN unrestricted,
         // USER only on their own, still-editable voucher.
         if (!principal.IsInRole("admin") && existing.Voucher.UserId != userId) return Results.Forbid();
-        if (existing.Voucher.Status is "verified" or "journalized" or "rejected") return Results.Conflict(new { error = "voucher_finalized" });
+        if (existing.Voucher.Status is "verified" or "rejected") return Results.Conflict(new { error = "voucher_finalized" });
+        if (Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.IsLocked(existing.Voucher)) return Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.Conflict();
 
         // J1 fix — the business process document's situational journal
         // table is a closed allow-list for receipt/expense_claim vouchers
@@ -1904,7 +1929,15 @@ public static class VoucherEndpoints
             }
         }
 
-        var saved = await repo.SaveJournalSuggestionsAsync(tenantId, departmentId, id, request, ct);
+        IReadOnlyList<VoucherJournalRecord> saved;
+        try
+        {
+            saved = await repo.SaveJournalSuggestionsAsync(tenantId, departmentId, id, request, ct);
+        }
+        catch (Aiq.Gateway.Vouchers.Lifecycle.VoucherLockedException)
+        {
+            return Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.Conflict();
+        }
         await validation.TryRecordAsync(tenantId, departmentId, id, ct);
         return Results.Ok(saved);
     }
@@ -1926,6 +1959,9 @@ public static class VoucherEndpoints
         // Department voucher regardless of who created it, so scoping is
         // tenant+department here, never creator.
         if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
+        var existing = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
+        if (existing is null) return Results.NotFound();
+        if (Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.IsLocked(existing.Voucher)) return Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.Conflict();
 
         var updated = await repo.AcceptJournalAsync(tenantId, departmentId, id, entryId, userId, request, ct);
         if (updated is null) return Results.NotFound();

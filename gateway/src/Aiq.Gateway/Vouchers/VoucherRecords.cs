@@ -62,6 +62,17 @@ public sealed class VoucherRecord
     public string[] Tags { get; init; } = Array.Empty<string>();
     public DateTime CreatedAt { get; init; }
     public DateTime UpdatedAt { get; init; }
+    // Chứng từ flow v2 lifecycle (migration 070, Vouchers/Lifecycle).
+    public string LifecycleState { get; init; } = "draft";
+    public int LifecycleVersion { get; init; } = 1;
+    public Guid? SubmittedBy { get; init; }
+    public DateTime? SubmittedAt { get; init; }
+    public Guid? ApprovedBy { get; init; }
+    public DateTime? ApprovedAt { get; init; }
+    /// <summary>First time the voucher was ever posted; never cleared.</summary>
+    public DateTime? PostedAt { get; init; }
+    public DateTime? DeletedAt { get; init; }
+    public Guid? SupersedesId { get; init; }
 }
 
 public sealed class VoucherLineItemRecord

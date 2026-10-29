@@ -129,6 +129,12 @@ public sealed class VoucherExtractJobRunner
             _logger.LogWarning("Voucher {VoucherId} status={Status} is posted — extract skipped", voucherId, stub.Voucher.Status);
             return;
         }
+        // Submitted, approved or reversed: the content is frozen until an ADMIN returns it.
+        if (Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.IsLocked(stub.Voucher))
+        {
+            _logger.LogWarning("Voucher {VoucherId} lifecycle={Lifecycle} is locked — extract skipped", voucherId, stub.Voucher.LifecycleState);
+            return;
+        }
         // The actor id comes from the enqueueing endpoint's authenticated
         // principal; still refuse anything that is not an active user of THIS
         // tenant (defense in depth against a tampered job payload).
@@ -618,8 +624,8 @@ public sealed class VoucherExtractJobRunner
 
         if (!await _vouchers.ReplaceExtractedAsync(tenantIdValue, userId, voucherId, applyRequest, ct))
         {
-            // Posted while the Agent was running: the posting wins, drop this result.
-            _logger.LogWarning("Voucher {VoucherId} was posted during extraction — result discarded", voucherId);
+            // Posted or submitted while the Agent was running: that wins, drop this result.
+            _logger.LogWarning("Voucher {VoucherId} was posted or locked during extraction — result discarded", voucherId);
             return;
         }
         await RecordProvenanceAsync(tenantIdValue, stub.Voucher.DepartmentId, actorId, voucherId, resolution, executed, policy, classification,
@@ -635,12 +641,19 @@ public sealed class VoucherExtractJobRunner
             var normalized = NormalizeEntries(entries);
             if (normalized.Count > 0)
             {
-                await _vouchers.SaveJournalSuggestionsAsync(
-                    tenantIdValue,
-                    stub.Voucher.DepartmentId ?? Guid.Empty,
-                    voucherId,
-                    new SaveJournalSuggestionsRequest(normalized, ReplaceExisting: true),
-                    ct);
+                try
+                {
+                    await _vouchers.SaveJournalSuggestionsAsync(
+                        tenantIdValue,
+                        stub.Voucher.DepartmentId ?? Guid.Empty,
+                        voucherId,
+                        new SaveJournalSuggestionsRequest(normalized, ReplaceExisting: true),
+                        ct);
+                }
+                catch (Aiq.Gateway.Vouchers.Lifecycle.VoucherLockedException)
+                {
+                    _logger.LogWarning("Voucher {VoucherId} was submitted during extraction — journal suggestions discarded", voucherId);
+                }
             }
         }
         // After fields AND journal are written: covers upload and reextract alike.

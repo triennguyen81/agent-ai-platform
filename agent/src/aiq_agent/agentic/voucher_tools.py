@@ -543,7 +543,7 @@ def build_voucher_tools(*, token: str, gateway_base: str) -> list[Any]:
 
 
 def _conflict_text(res: httpx.Response) -> str:
-    """A Gateway 409 on save is final: posted or duplicate, never retried."""
+    """A Gateway 409 on save is final: posted, locked or duplicate, never retried."""
     try:
         body = res.json()
     except ValueError:
@@ -555,6 +555,12 @@ def _conflict_text(res: httpx.Response) -> str:
         return (
             f"⛔ {message} Chứng từ đã ghi sổ: KHÔNG thử lại, KHÔNG tạo chứng từ mới thay thế. "
             "Báo người dùng — muốn sửa thì kế toán phải đảo bút toán trước."
+        )
+    if body.get("error") == "voucher_locked":
+        return (
+            f"⛔ {message} Chứng từ đang chờ duyệt / đã duyệt / đã đảo: "
+            "KHÔNG thử lại, KHÔNG tạo chứng từ mới. "
+            "Báo người dùng — muốn sửa thì ADMIN phải trả lại chứng từ trước."
         )
     if body.get("error") == "duplicate_voucher":
         existing = body.get("existingVoucherId")

@@ -187,6 +187,8 @@ builder.Services.AddScoped<IChecklistRepository, ChecklistRepository>();
 builder.Services.AddScoped<IVoucherRepository, VoucherRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Vouchers.Validation.IVoucherValidationRepository, Aiq.Gateway.Vouchers.Validation.VoucherValidationRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Vouchers.Validation.VoucherValidationService>();
+builder.Services.AddScoped<Aiq.Gateway.Vouchers.Lifecycle.ITenantFeatureFlags, Aiq.Gateway.Vouchers.Lifecycle.TenantFeatureFlagRepository>();
+builder.Services.AddScoped<Aiq.Gateway.Vouchers.Lifecycle.IVoucherLifecycleRepository, Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleRepository>();
 builder.Services.TryAddSingleton(TimeProvider.System);
 builder.Services.AddScoped<Aiq.Gateway.Vouchers.ITaxVerificationRepository, Aiq.Gateway.Vouchers.TaxVerificationRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Vouchers.VoucherExportService>();

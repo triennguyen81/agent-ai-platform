@@ -201,7 +201,16 @@ public sealed class VoucherRepository : IVoucherRepository
             extracted_fields::text AS ExtractedFieldsJson,
             tags              AS Tags,
             created_at        AS CreatedAt,
-            updated_at        AS UpdatedAt
+            updated_at        AS UpdatedAt,
+            lifecycle_state   AS LifecycleState,
+            lifecycle_version AS LifecycleVersion,
+            submitted_by      AS SubmittedBy,
+            submitted_at      AS SubmittedAt,
+            approved_by       AS ApprovedBy,
+            approved_at       AS ApprovedAt,
+            posted_at         AS PostedAt,
+            deleted_at        AS DeletedAt,
+            supersedes_id     AS SupersedesId
         """;
 
     private const string LineItemSelectColumns = """
@@ -412,6 +421,7 @@ public sealed class VoucherRepository : IVoucherRepository
              WHERE v.id = @id AND v.tenant_id = @tenantId AND v.department_id = @departmentId
                AND v.status <> 'verified'
                AND NOT EXISTS (SELECT 1 FROM cash_transactions c WHERE c.voucher_id = v.id AND c.status = 'posted')
+               AND v.lifecycle_state NOT IN ('pending_approval', 'approved', 'reversed') AND v.deleted_at IS NULL
             """, new { id, tenantId, departmentId, voucherType, classificationJson, reprocessing }, tx, cancellationToken: ct));
         // A type change changes which invoices the voucher stands for.
         if (rows == 1) await TaxVerificationRepository.InvalidateIfIdentityChangedAsync(conn, tx, tenantId, id, ct);
@@ -453,7 +463,8 @@ public sealed class VoucherRepository : IVoucherRepository
                 extracted_fields = @extractedJson::jsonb,
                 tags             = @tags
             WHERE id = @id AND tenant_id = @tenantId AND user_id = @userId
-              AND {VoucherPostingGuard.NotPostedSql};
+              AND {VoucherPostingGuard.NotPostedSql}
+              AND {Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.NotLockedSql};
             """;
 
         await using var conn = await _factory.OpenAsync(ct);
@@ -705,6 +716,8 @@ public sealed class VoucherRepository : IVoucherRepository
             WHERE id = @id
               AND user_id = @userId
               AND tenant_id = @tenantId
+              AND {VoucherPostingGuard.NotPostedSql}
+              AND {Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.NotLockedSql}
             RETURNING {VoucherSelectColumns};
             """;
 
@@ -757,6 +770,13 @@ public sealed class VoucherRepository : IVoucherRepository
     {
         await using var conn = await _factory.OpenAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
+        // Suggestions change only while the voucher is editable (§2.2); the row
+        // lock keeps a concurrent submit from slipping in between.
+        var locked = await conn.ExecuteScalarAsync<bool?>(new CommandDefinition("""
+            SELECT lifecycle_state IN ('pending_approval', 'approved', 'reversed') OR deleted_at IS NOT NULL
+              FROM vouchers WHERE id=@voucherId AND tenant_id=@tenantId AND department_id=@departmentId FOR UPDATE
+            """, new { voucherId, tenantId, departmentId }, tx, cancellationToken: ct));
+        if (locked == true) throw new Aiq.Gateway.Vouchers.Lifecycle.VoucherLockedException(voucherId);
 
         if (request.ReplaceExisting)
         {
@@ -839,7 +859,8 @@ public sealed class VoucherRepository : IVoucherRepository
                     rejected_at = NULL,
                     reject_reason = NULL
                 WHERE id = @entryId AND voucher_id = @voucherId AND source = 'suggestion'
-                  AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=voucher_id AND v.tenant_id=@tenantId AND v.department_id=@departmentId)
+                  AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=voucher_id AND v.tenant_id=@tenantId AND v.department_id=@departmentId
+                              AND v.lifecycle_state NOT IN ('pending_approval', 'approved', 'reversed') AND v.deleted_at IS NULL)
                 RETURNING {JournalSelectColumns};
                 """
             : $"""
@@ -849,7 +870,8 @@ public sealed class VoucherRepository : IVoucherRepository
                     accepted_by = NULL,
                     accepted_at = NULL
                 WHERE id = @entryId AND voucher_id = @voucherId AND source = 'suggestion'
-                  AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=voucher_id AND v.tenant_id=@tenantId AND v.department_id=@departmentId)
+                  AND EXISTS (SELECT 1 FROM vouchers v WHERE v.id=voucher_id AND v.tenant_id=@tenantId AND v.department_id=@departmentId
+                              AND v.lifecycle_state NOT IN ('pending_approval', 'approved', 'reversed') AND v.deleted_at IS NULL)
                 RETURNING {JournalSelectColumns};
                 """;
 
@@ -880,7 +902,9 @@ public sealed class VoucherRepository : IVoucherRepository
             WHERE id = @id
               AND user_id = @userId
               AND tenant_id = @tenantId
-              AND {VoucherPostingGuard.NotPostedSql};
+              AND {VoucherPostingGuard.NotPostedSql}
+              AND {Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.NotLockedSql}
+              AND posted_at IS NULL;
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.ExecuteAsync(
@@ -931,6 +955,7 @@ public sealed class VoucherRepository : IVoucherRepository
                 updated_at     = NOW()
             WHERE id = @id
               AND {VoucherPostingGuard.NotPostedSql}
+              AND {Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.NotLockedSql}
             """;
         await using var conn = await _factory.OpenAsync(ct);
         return await conn.ExecuteAsync(new CommandDefinition(

@@ -134,7 +134,8 @@ public sealed class VoucherValidationIntegrationTests(TaxVerificationDatabase fx
         await CompanyAsync();
         var id = await InvoiceAsync(total: 11_000_500m);
 
-        var patched = await VoucherEndpoints.UpdateAsync(id, Patch(total: 11_000_000m), Repo, Service(), Ctx("user", fx.User), CancellationToken.None);
+        var patched = await VoucherEndpoints.UpdateAsync(id, Patch(total: 11_000_000m), Repo, Service(),
+            new Aiq.Gateway.Vouchers.Lifecycle.TenantFeatureFlagRepository(Factory), Ctx("user", fx.User), CancellationToken.None);
         Assert.Equal(StatusCodes.Status200OK, StatusOf(patched));
         var afterPatch = await StoredAsync(id);
         Assert.False(afterPatch!.HasErrors);

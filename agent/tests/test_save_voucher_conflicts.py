@@ -51,6 +51,18 @@ async def test_posted_voucher_conflict_tells_the_model_to_stop(monkeypatch) -> N
     assert "✓" not in text
 
 
+async def test_locked_voucher_conflict_tells_the_model_to_stop(monkeypatch) -> None:
+    body = {"error": "voucher_locked", "message": "Chứng từ đang chờ duyệt — không sửa được."}
+    _gateway(monkeypatch, httpx.Response(409, json=body))
+
+    text = await _save({"fields": _FIELDS, "voucher_id": "v-pending"})
+
+    assert "chờ duyệt" in text
+    assert "KHÔNG thử lại" in text
+    assert "trả lại" in text
+    assert "✓" not in text
+
+
 async def test_duplicate_conflict_names_the_existing_voucher_without_retrying(monkeypatch) -> None:
     body = {
         "error": "duplicate_voucher",
