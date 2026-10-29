@@ -53,7 +53,7 @@ Phạm vi (§9 + QĐ 8, 9, 10, 11): validator thuần, chỉ tham khảo, chưa 
 - Bước 5: `Vouchers/Validation/VoucherValidationService.cs` (repo `IVoucherValidationRepository` + service; "hôm nay" = UTC+7, không cần tzdata; `TimeProvider` đăng ký ở `Program.cs`). Route `GET /vouchers/{id}/validation` → `VoucherEndpoints.ValidationAsync` (TryScope: USER/ADMIN cùng phòng ban; khác phòng ban 404; TENANT_OWNER/SUPER_ADMIN 403). Mỗi lần GET tính lại + upsert `voucher_validations`, không ghi vào `vouchers`. Test `Data/VoucherValidationIntegrationTests.cs` xanh.
 - Bước 6: gateway Release `-warnaserror` + full suite serial **969/969**; agent ruff sạch, pytest 407 pass / 8 skip; web tsc sạch, vitest 102/102. Đã đồng bộ `chung-tu-proposed.md` (§3.3, §4.1, §9). Container `aiq-test-pg` + network `aiq-test-net` đã xoá.
 
-## PR2.x — Sửa sau review PR2 ⏳
+## PR2.x — Sửa sau review PR2 ✅ code + push `cbd9f83` · ⏸ CI chưa kiểm được
 
 Yêu cầu user (2026-10-29): (1) GET validation không ghi DB, chỉ lưu khi chứng từ đổi + khi submit (PR3), thêm snapshot phiên bản chứng từ (migration mới + down); (2) `JOURNAL_TOTAL` → warning vĩnh viễn, thêm ERROR tổng Nợ = tổng Có; (3) "hôm nay" theo Asia/Ho_Chi_Minh, cho phép lệch 1 ngày, test 23:30 / 00:30 giờ VN; (4) test VAT_RATE dùng vat_rates riêng, không dựa seed 068; (5) ghi mục chờ người dùng.
 
@@ -61,7 +61,7 @@ Yêu cầu user (2026-10-29): (1) GET validation không ghi DB, chỉ lưu khi c
 - [x] 2. Migration `069_voucher_validation_snapshot.sql` (+ down) thêm `voucher_updated_at`, `voucher_fingerprint` vào `voucher_validations`; test up→down→up
 - [x] 3. Service tách `ComputeAsync` (GET, không ghi) / `RecordAsync` (lưu); gọi Record sau tạo / PATCH / apply-extraction / job trích xuất (upload + reextract) / bút toán gợi ý / đổi loại; test tích hợp
 - [x] 4. Test tích hợp VAT_RATE với bảng `vat_rates` của riêng test (các đợt 8% không liên tục)
-- [ ] 5. Chạy đủ test, đồng bộ tài liệu, commit, push, kiểm tra GitHub Actions (`gh run list --branch feat/chung-tu-flow-v2 --limit 3`); đỏ thì sửa
+- [x] 5. Chạy đủ test, đồng bộ tài liệu, commit, push, kiểm tra GitHub Actions (`gh run list --branch feat/chung-tu-flow-v2 --limit 3`); đỏ thì sửa
 
 ### Ghi chú PR2.x
 - Bước 1: `VoucherValidator.cs` (Version 2, `FutureDateToleranceDays = 1`), `VoucherValidationService.TodayInVietnam` dùng tz `Asia/Ho_Chi_Minh` (fallback UTC+7 cố định). Mã mới `JOURNAL_LINE` (từng dòng, error); `JOURNAL_BALANCE` giờ là tổng Nợ = tổng Có (error) — với cấu trúc cặp hiện tại chỉ lệch khi dòng thiếu TK; `JOURNAL_TOTAL` warning. Test unit 61/61.
@@ -73,6 +73,7 @@ Yêu cầu user (2026-10-29): (1) GET validation không ghi DB, chỉ lưu khi c
 - "lệch 1 ngày": không tìm thấy trong §10 hay transcript — coi yêu cầu 2026-10-29 là quyết định, ghi vào tài liệu.
 
 ## Đang chờ người dùng / kế toán
+- **CI cho PR2.x (chặn PR3):** máy không có `gh`, repo private (API công khai 404), và `ci.yml` không chạy khi push branch. Cần user: cài + `gh auth login`, hoặc mở PR (draft) vào `master` / chạy `workflow_dispatch` cho branch, hoặc tự gửi kết quả `gh run list --branch feat/chung-tu-flow-v2 --limit 3`.
 - Kế toán bổ sung các đợt giảm thuế GTGT 8% trước 07/2025 theo từng nghị quyết/nghị định (thêm dòng `vat_rates`, không sửa code).
 - Xác nhận trường bắt buộc cho phiếu thu/chi (`document_date`, `document_number`, `total_amount`) và đề nghị thanh toán (`document_date`, `total_amount`) — hiện là [GIẢ ĐỊNH].
 - QĐ 8 (danh sách trường bắt buộc chính thức), QĐ 14 (bảng TK TT99/TT133 + ánh xạ, trước PR8), thuật toán checksum MST.
