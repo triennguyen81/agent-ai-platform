@@ -170,7 +170,7 @@ Viết thành class thuần `VoucherValidator` (không I/O) để unit test dễ
 | `VAT_LINE` | Từng dòng: `subtotal × vat_rate = vat_amount`, lệch ≤ 1 đồng | warning | **[QĐ 10]** |
 | `VAT_RATE` | Thuế suất tra trong bảng `vat_rates(code, rate, effective_from, effective_to, legal_ref)` **theo ngày hoá đơn**. Không hard-code trong code. Ví dụ dòng seed: `8%` hiệu lực 01/07/2025–31/12/2026 (NĐ 174/2025) | error | **[QĐ 11]**; các dòng còn lại (0, 5, 10, KCT, KKKNT…) kế toán duyệt khi seed |
 | `AMOUNT_IN_WORDS` | Số tiền bằng chữ khớp số (nếu có) | warning | **[GIẢ ĐỊNH]** |
-| `PERIOD_OPEN` | Ngày hạch toán thuộc kỳ (tháng) chưa khoá | error | **[QĐ 12]** |
+| `PERIOD_LOCKED` | Ngày hạch toán thuộc kỳ (tháng) đã khoá | error | **[QĐ 12]**, §10.1 P11 |
 | `DATE_FUTURE` | Ngày chứng từ không quá "hôm nay" theo giờ `Asia/Ho_Chi_Minh` + 1 ngày | error | **[QĐ 25]** |
 | `DUPLICATE` | Trùng khoá ở §3.1 | error | Hiện có, sửa khoá |
 | `JOURNAL_ACCOUNT` | TK Nợ/Có tồn tại và được phép hạch toán trong hệ thống TK áp dụng cho **năm tài chính của ngày hạch toán** (§3.4) | error | **[CHỜ kế toán xác nhận bảng TK, QĐ 14]** |
@@ -422,3 +422,22 @@ Còn chờ: **QĐ 8** (danh sách trường bắt buộc theo loại) và **QĐ 
 - Mạng docker riêng hoặc IP cố định cho agent (§6.3).
 - Mã 428 khi thiếu `If-Match` (§5).
 - Cách chuyển dữ liệu `journalized` theo dấu vết ghi sổ (§4.2).
+
+### 10.1 Kỳ kế toán — phương án PR4, chờ kế toán xác nhận
+
+User 29/10/2026 giao phương án mặc định cho PR4 (QĐ 12, 13 giữ nguyên). Mọi mục dưới đây là **[GIẢ ĐỊNH-PR4]** cho tới khi kế toán xác nhận. Chỉ áp dụng cho tenant bật `voucher_flow_v2`; tenant chưa bật không đổi gì.
+
+| # | Chủ đề | Phương án | Nguồn |
+|---|---|---|---|
+| P1 | Ngày quyết định kỳ | `vouchers.accounting_date` (ngày hạch toán, cột đã thêm ở 070). Để trống = theo `document_date`; kỳ của chứng từ = tháng của `COALESCE(accounting_date, document_date)`. Sửa được qua `POST`/`PATCH` (`accountingDate`) khi chứng từ còn sửa được; từ `pending_approval` trở đi bị khoá theo trạng thái. Lý do: HĐ đầu vào nhận muộn được hạch toán vào kỳ sau. Chứng từ chưa có ngày nào thì chưa thuộc kỳ nào | User |
+| P2 | Kỳ đã khoá chặn gì | Mọi thao tác với chứng từ thuộc kỳ đó: tạo, sửa (kể cả bút toán gợi ý, đổi loại, trích xuất), submit/approve/return/reject, ghi sổ, xoá mềm. Lỗi 409 `period_locked` kèm `period` (`yyyy-MM`). Dời ngày hạch toán *ra khỏi* hoặc *vào* kỳ khoá đều bị chặn, nên chứng từ nháp còn nằm trong kỳ khoá chỉ sửa được sau khi mở lại kỳ. Không chặn các cột metadata: xác minh thuế (`tct_*`, `tax_verification_*`), `document_review_status`, lỗi trích xuất, `error_message` | User (+ phần mở rộng) |
+| P3 | Đảo bút toán | Không chặn khi chứng từ thuộc kỳ khoá. Bút toán đảo (`source='reversal'`) lấy ngày trong **kỳ đang mở gần nhất**: ngày đầu tiên của kỳ mở sớm nhất sau kỳ của chứng từ; nếu kỳ đó là kỳ hiện tại (giờ VN) thì lấy hôm nay. PR5/PR6 dùng `AccountingPeriodRules.ReversalDate` | User |
+| P4 | Thứ tự khoá | Không khoá tháng M khi tháng M−1 còn mở, trừ khi M−1 không có chứng từ nào (chỉ xét M−1, không xét xa hơn) → 409 `period_previous_open` | User |
+| P5 | Chứng từ chưa ghi sổ | Không khoá kỳ còn chứng từ `pending_approval` / `approved` → 409 `period_has_unposted` kèm `voucherIds` | User |
+| P6 | Mở lại khi kỳ sau đang khoá | Cho phép; response có `warnings` (`next_period_closed`) | User |
+| P7 | Phạm vi kỳ | Theo **phòng ban** (tenant + phòng ban giữ chứng từ). Code không có khái niệm "phòng kế toán" riêng; mọi quyền chứng từ đều theo phòng ban (`department_admin`, QĐ 17). "ADMIN phòng kế toán" = ADMIN của chính phòng ban đó. Cột `scope` hiện chỉ nhận `department` | Claude, đối chiếu QĐ 12 |
+| P8 | Nơi ghi sự kiện kỳ | Bảng riêng `accounting_period_events` (append-only, chặn UPDATE/DELETE/TRUNCATE), thay cho `voucher_events` như §3.7 dự kiến | User (bảng chỉ ghi thêm) |
+| P9 | Múi giờ | Kỳ là tháng dương lịch của ngày hạch toán (kiểu DATE, không có giờ). Khi đổi một thời điểm ra kỳ ("hôm nay", ngày đảo) thì dùng giờ `Asia/Ho_Chi_Minh` | QĐ 12 |
+| P10 | Khoá/mở lặp lại | Khoá kỳ đã khoá → 409 `period_already_closed`; mở kỳ chưa khoá → 409 `period_not_closed` | Claude |
+| P11 | Validator | Quy tắc `PERIOD_LOCKED` (error), thay cho tên `PERIOD_OPEN` dự kiến ở §3.3 | User |
+| P12 | Giao diện | Kế hoạch PR4 (§9) không có UI: PR4 chỉ làm API. Trang danh sách kỳ + nút khoá/mở có hộp nhập lý do làm ở PR10 | §9 |

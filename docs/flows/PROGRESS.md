@@ -109,7 +109,7 @@ Ngoài PR3: `post`/`reverse`/`{post:true}`/alias `apply-*` + gate L2 + `If-Match
 - `voucher_events.voucher_id` không FK (lịch sử sống sót khi tenant chưa bật cờ còn xoá cứng); append-only, chỉ cho DELETE khi tenant đã bị xoá (cascade).
 - Trigger 059 chỉ chặn khi đổi cột nội dung → cập nhật cột vòng đời không vướng.
 
-## PR3.x — Sửa sau review PR3 ✅ (chờ review)
+## PR3.x — Sửa sau review PR3 ✅ (user cho làm tiếp PR4, 2026-10-29)
 
 User 2026-10-29: đồng ý ADMIN phải `return` rồi mới accept/reject từng dòng bút toán; hoãn `Security__AgentInternalNetworks`; xong 1–7 thì dừng trước PR4.
 
@@ -125,3 +125,18 @@ User 2026-10-29: đồng ý ADMIN phải `return` rồi mới accept/reject từ
 - Bước 5 (trung thực): trước PR3 **chưa** build lại image agent (dùng `aiq-agent-pytest` build 21/09) và **chưa** chạy `DatabaseMigrator` thật trên DB trống (chỉ fixture test mô phỏng vòng lặp của nó). `git status` thì đã kiểm (chỉ còn file không phải của mình). PR3.x: build lại `docker build --target test -t aiq-agent-pytest:latest agent/` (wheel từ `pyproject.toml` hiện tại; không tag image runtime đang chạy); test mới `Data/FreshDatabaseMigratorTests.cs` chạy `DatabaseMigrator.ApplyAsync` thật trên DB trống (đủ file, đúng checksum, chạy lại không đổi); `dryrun-migrations.sh` trên dump rỗng: 71 migration xanh.
 - Dry-run trên dump mẫu trước 070 (9 chứng từ): journalized 3 → 0 (2 verified/posted, 1 extracted/needs_fix), thu/chi huỷ kiểu cũ 1 (có `posted_at` + event), `lifecycle_state` NULL 0, status lệch lifecycle 0. Cả 3 định dạng dump (custom, plain .gz) chạy được. Bẫy: `docker exec -i` trong vòng lặp ăn stdin của `while read` → đọc danh sách qua fd 3.
 - `scripts/test_fresh_database_bootstrap.sh` dùng `aiq-agentic-gateway:latest` (image đang chạy, cũ) → không dùng để kiểm 070; không build lại tag đó.
+
+## PR4 — Kỳ kế toán + khoá kỳ ⏳
+
+Phạm vi (§9, QĐ 12, 13, phương án §10.1 P1–P12 [GIẢ ĐỊNH-PR4]): migration 071 + down, API `/accounting-periods`, kiểm tra kỳ trong DB cùng transaction với thao tác ghi, `PERIOD_LOCKED`, agent dừng khi `period_locked`. Chỉ tenant bật `voucher_flow_v2`. Không UI (PR10). Commit cục bộ mỗi bước, KHÔNG push.
+
+- [x] 1. Kế hoạch + bảng [GIẢ ĐỊNH-PR4] (§10.1); đổi `PERIOD_OPEN` → `PERIOD_LOCKED` ở §3.3
+- [ ] 2. `AccountingPeriod` thuần (`yyyy-MM`, giờ VN, trước/sau, `ReversalDate` cho PR5) + unit test (23:59 cuối tháng / 00:00 ngày 1 giờ VN)
+- [ ] 3. Migration `071_accounting_periods.sql` + down: `accounting_periods`, `accounting_period_events` (append-only + TRUNCATE), `accounting_period_assert_open` (khoá dòng `FOR SHARE`), trigger trên `vouchers` + `voucher_journal_suggestions` (chỉ v2; miễn metadata + đảo); test (ranh giới 31/10–01/11, tenant chưa bật cờ không đổi, up→down→up)
+- [ ] 4. Repository khoá/mở (khoá dòng `FOR UPDATE`, thứ tự M−1, còn chứng từ chờ duyệt, lý do mở lại, cảnh báo M+1, event cùng transaction) + test song song (ghi sổ / submit đúng lúc khoá kỳ)
+- [ ] 5. API `GET /accounting-periods?year=`, `POST /{yyyy-MM}/close`, `/reopen`, `GET /{yyyy-MM}/events` (ADMIN phòng ban; USER/TO/SA/agent bị chặn; khác phòng ban không thấy) + 409 `period_locked` toàn cục + `accountingDate` khi tạo/PATCH (chỉ v2) + test
+- [ ] 6. Validator `PERIOD_LOCKED` (error, version 3; chỉ khi bật cờ) + test
+- [ ] 7. Agent: 409 `period_locked` → báo người dùng, KHÔNG thử lại (+ test); không có tool khoá/mở kỳ; job trích xuất ghi lỗi kỳ khoá
+- [ ] 8. Chạy đủ test 3 phần; đồng bộ tài liệu (§4.1 071, §5, §9); báo cáo
+
+### Ghi chú PR4
