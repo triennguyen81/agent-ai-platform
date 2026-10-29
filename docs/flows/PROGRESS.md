@@ -131,7 +131,7 @@ User 2026-10-29: đồng ý ADMIN phải `return` rồi mới accept/reject từ
 Phạm vi (§9, QĐ 12, 13, phương án §10.1 P1–P12 [GIẢ ĐỊNH-PR4]): migration 071 + down, API `/accounting-periods`, kiểm tra kỳ trong DB cùng transaction với thao tác ghi, `PERIOD_LOCKED`, agent dừng khi `period_locked`. Chỉ tenant bật `voucher_flow_v2`. Không UI (PR10). Commit cục bộ mỗi bước, KHÔNG push.
 
 - [x] 1. Kế hoạch + bảng [GIẢ ĐỊNH-PR4] (§10.1); đổi `PERIOD_OPEN` → `PERIOD_LOCKED` ở §3.3
-- [ ] 2. `AccountingPeriod` thuần (`yyyy-MM`, giờ VN, trước/sau, `ReversalDate` cho PR5) + unit test (23:59 cuối tháng / 00:00 ngày 1 giờ VN)
+- [x] 2. `AccountingPeriod` thuần (`yyyy-MM`, giờ VN, trước/sau, `ReversalDate` cho PR5) + unit test (23:59 cuối tháng / 00:00 ngày 1 giờ VN)
 - [ ] 3. Migration `071_accounting_periods.sql` + down: `accounting_periods`, `accounting_period_events` (append-only + TRUNCATE), `accounting_period_assert_open` (khoá dòng `FOR SHARE`), trigger trên `vouchers` + `voucher_journal_suggestions` (chỉ v2; miễn metadata + đảo); test (ranh giới 31/10–01/11, tenant chưa bật cờ không đổi, up→down→up)
 - [ ] 4. Repository khoá/mở (khoá dòng `FOR UPDATE`, thứ tự M−1, còn chứng từ chờ duyệt, lý do mở lại, cảnh báo M+1, event cùng transaction) + test song song (ghi sổ / submit đúng lúc khoá kỳ)
 - [ ] 5. API `GET /accounting-periods?year=`, `POST /{yyyy-MM}/close`, `/reopen`, `GET /{yyyy-MM}/events` (ADMIN phòng ban; USER/TO/SA/agent bị chặn; khác phòng ban không thấy) + 409 `period_locked` toàn cục + `accountingDate` khi tạo/PATCH (chỉ v2) + test
@@ -140,3 +140,4 @@ Phạm vi (§9, QĐ 12, 13, phương án §10.1 P1–P12 [GIẢ ĐỊNH-PR4]): m
 - [ ] 8. Chạy đủ test 3 phần; đồng bộ tài liệu (§4.1 071, §5, §9); báo cáo
 
 ### Ghi chú PR4
+- Bước 2: `Vouchers/Periods/AccountingPeriod.cs` (`AccountingPeriod(Year, Month)`, `TryParse` `yyyy-MM` 2000–2100, `Of(DateOnly)`, `Of(DateTimeOffset)` theo giờ VN, `Previous`/`Next`, `EffectiveDate`; `VietnamTime` dùng chung, `VoucherValidationService.TodayInVietnam` gọi lại; `AccountingPeriodRules.ReversalDate` cho PR5). Test `Vouchers/AccountingPeriodTests.cs` (23:59 31/10 VN = 16:59Z → 2026-10; 00:00 01/11 VN = 17:00Z 31/10 → 2026-11; qua năm; ngày đảo).

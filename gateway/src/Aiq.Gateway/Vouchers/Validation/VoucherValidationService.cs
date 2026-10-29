@@ -171,21 +171,5 @@ public sealed class VoucherValidationService(
         Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(
             JsonSerializer.Serialize(new { detail.Voucher, detail.LineItems, detail.JournalSuggestions }, VoucherValidationRepository.Json))));
 
-    // Asia/Ho_Chi_Minh from the tz database; a fixed UTC+7 zone when the image
-    // has none (Vietnam has had no DST since 1975, so the two agree).
-    private static readonly TimeZoneInfo Vietnam = FindVietnam();
-
-    private static TimeZoneInfo FindVietnam()
-    {
-        foreach (var id in new[] { "Asia/Ho_Chi_Minh", "SE Asia Standard Time" })
-        {
-            try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
-            catch (TimeZoneNotFoundException) { }
-            catch (InvalidTimeZoneException) { }
-        }
-        return TimeZoneInfo.CreateCustomTimeZone("Asia/Ho_Chi_Minh", TimeSpan.FromHours(7), "Asia/Ho_Chi_Minh", "ICT");
-    }
-
-    internal static DateOnly TodayInVietnam(TimeProvider time) =>
-        DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(time.GetUtcNow(), Vietnam).DateTime);
+    internal static DateOnly TodayInVietnam(TimeProvider time) => Aiq.Gateway.Vouchers.Periods.VietnamTime.Today(time);
 }
