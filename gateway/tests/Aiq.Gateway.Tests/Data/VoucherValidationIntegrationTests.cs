@@ -55,7 +55,8 @@ public sealed class VoucherValidationIntegrationTests(TaxVerificationDatabase fx
     private VoucherRepository Repo => new(Factory);
 
     private VoucherValidationService Service() => new(Repo, new TenantCompanyProfileRepository(Factory),
-        new VoucherValidationRepository(Factory), new FixedTime(Now), NullLogger<VoucherValidationService>.Instance);
+        new VoucherValidationRepository(Factory), new Aiq.Gateway.Vouchers.Lifecycle.TenantFeatureFlagRepository(Factory),
+        new Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleRepository(Factory), new FixedTime(Now), NullLogger<VoucherValidationService>.Instance);
 
     // ------------------------------------------------------------ GET = read
 

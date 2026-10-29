@@ -31,7 +31,9 @@ public sealed class VoucherPostingGuardIntegrationTests(TaxVerificationDatabase 
 
     private VoucherRepository Repo => new(new NpgsqlConnectionFactory(fx.ConnectionString!));
     private VoucherValidationService Validation => new(Repo, new TenantCompanyProfileRepository(new NpgsqlConnectionFactory(fx.ConnectionString!)),
-        new VoucherValidationRepository(new NpgsqlConnectionFactory(fx.ConnectionString!)), TimeProvider.System,
+        new VoucherValidationRepository(new NpgsqlConnectionFactory(fx.ConnectionString!)),
+        new Aiq.Gateway.Vouchers.Lifecycle.TenantFeatureFlagRepository(new NpgsqlConnectionFactory(fx.ConnectionString!)),
+        new Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleRepository(new NpgsqlConnectionFactory(fx.ConnectionString!)), TimeProvider.System,
         NullLogger<VoucherValidationService>.Instance);
 
     // ------------------------------------------------------------ repository

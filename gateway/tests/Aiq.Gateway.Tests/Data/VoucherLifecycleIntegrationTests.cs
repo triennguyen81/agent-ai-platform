@@ -33,8 +33,9 @@ public sealed class VoucherLifecycleIntegrationTests(TaxVerificationDatabase fx)
     private NpgsqlConnectionFactory Factory => new(fx.ConnectionString!);
     private VoucherRepository Repo => new(Factory);
     private TenantFeatureFlagRepository Flags => new(Factory);
+    private VoucherLifecycleRepository Lifecycle => new(Factory);
     private VoucherValidationService Validation => new(Repo, new TenantCompanyProfileRepository(Factory),
-        new VoucherValidationRepository(Factory), TimeProvider.System, NullLogger<VoucherValidationService>.Instance);
+        new VoucherValidationRepository(Factory), Flags, Lifecycle, TimeProvider.System, NullLogger<VoucherValidationService>.Instance);
 
     // ------------------------------------------------------------ edit lock
 
@@ -132,7 +133,81 @@ public sealed class VoucherLifecycleIntegrationTests(TaxVerificationDatabase fx)
         }
     }
 
+    // ------------------------------------------------ validation → lifecycle
+
+    [Fact]
+    public async Task With_the_v2_flag_storing_a_result_moves_the_voucher_by_its_errors()
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync();
+        await FlagAsync(true);
+        try
+        {
+            await Validation.RecordAsync(fx.Tenant, fx.Dept, id, CancellationToken.None);
+            Assert.Equal("validated", await LifecycleAsync(id));
+
+            var patched = await VoucherEndpoints.UpdateAsync(id, Patch(total: 1m), Repo, Validation, Flags, Ctx("user", fx.User), CancellationToken.None);
+            Assert.Equal(StatusCodes.Status200OK, StatusOf(patched));
+            Assert.Equal("needs_fix", await LifecycleAsync(id));
+
+            await VoucherEndpoints.UpdateAsync(id, Patch(total: 11_000_000m), Repo, Validation, Flags, Ctx("user", fx.User), CancellationToken.None);
+            Assert.Equal("validated", await LifecycleAsync(id));
+
+            // The stored snapshot describes the voucher AFTER the move.
+            Assert.True(await StoredMatchesAsync(id));
+            var events = await Lifecycle.ListEventsAsync(fx.Tenant, id, CancellationToken.None);
+            Assert.Equal(["validated", "needs_fix", "validated"],
+                events.Where(e => e.Before is not null).Select(e => System.Text.Json.JsonDocument.Parse(e.After!).RootElement.GetProperty("lifecycle_state").GetString()));
+            Assert.All(events, e => Assert.Equal("system", e.ActorType));
+        }
+        finally
+        {
+            await FlagAsync(false);
+        }
+    }
+
+    [Fact]
+    public async Task Without_the_flag_storing_a_result_leaves_the_lifecycle_alone()
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync();
+
+        await Validation.RecordAsync(fx.Tenant, fx.Dept, id, CancellationToken.None);
+
+        Assert.Equal("extracted", await LifecycleAsync(id));
+    }
+
+    [Theory]
+    [InlineData("draft")]
+    [InlineData("pending_approval")]
+    [InlineData("rejected")]
+    public async Task Validation_never_moves_a_voucher_outside_the_checked_states(string state)
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync(lifecycle: state);
+        await FlagAsync(true);
+        try
+        {
+            await Validation.RecordAsync(fx.Tenant, fx.Dept, id, CancellationToken.None);
+            Assert.Equal(state, await LifecycleAsync(id));
+        }
+        finally
+        {
+            await FlagAsync(false);
+        }
+    }
+
     // --------------------------------------------------------------- helpers
+
+    private async Task<bool> StoredMatchesAsync(Guid id)
+    {
+        await using var c = new NpgsqlConnection(fx.ConnectionString);
+        await c.OpenAsync();
+        return await c.ExecuteScalarAsync<bool>("""
+            SELECT EXISTS (SELECT 1 FROM voucher_validations vv JOIN vouchers v ON v.id = vv.voucher_id
+                            WHERE vv.voucher_id = @id AND vv.voucher_updated_at = v.updated_at)
+            """, new { id });
+    }
 
     private DefaultHttpContext Ctx(string role, Guid user, Guid? department = null)
     {

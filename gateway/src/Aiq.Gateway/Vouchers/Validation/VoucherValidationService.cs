@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Aiq.Gateway.Data;
 using Aiq.Gateway.Governance;
+using Aiq.Gateway.Vouchers.Lifecycle;
 using Dapper;
 
 namespace Aiq.Gateway.Vouchers.Validation;
@@ -93,6 +94,8 @@ public sealed class VoucherValidationService(
     IVoucherRepository vouchers,
     ITenantCompanyProfileRepository companyProfiles,
     IVoucherValidationRepository validations,
+    ITenantFeatureFlags flags,
+    IVoucherLifecycleRepository lifecycle,
     TimeProvider time,
     ILogger<VoucherValidationService> logger)
 {
@@ -114,11 +117,31 @@ public sealed class VoucherValidationService(
             detail.Voucher.UpdatedAt, Fingerprint(detail), time.GetUtcNow().UtcDateTime);
     }
 
-    /// <summary>Computes and stores the latest result. Null when the voucher is not in this tenant + department.</summary>
+    /// <summary>
+    /// Computes and stores the latest result. With the v2 flag on, a voucher in
+    /// extracted / needs_fix / validated also moves to validated or needs_fix by
+    /// the result (system actor); the stored snapshot describes it after the move.
+    /// Null when the voucher is not in this tenant + department.
+    /// </summary>
     public async Task<VoucherValidationReport?> RecordAsync(Guid tenantId, Guid departmentId, Guid voucherId, CancellationToken ct)
     {
         var report = await ComputeAsync(tenantId, departmentId, voucherId, ct);
+        if (report is null) return null;
+        if (await MoveByResultAsync(tenantId, departmentId, voucherId, report, ct))
+            report = await ComputeAsync(tenantId, departmentId, voucherId, ct);
         return report is null ? null : await validations.SaveAsync(tenantId, report, ct);
+    }
+
+    private async Task<bool> MoveByResultAsync(Guid tenantId, Guid departmentId, Guid voucherId, VoucherValidationReport report, CancellationToken ct)
+    {
+        if (!await flags.IsEnabledAsync(tenantId, TenantFeatureFlags.VoucherFlowV2, ct)) return false;
+        var current = (await vouchers.FindInDepartmentAsync(tenantId, departmentId, voucherId, ct))?.Voucher.LifecycleState;
+        if (current is null) return false;
+        var action = report.HasErrors ? LifecycleAction.ValidationFailed : LifecycleAction.ValidationPassed;
+        var decision = VoucherStateMachine.Decide(current, action, new LifecycleActor(LifecycleActorKind.System, IsCreator: false), reason: null);
+        if (!decision.Allowed || decision.Target == current) return false;
+        return await lifecycle.TransitionAsync(tenantId, departmentId, voucherId,
+            new LifecycleChange(current, decision.Target!, "system", null, null, null), ct);
     }
 
     /// <summary>
