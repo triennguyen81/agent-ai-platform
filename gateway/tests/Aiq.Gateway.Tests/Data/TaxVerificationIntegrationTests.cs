@@ -36,7 +36,7 @@ public sealed class TaxVerificationDatabase : IAsyncLifetime
         }.ConnectionString;
     }
 
-    private static string RepoPath(params string[] parts)
+    internal static string RepoPath(params string[] parts)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, "infra", "postgres", "init"))) dir = dir.Parent;

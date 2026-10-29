@@ -111,6 +111,25 @@ public sealed class VoucherLifecycleIntegrationTests(TaxVerificationDatabase fx)
         Assert.Equal(("extracted", "extracted"), await StatusAndLifecycleAsync(id));
     }
 
+    /// <summary>
+    /// Without the v2 flag the ADMIN still records through apply-invoice /
+    /// apply-expense, which write status='verified' inside the Gateway (not via
+    /// PATCH). The PR3 guards on UpdateAsync must keep that write working.
+    /// </summary>
+    [Fact]
+    public async Task Without_the_flag_the_legacy_recognition_write_still_posts()
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync();
+
+        Assert.NotNull(await Repo.UpdateAsync(fx.Tenant, fx.User, id, Patch(status: "verified"), CancellationToken.None));
+
+        Assert.Equal(("verified", "posted"), await StatusAndLifecycleAsync(id));
+        var events = await Lifecycle.ListEventsAsync(fx.Tenant, id, CancellationToken.None);
+        Assert.Contains(events, e => e.EventType == "state_change"
+            && System.Text.Json.JsonDocument.Parse(e.After!).RootElement.GetProperty("lifecycle_state").GetString() == "posted");
+    }
+
     [Fact]
     public async Task With_the_v2_flag_patch_changes_no_status_at_all()
     {
@@ -177,19 +196,40 @@ public sealed class VoucherLifecycleIntegrationTests(TaxVerificationDatabase fx)
         Assert.Equal("extracted", await LifecycleAsync(id));
     }
 
+    /// <summary>
+    /// Storing a result (submit, after an edit, the extract job) never moves a
+    /// voucher outside extracted / needs_fix / validated — neither a passing nor
+    /// a failing one. The result itself is still stored.
+    /// </summary>
     [Theory]
-    [InlineData("draft")]
-    [InlineData("pending_approval")]
-    [InlineData("rejected")]
-    public async Task Validation_never_moves_a_voucher_outside_the_checked_states(string state)
+    [InlineData("draft", false)]
+    [InlineData("draft", true)]
+    [InlineData("pending_approval", false)]
+    [InlineData("pending_approval", true)]
+    [InlineData("approved", false)]
+    [InlineData("approved", true)]
+    [InlineData("posted", false)]
+    [InlineData("posted", true)]
+    [InlineData("reversed", false)]
+    [InlineData("reversed", true)]
+    [InlineData("rejected", false)]
+    [InlineData("rejected", true)]
+    public async Task Validation_never_moves_a_voucher_outside_the_checked_states(string state, bool withErrors)
     {
         if (fx.ConnectionString is null) return;
-        var id = await VoucherAsync(lifecycle: state);
+        var id = await VoucherAsync(lifecycle: state, total: withErrors ? 1m : 11_000_000m);
+        var before = await LifecycleRowAsync(id);
+        var eventsBefore = (await Lifecycle.ListEventsAsync(fx.Tenant, id, CancellationToken.None)).Count;
         await FlagAsync(true);
         try
         {
-            await Validation.RecordAsync(fx.Tenant, fx.Dept, id, CancellationToken.None);
-            Assert.Equal(state, await LifecycleAsync(id));
+            var report = await Validation.RecordAsync(fx.Tenant, fx.Dept, id, CancellationToken.None);
+            Assert.Equal(withErrors, report!.HasErrors);
+            await Validation.TryRecordAsync(fx.Tenant, fx.Dept, id, CancellationToken.None);
+
+            Assert.Equal(before, await LifecycleRowAsync(id));
+            Assert.Equal(eventsBefore, (await Lifecycle.ListEventsAsync(fx.Tenant, id, CancellationToken.None)).Count);
+            Assert.True(await StoredExistsAsync(id));
         }
         finally
         {
@@ -580,6 +620,14 @@ public sealed class VoucherLifecycleIntegrationTests(TaxVerificationDatabase fx)
     }
 
     private async Task<string> LifecycleAsync(Guid id) => (await StatusAndLifecycleAsync(id)).Lifecycle;
+
+    private async Task<(string Status, string Lifecycle, int Version)> LifecycleRowAsync(Guid id)
+    {
+        await using var c = new NpgsqlConnection(fx.ConnectionString);
+        await c.OpenAsync();
+        return await c.QuerySingleAsync<(string, string, int)>(
+            "SELECT status, lifecycle_state, lifecycle_version FROM vouchers WHERE id=@id", new { id });
+    }
 
     private async Task<(string Status, string Lifecycle)> StatusAndLifecycleAsync(Guid id)
     {

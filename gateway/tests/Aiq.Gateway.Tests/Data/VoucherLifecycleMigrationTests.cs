@@ -101,8 +101,31 @@ public sealed class VoucherLifecycleMigrationTests(TaxVerificationDatabase fx) :
             db.ExecuteAsync("UPDATE voucher_events SET reason='x' WHERE voucher_id=@id", new { id }));
         var delete = await Assert.ThrowsAsync<PostgresException>(() =>
             db.ExecuteAsync("DELETE FROM voucher_events WHERE voucher_id=@id", new { id }));
+        var truncate = await Assert.ThrowsAsync<PostgresException>(() => db.ExecuteAsync("TRUNCATE voucher_events"));
         Assert.Equal("23514", update.SqlState);
         Assert.Equal("23514", delete.SqlState);
+        Assert.Equal("23514", truncate.SqlState);
+        Assert.Contains("append-only", update.MessageText);
+        Assert.True(await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM voucher_events WHERE voucher_id=@id)", new { id }));
+    }
+
+    /// <summary>The one way history goes: its tenant is deleted (FK cascade).</summary>
+    [Fact]
+    public async Task Deleting_a_tenant_still_cascades_its_history()
+    {
+        if (fx.ConnectionString is null) return;
+        await using var db = await OpenAsync();
+        var tenant = Guid.NewGuid();
+        await db.ExecuteAsync("INSERT INTO tenants(id, code, name, status) VALUES (@tenant, @code, 'Tạm', 'active')",
+            new { tenant, code = "tmp-" + tenant.ToString("N")[..8] });
+        await db.ExecuteAsync("""
+            INSERT INTO voucher_events(tenant_id, voucher_id, event_type, actor_type, reason)
+            VALUES (@tenant, gen_random_uuid(), 'deleted', 'system', 'x')
+            """, new { tenant });
+
+        await db.ExecuteAsync("DELETE FROM tenants WHERE id=@tenant", new { tenant });
+
+        Assert.False(await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM voucher_events WHERE tenant_id=@tenant)", new { tenant }));
     }
 
     [Fact]
@@ -147,6 +170,26 @@ public sealed class VoucherLifecycleMigrationTests(TaxVerificationDatabase fx) :
         var verified = await LegacyAsync(db, "verified");
         var ocr = await LegacyAsync(db, "ocr_complete");
         var odd = await LegacyAsync(db, "some_future_status");
+        // Every kind of posting evidence the backfill accepts (QĐ 24).
+        var customer = await db.ExecuteScalarAsync<Guid>(
+            "INSERT INTO sim_customers(tenant_id, customer_code, name) VALUES (@t, @c, 'KH') RETURNING id", new { t = fx.Tenant, c = Guid.NewGuid().ToString("N")[..8] });
+        var supplier = await db.ExecuteScalarAsync<Guid>(
+            "INSERT INTO sim_suppliers(tenant_id, supplier_code, name) VALUES (@t, @c, 'NCC') RETURNING id", new { t = fx.Tenant, c = Guid.NewGuid().ToString("N")[..8] });
+        var journalizedAr = await LegacyAsync(db, "journalized");
+        await db.ExecuteAsync("""
+            INSERT INTO sim_ar_ledger(tenant_id, customer_id, voucher_id, document_date, document_number, document_type, debit)
+            VALUES (@t, @customer, @journalizedAr, '2026-09-01', 'AR-1', 'invoice', 1)
+            """, new { t = fx.Tenant, customer, journalizedAr });
+        var journalizedAp = await LegacyAsync(db, "journalized");
+        await db.ExecuteAsync("""
+            INSERT INTO sim_ap_ledger(tenant_id, supplier_id, voucher_id, document_date, document_number, document_type, credit)
+            VALUES (@t, @supplier, @journalizedAp, '2026-09-01', 'AP-1', 'invoice', 1)
+            """, new { t = fx.Tenant, supplier, journalizedAp });
+        var journalizedCash = await LegacyAsync(db, "journalized");
+        await CashAsync(db, journalizedCash, supplier, "posted");
+        // A payment posted then cancelled through the legacy path: back at extracted, posted once (QĐ 3).
+        var legacyReversed = await LegacyAsync(db, "extracted");
+        var reversedTx = await CashAsync(db, legacyReversed, supplier, "reversed");
         var updatedAt = await db.ExecuteScalarAsync<DateTime>("SELECT updated_at FROM vouchers WHERE id=@verified", new { verified });
 
         // ---- up again -----------------------------------------------------------
@@ -164,10 +207,24 @@ public sealed class VoucherLifecycleMigrationTests(TaxVerificationDatabase fx) :
         Assert.Equal(updatedAt, v.PostedAt);
         Assert.Equal("draft", (await RowAsync(db, ocr)).Lifecycle);
         Assert.Equal("draft", (await RowAsync(db, odd)).Lifecycle);
-        Assert.Equal(2, await db.ExecuteScalarAsync<int>("""
+        foreach (var evidence in new[] { journalizedAr, journalizedAp, journalizedCash })
+        {
+            var e = await RowAsync(db, evidence);
+            Assert.Equal(("verified", "posted"), (e.Status, e.Lifecycle));
+            Assert.NotNull(e.PostedAt);
+        }
+        var reversed = await RowAsync(db, legacyReversed);
+        Assert.Equal(("extracted", "extracted"), (reversed.Status, reversed.Lifecycle));
+        Assert.NotNull(reversed.PostedAt);
+        Assert.Equal(reversedTx.ToString(), await db.ExecuteScalarAsync<string>("""
+            SELECT after->'reversed_cash_transactions'->>0 FROM voucher_events
+             WHERE voucher_id=@legacyReversed AND event_type='legacy_backfill'
+            """, new { legacyReversed }));
+        Assert.Equal(5, await db.ExecuteScalarAsync<int>("""
             SELECT COUNT(*)::int FROM voucher_events WHERE event_type='legacy_backfill' AND before->>'status'='journalized'
-               AND voucher_id IN (@journalizedPosted, @journalizedBare)
-            """, new { journalizedPosted, journalizedBare }));
+               AND voucher_id IN (@journalizedPosted, @journalizedBare, @journalizedAr, @journalizedAp, @journalizedCash)
+            """, new { journalizedPosted, journalizedBare, journalizedAr, journalizedAp, journalizedCash }));
+        Assert.Equal(0, await db.ExecuteScalarAsync<int>("SELECT COUNT(*)::int FROM vouchers WHERE status='journalized'"));
         // The backfill itself logs no state_change (only the legacy_backfill rows).
         Assert.False(await db.ExecuteScalarAsync<bool>(
             "SELECT EXISTS(SELECT 1 FROM voucher_events WHERE voucher_id=@verified)", new { verified }));
@@ -200,6 +257,13 @@ public sealed class VoucherLifecycleMigrationTests(TaxVerificationDatabase fx) :
 
     // Before 070 the lifecycle columns do not exist.
     private Task<Guid> LegacyAsync(NpgsqlConnection db, string status) => InsertAsync(db, status);
+
+    private Task<Guid> CashAsync(NpgsqlConnection db, Guid voucherId, Guid supplierId, string status) => db.ExecuteScalarAsync<Guid>("""
+        INSERT INTO cash_transactions(tenant_id, department_id, voucher_id, direction, counterparty_type, supplier_id, amount,
+                                      transaction_date, payment_method, cash_account, counter_account, document_number, status)
+        VALUES (@t, @d, @voucherId, 'money_out', 'supplier', @supplierId, 1, '2026-09-01', 'cash', '1111', '331', 'PC-1', @status)
+        RETURNING id
+        """, new { t = fx.Tenant, d = fx.Dept, voucherId, supplierId, status });
 
     private static Task<Row> RowAsync(NpgsqlConnection db, Guid id) => db.QuerySingleAsync<Row>("""
         SELECT status AS Status, lifecycle_state AS Lifecycle, lifecycle_version AS Version, posted_at AS PostedAt, updated_at AS UpdatedAt

@@ -67,7 +67,7 @@ BEGIN
     IF TG_OP = 'DELETE' AND NOT EXISTS (SELECT 1 FROM tenants WHERE id = OLD.tenant_id) THEN
         RETURN OLD;
     END IF;
-    RAISE EXCEPTION 'voucher_events is append-only' USING ERRCODE = '23514';
+    RAISE EXCEPTION 'voucher_events is append-only (% refused)', TG_OP USING ERRCODE = '23514';
 END;
 $$ LANGUAGE plpgsql;
 
@@ -75,6 +75,12 @@ DROP TRIGGER IF EXISTS trg_voucher_events_append_only ON voucher_events;
 CREATE TRIGGER trg_voucher_events_append_only
 BEFORE UPDATE OR DELETE ON voucher_events
 FOR EACH ROW EXECUTE FUNCTION voucher_events_append_only();
+
+-- TRUNCATE skips row triggers; refuse it at statement level.
+DROP TRIGGER IF EXISTS trg_voucher_events_no_truncate ON voucher_events;
+CREATE TRIGGER trg_voucher_events_no_truncate
+BEFORE TRUNCATE ON voucher_events
+FOR EACH STATEMENT EXECUTE FUNCTION voucher_events_append_only();
 
 -- ---------------------------------------------------- tenant_feature_flags
 CREATE TABLE IF NOT EXISTS tenant_feature_flags (
