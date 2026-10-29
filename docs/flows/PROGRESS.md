@@ -30,7 +30,7 @@ Test DB-backed tự bỏ qua (pass rỗng) nếu thiếu `AIQ_TEST_POSTGRES` —
 
 ## PR1 — Guard an toàn ✅ (commit `addd106`, chờ review)
 
-## PR2 — Validator ⏳
+## PR2 — Validator ✅ (chờ review)
 
 Phạm vi (§9 + QĐ 8, 9, 10, 11): validator thuần, chỉ tham khảo, chưa chặn. Migration 068 + down. `GET /vouchers/{id}/validation`.
 
@@ -39,7 +39,7 @@ Phạm vi (§9 + QĐ 8, 9, 10, 11): validator thuần, chỉ tham khảo, chưa 
 - [x] 3. Cài `VoucherValidator` + `VatRateTable` + `MstRules` (xanh)
 - [x] 4. Migration `068_voucher_validation.sql` + `down/068_voucher_validation.down.sql` + test up→down→up
 - [x] 5. Repository (đọc `vat_rates`, `tenant_voucher_settings`, lưu `validation`) + `GET /vouchers/{id}/validation` + test tích hợp
-- [ ] 6. Chạy toàn bộ test (gateway, agent, web, ruff, tsc), commit, báo cáo PR2 (tóm tắt + test tay)
+- [x] 6. Chạy toàn bộ test (gateway, agent, web, ruff, tsc), commit, báo cáo PR2 (tóm tắt + test tay)
 
 ### Ghi chú PR2 (cập nhật dần)
 - Bước 1: `vouchers.vat_rate` NUMERIC(5,2) = phần trăm (0/5/8/10), NULL khi nhiều mức (`infra/postgres/init/18_vouchers.sql:40`); KCT/KKKNT **không có cách biểu diễn** → bảng `vat_rates` có `rate NULL` cho KCT/KKKNT, validator chỉ so số.
@@ -51,3 +51,6 @@ Phạm vi (§9 + QĐ 8, 9, 10, 11): validator thuần, chỉ tham khảo, chưa 
 - Bước 3: `gateway/src/Aiq.Gateway/Vouchers/Validation/{VoucherValidator,MstRules}.cs` (không cần class `VatRateTable` riêng — `VatRateEntry` + list trong context). 52/52 unit xanh. Bẫy: app chạy globalization-invariant → **không dùng `CultureInfo("vi-VN")`** (throw); dùng `NumberFormatInfo` tự tạo. Mã lỗi đã cài: REQUIRED_FIELD, MST_FORMAT, MST_CHECKSUM(w), COMPANY_TAX_CODE_MISSING(w), BUYER_IS_COMPANY, SELLER_IS_COMPANY, AMOUNT_SUM, LINE_SUM, LINE_AMOUNT(w), VAT_LINE(w), VAT_AMOUNT(w), VAT_RATE, VAT_RATE_TABLE_EMPTY(w), DATE_FUTURE, JOURNAL_BALANCE, JOURNAL_ACCOUNT(w), JOURNAL_TOTAL, LOW_CONFIDENCE(w). Trường bắt buộc mặc định cho thu/chi (số, ngày, số tiền) và expense_claim (ngày, số tiền) là **[GIẢ ĐỊNH]** — QĐ 8 chỉ nêu danh sách cho hoá đơn.
 - Bước 4: `068_voucher_validation.sql` tạo `vat_rates` (+seed 0/5/10/KCT/KKKNT từ 2009 "chờ kế toán duyệt", 8% 01/07/2025–31/12/2026 NĐ 174/2025; **không** seed các đợt 8% trước 07/2025), `tenant_voucher_settings`, `voucher_validations`. **Lệch tài liệu (cố ý):** kết quả lưu ở bảng riêng `voucher_validations`, không phải cột `vouchers.validation` (cột sẽ kích trigger `vouchers_touch_updated_at` + đụng chứng từ đã ghi sổ); `field_confidence`/`extraction_source` dời sang PR9/PR11 (backfill vouchers sẽ đụng trigger 059). Down: `down/068_voucher_validation.down.sql` (backup `*_backup_<ts>` rồi drop, xoá dòng schema_migrations). Test `Data/VoucherValidationMigrationTests.cs` xanh. Bẫy: `schema_migrations.checksum` NOT NULL + regex 64 hex.
 - Bước 5: `Vouchers/Validation/VoucherValidationService.cs` (repo `IVoucherValidationRepository` + service; "hôm nay" = UTC+7, không cần tzdata; `TimeProvider` đăng ký ở `Program.cs`). Route `GET /vouchers/{id}/validation` → `VoucherEndpoints.ValidationAsync` (TryScope: USER/ADMIN cùng phòng ban; khác phòng ban 404; TENANT_OWNER/SUPER_ADMIN 403). Mỗi lần GET tính lại + upsert `voucher_validations`, không ghi vào `vouchers`. Test `Data/VoucherValidationIntegrationTests.cs` xanh.
+- Bước 6: gateway Release `-warnaserror` + full suite serial **969/969**; agent ruff sạch, pytest 407 pass / 8 skip; web tsc sạch, vitest 102/102. Đã đồng bộ `chung-tu-proposed.md` (§3.3, §4.1, §9). Container `aiq-test-pg` + network `aiq-test-net` đã xoá.
+
+## PR3 — Vòng đời + audit (chưa bắt đầu — chờ user review PR1, PR2)
