@@ -33,6 +33,7 @@ public sealed class VoucherExtractJobRunner
     private readonly Aiq.Gateway.Banking.IBankStatementRepository _bankStatements;
     private readonly IDocumentProcessingRepository _documents;
     private readonly IDocumentReviewRepository _reviews;
+    private readonly Aiq.Gateway.Vouchers.Validation.VoucherValidationService _validation;
     private readonly ILogger<VoucherExtractJobRunner> _logger;
 
     public VoucherExtractJobRunner(
@@ -49,8 +50,10 @@ public sealed class VoucherExtractJobRunner
         Aiq.Gateway.Banking.IBankStatementRepository bankStatements,
         IDocumentProcessingRepository documents,
         IDocumentReviewRepository reviews,
+        Aiq.Gateway.Vouchers.Validation.VoucherValidationService validation,
         ILogger<VoucherExtractJobRunner> logger)
     {
+        _validation = validation;
         _reviews = reviews;
         _bankStatements = bankStatements;
         _documents = documents;
@@ -640,6 +643,8 @@ public sealed class VoucherExtractJobRunner
                     ct);
             }
         }
+        // After fields AND journal are written: covers upload and reextract alike.
+        await _validation.TryRecordAsync(tenantIdValue, stub.Voucher.DepartmentId, voucherId, ct);
 
         _logger.LogInformation(
             "Voucher extract job done · id={VoucherId} fields={FieldCount} entries={EntryCount}",

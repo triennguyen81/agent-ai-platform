@@ -360,6 +360,7 @@ public static class VoucherEndpoints
         Guid id,
         SetVoucherTypeRequest request,
         IVoucherRepository repo,
+        Aiq.Gateway.Vouchers.Validation.VoucherValidationService validation,
         Aiq.Gateway.Jobs.IVoucherExtractJobScheduler extractScheduler,
         HttpContext ctx,
         CancellationToken ct)
@@ -391,6 +392,9 @@ public static class VoucherEndpoints
         {
             return Results.Conflict(new { error = "voucher_already_posted", message = "Chứng từ đã ghi nhận — không thể đổi loại. Hãy huỷ ghi nhận trước." });
         }
+        // The type picks the required fields and journal rules. A changed type also
+        // re-extracts below, and that job records again.
+        await validation.TryRecordAsync(tenantId, departmentId, id, ct);
 
         // A different type means different enrichment (AR vs AP context,
         // matching, journal proposal): re-run extraction with the type FORCED.
@@ -1577,14 +1581,16 @@ public static class VoucherEndpoints
         CancellationToken ct)
     {
         // A read for every member of the voucher's department (USER and ADMIN).
+        // Computes only: results are stored when the voucher changes, never on GET.
         if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
-        var result = await validation.ValidateAsync(tenantId, departmentId, id, ct);
+        var result = await validation.ComputeAsync(tenantId, departmentId, id, ct);
         return result is null ? Results.NotFound() : Results.Ok(result);
     }
 
     internal static async Task<IResult> CreateAsync(
         CreateVoucherRequest request,
         IVoucherRepository repo,
+        Aiq.Gateway.Vouchers.Validation.VoucherValidationService validation,
         HttpContext ctx,
         CancellationToken ct)
     {
@@ -1599,7 +1605,11 @@ public static class VoucherEndpoints
         if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
 
         var created = await repo.CreateAsync(tenantId, departmentId, userId, request, ct);
-        if (created is not null) return Results.Created($"/vouchers/{created.Voucher.Id}", created);
+        if (created is not null)
+        {
+            await validation.TryRecordAsync(tenantId, departmentId, created.Voucher.Id, ct);
+            return Results.Created($"/vouchers/{created.Voucher.Id}", created);
+        }
 
         // Same (MST, số, ngày) already exists: never overwrite it (P3). Its id
         // is disclosed only inside the caller's own department.
@@ -1651,10 +1661,11 @@ public static class VoucherEndpoints
         return Results.Ok(new { voucher.Voucher, voucher.LineItems, voucher.JournalSuggestions, resolvedDirection });
     }
 
-    private static async Task<IResult> UpdateAsync(
+    internal static async Task<IResult> UpdateAsync(
         Guid id,
         UpdateVoucherRequest request,
         IVoucherRepository repo,
+        Aiq.Gateway.Vouchers.Validation.VoucherValidationService validation,
         HttpContext ctx,
         CancellationToken ct)
     {
@@ -1668,7 +1679,9 @@ public static class VoucherEndpoints
         if (!principal.IsInRole("admin") && existing.Voucher.UserId != userId) return Results.Forbid();
         if (existing.Voucher.Status is "verified" or "journalized" or "rejected") return Results.Conflict(new { error = "voucher_finalized" });
         var updated = await repo.UpdateAsync(tenantId, existing.Voucher.UserId, id, request, ct);
-        return updated is null ? Results.NotFound() : Results.Ok(updated);
+        if (updated is null) return Results.NotFound();
+        await validation.TryRecordAsync(tenantId, departmentId, id, ct);
+        return Results.Ok(updated);
     }
 
     // ApplyExtractionAsync — used by the agent's save_voucher tool AFTER
@@ -1761,6 +1774,7 @@ public static class VoucherEndpoints
         Guid id,
         CreateVoucherRequest request,
         IVoucherRepository repo,
+        Aiq.Gateway.Vouchers.Validation.VoucherValidationService validation,
         HttpContext ctx,
         CancellationToken ct)
     {
@@ -1809,6 +1823,7 @@ public static class VoucherEndpoints
         {
             return VoucherPostingGuard.Conflict();
         }
+        await validation.TryRecordAsync(tenantId, departmentId, id, ct);
         var updated = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
@@ -1848,6 +1863,7 @@ public static class VoucherEndpoints
         Guid id,
         SaveJournalSuggestionsRequest request,
         IVoucherRepository repo,
+        Aiq.Gateway.Vouchers.Validation.VoucherValidationService validation,
         HttpContext ctx,
         CancellationToken ct)
     {
@@ -1889,14 +1905,16 @@ public static class VoucherEndpoints
         }
 
         var saved = await repo.SaveJournalSuggestionsAsync(tenantId, departmentId, id, request, ct);
+        await validation.TryRecordAsync(tenantId, departmentId, id, ct);
         return Results.Ok(saved);
     }
 
-    private static async Task<IResult> DecideJournalAsync(
+    internal static async Task<IResult> DecideJournalAsync(
         Guid id,
         Guid entryId,
         AcceptJournalRequest request,
         IVoucherRepository repo,
+        Aiq.Gateway.Vouchers.Validation.VoucherValidationService validation,
         HttpContext ctx,
         CancellationToken ct)
     {
@@ -1910,7 +1928,9 @@ public static class VoucherEndpoints
         if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
 
         var updated = await repo.AcceptJournalAsync(tenantId, departmentId, id, entryId, userId, request, ct);
-        return updated is null ? Results.NotFound() : Results.Ok(updated);
+        if (updated is null) return Results.NotFound();
+        await validation.TryRecordAsync(tenantId, departmentId, id, ct);
+        return Results.Ok(updated);
     }
 
     private static bool TryGetUserId(HttpContext ctx, out Guid userId)

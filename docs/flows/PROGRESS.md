@@ -59,13 +59,15 @@ Yêu cầu user (2026-10-29): (1) GET validation không ghi DB, chỉ lưu khi c
 
 - [x] 1. Validator: `JOURNAL_TOTAL` warning; `JOURNAL_BALANCE` = tổng Nợ = tổng Có (error), kiểm từng dòng đổi tên `JOURNAL_LINE`; `DATE_FUTURE` > hôm nay VN + 1 ngày; `Version` = 2; test unit trước
 - [x] 2. Migration `069_voucher_validation_snapshot.sql` (+ down) thêm `voucher_updated_at`, `voucher_fingerprint` vào `voucher_validations`; test up→down→up
-- [ ] 3. Service tách `ComputeAsync` (GET, không ghi) / `RecordAsync` (lưu); gọi Record sau tạo / PATCH / apply-extraction / job trích xuất (upload + reextract) / bút toán gợi ý / đổi loại; test tích hợp
-- [ ] 4. Test tích hợp VAT_RATE với bảng `vat_rates` của riêng test (các đợt 8% không liên tục)
+- [x] 3. Service tách `ComputeAsync` (GET, không ghi) / `RecordAsync` (lưu); gọi Record sau tạo / PATCH / apply-extraction / job trích xuất (upload + reextract) / bút toán gợi ý / đổi loại; test tích hợp
+- [x] 4. Test tích hợp VAT_RATE với bảng `vat_rates` của riêng test (các đợt 8% không liên tục)
 - [ ] 5. Chạy đủ test, đồng bộ tài liệu, commit, push, kiểm tra GitHub Actions (`gh run list --branch feat/chung-tu-flow-v2 --limit 3`); đỏ thì sửa
 
 ### Ghi chú PR2.x
 - Bước 1: `VoucherValidator.cs` (Version 2, `FutureDateToleranceDays = 1`), `VoucherValidationService.TodayInVietnam` dùng tz `Asia/Ho_Chi_Minh` (fallback UTC+7 cố định). Mã mới `JOURNAL_LINE` (từng dòng, error); `JOURNAL_BALANCE` giờ là tổng Nợ = tổng Có (error) — với cấu trúc cặp hiện tại chỉ lệch khi dòng thiếu TK; `JOURNAL_TOTAL` warning. Test unit 61/61.
 - Bước 2: `069_voucher_validation_snapshot.sql` thêm `voucher_updated_at TIMESTAMPTZ`, `voucher_fingerprint TEXT` (CHECK 64 hex), NULL = dòng cũ → coi là cũ. Down chỉ drop 2 cột (dữ liệu dẫn xuất, không backup), giữ kết quả. Test 068 "up again" giờ chạy 068+ để 069 không mất cột. 3/3 xanh.
+- Bước 3: `VoucherValidationService` → `ComputeAsync` (GET, không ghi), `RecordAsync` (lưu + snapshot), `TryRecordAsync` (sau thay đổi; lỗi chỉ log vì thay đổi đã commit — dòng thiếu/cũ tự lộ qua snapshot). Report = `VoucherValidationReport` (thay `StoredVoucherValidation`). Fingerprint = SHA-256 JSON {voucher, line items, journal}. Hook: `CreateAsync`, `UpdateAsync`, `ApplyExtractionAsync`, `SaveJournalAsync`, `DecideJournalAsync`, `SetVoucherTypeAsync`, `VoucherExtractJobRunner` (sau khi ghi field + journal → upload và reextract). `UpdateAsync`/`DecideJournalAsync` đổi sang internal cho test. Job runner thêm tham số ctor (sửa 2 test dựng runner). Mutation check: GET ghi lại + bỏ hook create → 5 test đỏ.
+- Bước 4: `VoucherValidationIntegrationTests` dùng `IAsyncLifetime` thay bảng `vat_rates` bằng dữ liệu riêng (3 đợt 8% có khoảng trống) trước mỗi test; Theory 5 ngày (trong/ngoài đợt). 116 test liên quan xanh.
 - "lệch 1 ngày": không tìm thấy trong §10 hay transcript — coi yêu cầu 2026-10-29 là quyết định, ghi vào tài liệu.
 
 ## Đang chờ người dùng / kế toán

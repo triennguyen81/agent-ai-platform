@@ -1,11 +1,14 @@
 using System.Security.Claims;
 using Aiq.Gateway.Data;
 using Aiq.Gateway.Endpoints;
+using Aiq.Gateway.Governance;
 using Aiq.Gateway.Middleware;
 using Aiq.Gateway.Vouchers;
+using Aiq.Gateway.Vouchers.Validation;
 using Dapper;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
 namespace Aiq.Gateway.Tests.Data;
@@ -27,6 +30,9 @@ public sealed class VoucherPostingGuardIntegrationTests(TaxVerificationDatabase 
     }
 
     private VoucherRepository Repo => new(new NpgsqlConnectionFactory(fx.ConnectionString!));
+    private VoucherValidationService Validation => new(Repo, new TenantCompanyProfileRepository(new NpgsqlConnectionFactory(fx.ConnectionString!)),
+        new VoucherValidationRepository(new NpgsqlConnectionFactory(fx.ConnectionString!)), TimeProvider.System,
+        NullLogger<VoucherValidationService>.Instance);
 
     // ------------------------------------------------------------ repository
 
@@ -122,7 +128,7 @@ public sealed class VoucherPostingGuardIntegrationTests(TaxVerificationDatabase 
         var before = await SnapshotAsync(id);
         // Every collaborator past the voucher lookup is null: touching one fails the test.
         var runner = new Aiq.Gateway.Jobs.VoucherExtractJobRunner(null!, Repo, null!, null!, null!, null!, null!, null!,
-            Microsoft.Extensions.Options.Options.Create(new Aiq.Gateway.Jobs.ExpenseRiskOptions()), null!, null!, null!, null!,
+            Microsoft.Extensions.Options.Options.Create(new Aiq.Gateway.Jobs.ExpenseRiskOptions()), null!, null!, null!, null!, null!,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<Aiq.Gateway.Jobs.VoucherExtractJobRunner>.Instance);
 
         await runner.RunForActorAsync(id, fx.User, fx.Tenant, "auto", "token", fx.User, CancellationToken.None);
@@ -142,7 +148,7 @@ public sealed class VoucherPostingGuardIntegrationTests(TaxVerificationDatabase 
         var before = await SnapshotAsync(id);
         var actor = role == "admin" ? fx.Admin : fx.User;
 
-        var result = await VoucherEndpoints.ApplyExtractionAsync(id, Request("HD-OVERWRITE", 1m), Repo, Ctx(role, actor), CancellationToken.None);
+        var result = await VoucherEndpoints.ApplyExtractionAsync(id, Request("HD-OVERWRITE", 1m), Repo, Validation, Ctx(role, actor), CancellationToken.None);
 
         AssertPostedConflict(result);
         Assert.Equal(before, await SnapshotAsync(id));
@@ -155,7 +161,7 @@ public sealed class VoucherPostingGuardIntegrationTests(TaxVerificationDatabase 
         // ADMIN Department Authority Invariant: the ADMIN is never blocked for not being the creator.
         var id = await VoucherAsync("ocr_complete");
 
-        var result = await VoucherEndpoints.ApplyExtractionAsync(id, Request("HD-ADMIN", 3m), Repo, Ctx("admin", fx.Admin), CancellationToken.None);
+        var result = await VoucherEndpoints.ApplyExtractionAsync(id, Request("HD-ADMIN", 3m), Repo, Validation, Ctx("admin", fx.Admin), CancellationToken.None);
 
         Assert.Equal(StatusCodes.Status200OK, StatusOf(result));
         Assert.Equal("HD-ADMIN", (await SnapshotAsync(id)).Number);
@@ -168,7 +174,7 @@ public sealed class VoucherPostingGuardIntegrationTests(TaxVerificationDatabase 
         var id = await VoucherAsync("ocr_complete");
         var before = await SnapshotAsync(id);
 
-        var result = await VoucherEndpoints.ApplyExtractionAsync(id, Request("HD-X", 1m), Repo, Ctx("admin", fx.Admin, fx.OtherDept), CancellationToken.None);
+        var result = await VoucherEndpoints.ApplyExtractionAsync(id, Request("HD-X", 1m), Repo, Validation, Ctx("admin", fx.Admin, fx.OtherDept), CancellationToken.None);
 
         Assert.Equal(StatusCodes.Status404NotFound, StatusOf(result));
         Assert.Equal(before, await SnapshotAsync(id));
@@ -220,7 +226,7 @@ public sealed class VoucherPostingGuardIntegrationTests(TaxVerificationDatabase 
         var id = await VoucherAsync("verified", number: number);
         var before = await SnapshotAsync(id);
 
-        var result = await VoucherEndpoints.CreateAsync(Request(number, 1m), Repo, Ctx("user", fx.User), CancellationToken.None);
+        var result = await VoucherEndpoints.CreateAsync(Request(number, 1m), Repo, Validation, Ctx("user", fx.User), CancellationToken.None);
 
         Assert.Equal(StatusCodes.Status409Conflict, StatusOf(result));
         Assert.Equal("duplicate_voucher", Body(result)["error"]);
@@ -236,7 +242,7 @@ public sealed class VoucherPostingGuardIntegrationTests(TaxVerificationDatabase 
         var other = await VoucherAsync("extracted", number: number, department: fx.OtherDept);
         var before = await SnapshotAsync(other);
 
-        var result = await VoucherEndpoints.CreateAsync(Request(number, 1m), Repo, Ctx("user", fx.User), CancellationToken.None);
+        var result = await VoucherEndpoints.CreateAsync(Request(number, 1m), Repo, Validation, Ctx("user", fx.User), CancellationToken.None);
 
         Assert.Equal(StatusCodes.Status409Conflict, StatusOf(result));
         var body = Body(result);
@@ -251,7 +257,7 @@ public sealed class VoucherPostingGuardIntegrationTests(TaxVerificationDatabase 
     {
         if (fx.ConnectionString is null) return;
 
-        var result = await VoucherEndpoints.CreateAsync(Request(Unique("HD"), 1m), Repo, Ctx("user", fx.User), CancellationToken.None);
+        var result = await VoucherEndpoints.CreateAsync(Request(Unique("HD"), 1m), Repo, Validation, Ctx("user", fx.User), CancellationToken.None);
 
         Assert.Equal(StatusCodes.Status201Created, StatusOf(result));
     }

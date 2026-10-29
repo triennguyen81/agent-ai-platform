@@ -81,6 +81,9 @@ public sealed class DocumentGateHardeningIntegrationTests(DocumentProcessingData
             new ExpenseClaimRepository(f, employees, suppliers, vouchers, notifications),
             Options.Create(new ExpenseRiskOptions()), new TenantCompanyProfileRepository(f),
             new BankStatementRepository(f, new BankAccountRepository(f)), Docs, Reviews,
+            new Aiq.Gateway.Vouchers.Validation.VoucherValidationService(vouchers, new TenantCompanyProfileRepository(f),
+                new Aiq.Gateway.Vouchers.Validation.VoucherValidationRepository(f), TimeProvider.System,
+                NullLogger<Aiq.Gateway.Vouchers.Validation.VoucherValidationService>.Instance),
             NullLogger<VoucherExtractJobRunner>.Instance);
     }
 
@@ -120,6 +123,7 @@ public sealed class DocumentGateHardeningIntegrationTests(DocumentProcessingData
         var initial = await StateAsync(v);
         Assert.Equal(("extracted", fx.UserKt), (initial.Status, initial.Creator));
         Assert.Equal(new RunRow(fx.UserKt, "initial", null, null), Assert.Single(await RunsAsync(v)));
+        Assert.True(await ValidationMatchesVoucherAsync(v));   // the job stores the validator result
 
         // ADMIN re-extract: actor comes from the job payload (endpoint principal).
         await Runner(agent).RunForActorAsync(v, fx.UserKt, fx.TenantA, "receipt", "admin-token", fx.AdminKt, default);
@@ -127,7 +131,13 @@ public sealed class DocumentGateHardeningIntegrationTests(DocumentProcessingData
         Assert.Equal(new RunRow(fx.AdminKt, "reextract", null, null), runs[^1]);
         Assert.Equal(fx.UserKt, (await StateAsync(v)).Creator);   // creator/uploader untouched
         Assert.Equal(fx.UserKt, await Scalar<Guid>("SELECT user_id FROM vouchers WHERE id=@v", new { v }));
+        Assert.True(await ValidationMatchesVoucherAsync(v));   // …and stores it again for the re-extracted state
     }
+
+    private Task<bool> ValidationMatchesVoucherAsync(Guid v) => Scalar<bool>("""
+        SELECT EXISTS (SELECT 1 FROM voucher_validations vv JOIN vouchers x ON x.id = vv.voucher_id
+                        WHERE vv.voucher_id = @v AND vv.voucher_updated_at = x.updated_at AND vv.voucher_fingerprint IS NOT NULL)
+        """, new { v });
 
     [Fact]
     public async Task Cross_tenant_or_unknown_actor_in_the_job_payload_is_refused()

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Aiq.Gateway.Data;
 using Aiq.Gateway.Governance;
@@ -7,14 +9,20 @@ namespace Aiq.Gateway.Vouchers.Validation;
 
 public sealed record TenantVoucherSettings(decimal ConfidenceThreshold, IReadOnlyDictionary<string, IReadOnlyList<string>>? RequiredFields);
 
-public sealed record StoredVoucherValidation(
-    Guid VoucherId, int ValidatorVersion, bool HasErrors, IReadOnlyList<ValidationIssue> Issues, DateTime ValidatedAt);
+/// <summary>
+/// A validator result plus the voucher state it describes. <c>VoucherUpdatedAt</c>
+/// and <c>VoucherFingerprint</c> are what a stored row is compared against to tell
+/// whether it still matches the voucher (migration 069).
+/// </summary>
+public sealed record VoucherValidationReport(
+    Guid VoucherId, int ValidatorVersion, bool HasErrors, IReadOnlyList<ValidationIssue> Issues,
+    DateTime VoucherUpdatedAt, string VoucherFingerprint, DateTime ValidatedAt);
 
 public interface IVoucherValidationRepository
 {
     Task<IReadOnlyList<VatRateEntry>> GetVatRatesAsync(CancellationToken ct);
     Task<TenantVoucherSettings?> GetSettingsAsync(Guid tenantId, CancellationToken ct);
-    Task<StoredVoucherValidation> SaveAsync(Guid tenantId, Guid voucherId, VoucherValidationResult result, CancellationToken ct);
+    Task<VoucherValidationReport> SaveAsync(Guid tenantId, VoucherValidationReport report, CancellationToken ct);
 }
 
 public sealed class VoucherValidationRepository(NpgsqlConnectionFactory factory) : IVoucherValidationRepository
@@ -48,41 +56,48 @@ public sealed class VoucherValidationRepository(NpgsqlConnectionFactory factory)
         return new TenantVoucherSettings(row.Threshold, required);
     }
 
-    public async Task<StoredVoucherValidation> SaveAsync(Guid tenantId, Guid voucherId, VoucherValidationResult result, CancellationToken ct)
+    public async Task<VoucherValidationReport> SaveAsync(Guid tenantId, VoucherValidationReport report, CancellationToken ct)
     {
         await using var conn = await factory.OpenAsync(ct);
         var validatedAt = await conn.ExecuteScalarAsync<DateTime>(new CommandDefinition("""
-            INSERT INTO voucher_validations (voucher_id, tenant_id, validator_version, has_errors, issues, validated_at)
-            VALUES (@voucherId, @tenantId, @version, @hasErrors, @issues::jsonb, NOW())
+            INSERT INTO voucher_validations (voucher_id, tenant_id, validator_version, has_errors, issues, validated_at,
+                                             voucher_updated_at, voucher_fingerprint)
+            VALUES (@voucherId, @tenantId, @version, @hasErrors, @issues::jsonb, NOW(), @voucherUpdatedAt, @fingerprint)
             ON CONFLICT (voucher_id) DO UPDATE SET
-                validator_version = EXCLUDED.validator_version,
-                has_errors        = EXCLUDED.has_errors,
-                issues            = EXCLUDED.issues,
-                validated_at      = EXCLUDED.validated_at
+                validator_version   = EXCLUDED.validator_version,
+                has_errors          = EXCLUDED.has_errors,
+                issues              = EXCLUDED.issues,
+                validated_at        = EXCLUDED.validated_at,
+                voucher_updated_at  = EXCLUDED.voucher_updated_at,
+                voucher_fingerprint = EXCLUDED.voucher_fingerprint
             WHERE voucher_validations.tenant_id = EXCLUDED.tenant_id
             RETURNING validated_at
             """, new
         {
-            voucherId, tenantId, version = result.ValidatorVersion, hasErrors = result.HasErrors,
-            issues = JsonSerializer.Serialize(result.Issues, Json),
+            voucherId = report.VoucherId, tenantId, version = report.ValidatorVersion, hasErrors = report.HasErrors,
+            issues = JsonSerializer.Serialize(report.Issues, Json),
+            voucherUpdatedAt = report.VoucherUpdatedAt, fingerprint = report.VoucherFingerprint,
         }, cancellationToken: ct));
-        return new StoredVoucherValidation(voucherId, result.ValidatorVersion, result.HasErrors, result.Issues, validatedAt);
+        return report with { ValidatedAt = validatedAt };
     }
 }
 
 /// <summary>
 /// Loads what <see cref="VoucherValidator"/> needs (voucher, company MST, VAT
-/// table, tenant settings, today in Vietnam), runs it, stores the latest
-/// result. Advisory only in PR2: no state change depends on it.
+/// table, tenant settings, today in Vietnam) and runs it. <see cref="ComputeAsync"/>
+/// never writes (GET); <see cref="RecordAsync"/> also stores the result with the
+/// voucher snapshot, and is called only when the voucher changes (and at submit,
+/// PR3). Advisory only so far: no state change depends on it.
 /// </summary>
 public sealed class VoucherValidationService(
     IVoucherRepository vouchers,
     ITenantCompanyProfileRepository companyProfiles,
     IVoucherValidationRepository validations,
-    TimeProvider time)
+    TimeProvider time,
+    ILogger<VoucherValidationService> logger)
 {
     /// <summary>Null when the voucher is not in this tenant + department.</summary>
-    public async Task<StoredVoucherValidation?> ValidateAsync(Guid tenantId, Guid departmentId, Guid voucherId, CancellationToken ct)
+    public async Task<VoucherValidationReport?> ComputeAsync(Guid tenantId, Guid departmentId, Guid voucherId, CancellationToken ct)
     {
         var detail = await vouchers.FindInDepartmentAsync(tenantId, departmentId, voucherId, ct);
         if (detail is null) return null;
@@ -94,8 +109,44 @@ public sealed class VoucherValidationService(
             TodayInVietnam(time),
             settings?.RequiredFields,
             settings?.ConfidenceThreshold ?? 0.80m);
-        return await validations.SaveAsync(tenantId, voucherId, VoucherValidator.Validate(detail, ctx), ct);
+        var result = VoucherValidator.Validate(detail, ctx);
+        return new VoucherValidationReport(voucherId, result.ValidatorVersion, result.HasErrors, result.Issues,
+            detail.Voucher.UpdatedAt, Fingerprint(detail), time.GetUtcNow().UtcDateTime);
     }
+
+    /// <summary>Computes and stores the latest result. Null when the voucher is not in this tenant + department.</summary>
+    public async Task<VoucherValidationReport?> RecordAsync(Guid tenantId, Guid departmentId, Guid voucherId, CancellationToken ct)
+    {
+        var report = await ComputeAsync(tenantId, departmentId, voucherId, ct);
+        return report is null ? null : await validations.SaveAsync(tenantId, report, ct);
+    }
+
+    /// <summary>
+    /// <see cref="RecordAsync"/> after a voucher change. The change has already
+    /// committed, so a failure here is logged, not surfaced: a missing or older
+    /// row reads as stale by its snapshot, and submit (PR3) re-validates anyway.
+    /// </summary>
+    public async Task TryRecordAsync(Guid tenantId, Guid? departmentId, Guid voucherId, CancellationToken ct)
+    {
+        if (departmentId is not { } dept)
+        {
+            logger.LogWarning("Voucher {VoucherId}: no department — validation result not stored", voucherId);
+            return;
+        }
+        try
+        {
+            await RecordAsync(tenantId, dept, voucherId, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            logger.LogWarning(ex, "Voucher {VoucherId}: storing the validation result failed", voucherId);
+        }
+    }
+
+    /// <summary>SHA-256 (lowercase hex) of the validator input: voucher row, line items, journal suggestions.</summary>
+    internal static string Fingerprint(VoucherDetail detail) =>
+        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(
+            JsonSerializer.Serialize(new { detail.Voucher, detail.LineItems, detail.JournalSuggestions }, VoucherValidationRepository.Json))));
 
     // Asia/Ho_Chi_Minh from the tz database; a fixed UTC+7 zone when the image
     // has none (Vietnam has had no DST since 1975, so the two agree).
