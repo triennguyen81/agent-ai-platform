@@ -225,6 +225,15 @@ public sealed partial class CashSettlementIntegrationTests : IAsyncLifetime
         await db.ExecuteAsync("ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS document_review_status TEXT");
         // 063: extraction-owned document blockers (legacy L2 failure).
         await db.ExecuteAsync("ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS processing_blockers TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[]");
+        // 070: voucher lifecycle columns read by the edit lock and VoucherSelectColumns.
+        await db.ExecuteAsync("""
+            ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT NULL DEFAULT 'draft',
+                ADD COLUMN IF NOT EXISTS lifecycle_version INTEGER NOT NULL DEFAULT 1,
+                ADD COLUMN IF NOT EXISTS submitted_by UUID, ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ,
+                ADD COLUMN IF NOT EXISTS approved_by UUID, ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ,
+                ADD COLUMN IF NOT EXISTS posted_at TIMESTAMPTZ, ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ,
+                ADD COLUMN IF NOT EXISTS supersedes_id UUID;
+            """);
         // 064: contract payment-discount terms (+ the contract columns/parties they read) and the decision audit.
         await db.ExecuteAsync("""
             ALTER TABLE contracts ADD COLUMN IF NOT EXISTS direction TEXT, ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'VND';

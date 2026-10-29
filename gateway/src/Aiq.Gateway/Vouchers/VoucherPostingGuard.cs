@@ -2,7 +2,8 @@ namespace Aiq.Gateway.Vouchers;
 
 /// <summary>
 /// Chứng từ flow v2 PR1 (docs/flows/chung-tu-proposed.md §9): a voucher that
-/// carries an accounting effect — status 'verified' (legacy 'journalized'), or
+/// carries an accounting effect — status 'verified' (or legacy 'journalized': migration 070
+/// converted every such row, but the column has no CHECK, so it stays refused here), or
 /// a live cash posting — is never rewritten, re-extracted or deleted, by any
 /// role. Changing it means reversing the posting first. The SQL predicate is
 /// the authority (checked in the same statement as the write); the status

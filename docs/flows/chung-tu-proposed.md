@@ -233,7 +233,7 @@ Sửa P10 bằng cách gộp các bước trên vào một transaction. **Đảo
 
 | # | File | Nội dung | Ghi chú |
 |---|---|---|---|
-| 070 | `070_voucher_lifecycle.sql` | `vouchers`: `lifecycle_state` TEXT + CHECK, `lifecycle_version` INT (cho `If-Match`), `submitted_by/at`, `approved_by/at`, `posted_by/at`, `accounting_date`, `reversed_by/at`, `reversal_reason`, `deleted_at`, `supersedes_id` FK; bảng `voucher_events` + trigger append-only; bảng `tenant_feature_flags(tenant_id, flag, enabled, updated_by/at)` **[QĐ 20]**; trigger đồng bộ `status` → `lifecycle_state` (§4.2); backfill; chuyển dữ liệu `journalized` (§4.2) **[QĐ 24]** | Không đổi giá trị `status` cũ, trừ các dòng `journalized` |
+| 070 ✅ | `070_voucher_lifecycle.sql` | `vouchers`: `lifecycle_state` TEXT + CHECK, `lifecycle_version` INT (cho `If-Match`), `submitted_by/at`, `approved_by/at`, `posted_by/at`, `accounting_date`, `reversed_by/at`, `reversal_reason`, `deleted_at`, `supersedes_id` FK; bảng `voucher_events` + trigger append-only; bảng `tenant_feature_flags(tenant_id, flag, enabled, updated_by/at)` **[QĐ 20]**; trigger đồng bộ `status` → `lifecycle_state` (§4.2); backfill; chuyển dữ liệu `journalized` (§4.2) **[QĐ 24]** | Không đổi giá trị `status` cũ, trừ các dòng `journalized` |
 | 068 ✅ | `068_voucher_validation.sql` | Bảng `voucher_validations(voucher_id, validator_version, has_errors, issues, validated_at)`; bảng `vat_rates` + seed **[QĐ 11]**; bảng `tenant_voucher_settings(confidence_threshold DEFAULT 0.80, required_fields JSONB)` **[QĐ 7, 8]** | `field_confidence` dời sang migration của PR9, `extraction_source` (+ backfill) sang PR11 |
 | 069 ✅ | `069_voucher_validation_snapshot.sql` | Thêm `voucher_updated_at`, `voucher_fingerprint` (64 hex) vào `voucher_validations`; NULL = chưa rõ snapshot → coi là cũ | Down chỉ drop 2 cột |
 | 071 | `071_accounting_periods.sql` | `accounting_periods(tenant_id, period_start, period_end, status open/closed, closed_by/at, reopened_by/at, reopen_reason)` + unique; hàm `accounting_period_is_open(tenant, date)`; mở lại kỳ bắt buộc `reopen_reason` và ghi `voucher_events` loại `period_reopened` | Không seed kỳ đóng nào: mọi kỳ coi là mở **[QĐ 13]** |
@@ -268,13 +268,13 @@ Sửa P10 bằng cách gộp các bước trên vào một transaction. **Đảo
 | `PATCH /vouchers/{id}` | Sửa | Chỉ ở trạng thái sửa được; ghi `voucher_events` before/after; chạy lại validator. **Bắt buộc `If-Match: <lifecycle_version>`**: thiếu → 428, lệch → 412 **[QĐ 22]** | Có (409/412/428 mới); web hiện chưa gọi endpoint này |
 | `PATCH /vouchers/{id}/apply-extraction` | Sửa | PR1: 409 `voucher_posted` khi đã ghi sổ (bịt P1). v2: thêm 409 `voucher_locked` ở `pending_approval`/`approved` | Có (409 mới) |
 | `POST /vouchers/{id}/reextract` | Sửa | Như trên (bịt P2, kể cả dán text) | Có (409 mới) |
-| `DELETE /vouchers/{id}` | Sửa | PR1: 409 `voucher_posted` khi đã ghi sổ. v2: xoá mềm; 409 nếu đã từng `posted` (kể cả `reversed`) **[QĐ 3]** | Có (409 mới) |
+| `DELETE /vouchers/{id}` | Sửa | PR1: 409 `voucher_posted` khi đã ghi sổ. v2: xoá mềm; 409 nếu đã từng `posted` (kể cả `reversed`) **[QĐ 3]**. *PR3: xoá mềm khi bật cờ; cả xoá cứng (cờ tắt) cũng từ chối chứng từ đã từng ghi sổ (`posted_at`)* | Có (409 mới) |
 | `GET /vouchers/{id}/validation` | Mới | Tính và trả kết quả validator hiện tại (kèm `voucherUpdatedAt`, `voucherFingerprint`); **không ghi DB** | Không |
-| `GET /vouchers/{id}/events` | Mới | Lịch sử (đọc theo phòng ban) | Không |
-| `POST /vouchers/{id}/submit` | Mới | `validated → pending_approval` (người tạo hoặc ADMIN) | Không |
-| `POST /vouchers/{id}/approve` | Mới | `department_admin`; tuỳ chọn `{ post: true }` = duyệt & ghi sổ | Không |
-| `POST /vouchers/{id}/return` | Mới | `department_admin`; → `needs_fix`, lý do bắt buộc | Không |
-| `POST /vouchers/{id}/reject` | Mới | `department_admin`; → `rejected`, lý do bắt buộc | Không |
+| `GET /vouchers/{id}/events` | Mới | Lịch sử (đọc theo phòng ban). *Đã làm ở PR3* | Không |
+| `POST /vouchers/{id}/submit` | Mới | `validated → pending_approval` (người tạo hoặc ADMIN); chạy lại và lưu validator, lỗi → 409 `validation_failed` + chứng từ về `needs_fix`. *Đã làm ở PR3* | Không |
+| `POST /vouchers/{id}/approve` | Mới | `department_admin`; tuỳ chọn `{ post: true }` = duyệt & ghi sổ. *PR3: duyệt (gate validator, loại đã xác nhận, review, thuế HĐ đầu vào ≠ invalid); `post:true` → 400 đến PR5; gate L2 ở PR5* | Không |
+| `POST /vouchers/{id}/return` | Mới | `department_admin`; → `needs_fix`, lý do bắt buộc. *Đã làm ở PR3* | Không |
+| `POST /vouchers/{id}/reject` | Mới | `department_admin`; → `rejected`, lý do bắt buộc. *Đã làm ở PR3* | Không |
 | `POST /vouchers/{id}/post` | Mới | `department_admin`; `approved → posted` | Không |
 | `POST /vouchers/{id}/reverse` | Mới | `department_admin`; `posted → reversed`; ngày đảo, lý do | Không |
 | `POST /vouchers/{id}/supersede` | Mới | Chỉ từ `reversed`; tạo `draft` mới có `supersedes_id`; người tạo gốc hoặc ADMIN **[QĐ 2]** | Không |
@@ -376,7 +376,7 @@ Mỗi PR: viết test trước; chạy `dotnet test`, `pytest`, `vitest`, `ruff`
 |---|---|---|---|---|---|
 | 1 ✅ | Guard an toàn | Chặn `apply-extraction`, `reextract` (kể cả dán text), `UpdateOcrResult`, job trích xuất ghi đè khi `status='verified'` hoặc có `cash_transactions` đã `posted`; `POST /vouchers` bỏ ghi đè (409); `DELETE` chặn chứng từ `verified`; giữ `ocr_confidence`; agent `save_voucher` xử lý 409. Test: không sửa/xoá/trích xuất lại được chứng từ đã ghi sổ; upsert không đè chứng từ khác phòng ban. **Đã làm, chờ review** | Không | Không | — |
 | 2 ✅ | Validator | `VoucherValidator` thuần + unit test: cộng tiền (dung sai QĐ 10), MST 10/13/12 số + checksum warning (QĐ 9), thuế suất theo `vat_rates` + ngày HĐ (QĐ 11), trường bắt buộc tạm (QĐ 8), Nợ = Có, tổng bút toán (warning); `GET /validation` chỉ đọc; lưu kết quả + snapshot khi chứng từ đổi. Chỉ tham khảo, chưa chặn. **Đã làm (PR2 + PR2.x)** | 068, 069 | Không | — |
-| 3 | Vòng đời + audit | `lifecycle_state`, `supersedes_id`, `deleted_at`, `voucher_events`, `tenant_feature_flags`; `VoucherStateMachine` thuần (test toàn bộ ma trận chuyển trạng thái × vai trò, gồm ADMIN tự duyệt chứng từ của mình; `reversed` là trạng thái cuối); endpoint `submit/approve/return/reject`; xoá mềm; chuyển dữ liệu `journalized`; middleware xoá `X-AIQ-Actor` + test (QĐ 23) | 070 | Có | 2 |
+| 3 ✅ | Vòng đời + audit | `lifecycle_state`, `supersedes_id`, `deleted_at`, `voucher_events`, `tenant_feature_flags`; `VoucherStateMachine` thuần (test toàn bộ ma trận chuyển trạng thái × vai trò, gồm ADMIN tự duyệt chứng từ của mình; `reversed` là trạng thái cuối); endpoint `submit/approve/return/reject`; xoá mềm; chuyển dữ liệu `journalized`; middleware xoá `X-AIQ-Actor` + test (QĐ 23). **Đã làm** (khoá sửa `voucher_locked`, chặn PATCH đặt `verified`; `post`/`reverse`/`supersede` ở PR5/PR6) | 070 | Có | 2 |
 | 4 | Khoá kỳ | `accounting_periods`, API đóng/mở (mở lại bắt buộc lý do → `voucher_events`), kiểm tra ở `post`/`reverse` | 071 | Có | 3 |
 | 5 | Ghi sổ nguyên tử cho HĐ | `InvoiceJournalRouter` tất định (QĐ 15); `post` 1 transaction + bút toán `posting`; gate thuế `unavailable` + `tax-override` + job tra lại (QĐ 16); L2 phạm vi phòng ban làm gate (QĐ 17); alias `apply-*`; FK sổ chi tiết (073); `PATCH` bắt buộc `If-Match` (QĐ 22) | 073 | Có | 3, 4 |
 | 6 | Đảo HĐ + thay thế | `reverse` cho HĐ (bút toán + dòng đảo sổ chi tiết); nối unapply thu/chi; `supersede` tạo chứng từ thay thế (QĐ 2) | — | Có | 5 |

@@ -73,11 +73,12 @@ Yêu cầu user (2026-10-29): (1) GET validation không ghi DB, chỉ lưu khi c
 - "lệch 1 ngày": user xác nhận là quyết định của họ ngày 29/10 → **QĐ 25** trong §10.
 
 ## Đang chờ người dùng / kế toán
+- Review PR3. Cấu hình `Security__AgentInternalNetworks` (IP/mạng riêng của agent) trên server — cần duyệt riêng; đến lúc đó nhãn audit agent hiển thị là user.
 - Kế toán bổ sung các đợt giảm thuế GTGT 8% trước 07/2025 theo từng nghị quyết/nghị định (thêm dòng `vat_rates`, không sửa code).
 - Xác nhận trường bắt buộc cho phiếu thu/chi (`document_date`, `document_number`, `total_amount`) và đề nghị thanh toán (`document_date`, `total_amount`) — hiện là [GIẢ ĐỊNH].
 - QĐ 8 (danh sách trường bắt buộc chính thức), QĐ 14 (bảng TK TT99/TT133 + ánh xạ, trước PR8), thuật toán checksum MST.
 
-## PR3 — Vòng đời + audit ⏳
+## PR3 — Vòng đời + audit ✅ (chờ review)
 
 Phạm vi (§2, §3.7, §4.1 `070`, §4.2, §5, §6.3, QĐ 1, 2, 3, 20, 23, 24): chỉ test local (không kiểm CI).
 Ngoài PR3: `post`/`reverse`/`{post:true}`/alias `apply-*` + gate L2 + `If-Match` (PR5), kỳ kế toán (PR4), `supersede` (PR6), unique dedup bỏ qua xoá mềm (PR7).
@@ -90,7 +91,7 @@ Ngoài PR3: `post`/`reverse`/`{post:true}`/alias `apply-*` + gate L2 + `If-Match
 - [x] 6. Endpoint `submit`/`approve`/`return`/`reject` + `GET /events`, theo cờ `voucher_flow_v2`; test ACL (ADMIN tự duyệt OK, USER không duyệt, TO/SA 403, khác phòng 404, header agent bị từ chối)
 - [x] 7. Xoá mềm (khi bật cờ) + lọc `deleted_at` ở các đường đọc + chặn xoá chứng từ đã từng ghi sổ
 - [x] 8. Middleware xoá `X-AIQ-Actor` (QĐ 23) + `Security:AgentInternalNetworks` + test 4 trường hợp
-- [ ] 9. Bỏ nhánh `journalized` trong code; chạy đủ test; đồng bộ tài liệu; commit; báo cáo
+- [x] 9. Bỏ nhánh `journalized` trong code; chạy đủ test; đồng bộ tài liệu; commit; báo cáo
 
 ### Ghi chú PR3
 - Bước 2: `Vouchers/Lifecycle/VoucherStateMachine.cs` (`LifecycleStates`, `LifecycleAction`, `LifecycleActor(Kind, IsCreator)`, `Decide` → `LifecycleDecision`; lỗi `forbidden_actor` → kiểm trước, rồi `invalid_transition`, rồi `reason_required`). `IsEditable`, `IsDeletable(state, everPosted)`, `IsTerminal`. Thêm `extracted → rejected` (sơ đồ §2.2 không vẽ nhưng `extracted` có thể đứng yên khi cờ vừa bật). Test `Vouchers/VoucherStateMachineTests.cs` 676/676 (ma trận 9 × 9 × 8 + lý do + workflow ADMIN tự làm + trạng thái cuối).
@@ -100,6 +101,7 @@ Ngoài PR3: `post`/`reverse`/`{post:true}`/alias `apply-*` + gate L2 + `If-Match
 - Bước 6: `Endpoints/VoucherLifecycleEndpoints.cs` (`MapVoucherLifecycle` trong nhóm `/vouchers`): `GET /{id}/events`, `POST /{id}/submit` (mọi thành viên phòng ban; state machine quyết), `approve`/`return`/`reject` (`department_admin`). Thứ tự: TryScope (TO/SA 403) → cờ (409 `voucher_flow_v2_disabled`) → `post:true` 400 (PR5) → tìm theo phòng ban (404) → `MayAct` (403 `forbidden_actor`, trước khi ghi gì) → submit: `RecordAsync` (lưu kết quả lúc submit; lỗi → 409 `validation_failed`, chứng từ về needs_fix) → `Decide` → approve gate (validator không lỗi, loại đã xác nhận, review không chặn, HĐ đầu vào thuế ≠ invalid) → `TransitionAsync`. Return xoá `submitted_*`/`approved_*`. Header `X-AIQ-Actor: agent` → 403. Mutation (bỏ `MayAct` sớm) → 2 test đỏ. 705 test (state machine + tích hợp) xanh.
 - Bước 7: `IVoucherLifecycleRepository.SoftDeleteAsync` (UPDATE `deleted_at/by` chỉ khi editable/rejected + `posted_at IS NULL` + NotPosted, event `deleted` cùng transaction). `DELETE /vouchers/{id}`: cờ bật → xoá mềm; cờ tắt → xoá cứng như cũ. Cả hai từ chối chứng từ **đã từng** ghi sổ (`posted_at`) → 409 `voucher_posted` (thay đổi nhỏ cho tenant chưa bật cờ: HĐ đã post rồi unapply kiểu cũ không còn xoá được). Lọc `deleted_at IS NULL`: `FindAsync`, `FindInDepartmentAsync`, `ListInDepartmentAsync`, `ListAsync`, status-report, hàng chờ L2 (`IApprovalRepository`); các câu đọc khác đi theo id sau `FindInDepartmentAsync`. **Hạn chế (để PR7):** chứng từ xoá mềm vẫn giữ khoá trùng `uniq_voucher_document` → tải lại cùng HĐ báo trùng; `FindDuplicateAsync` vẫn thấy nó. File S3 giữ nguyên (QĐ 19). 56 test xanh.
 - Bước 8: `Security/AgentActorHeaderMiddleware.cs` + `AgentActorHeaderOptions` (section `Security`, `AgentInternalNetworks` CIDR, mặc định rỗng = luôn xoá), đăng ký **đầu tiên** trong pipeline (`Program.cs`, trước `UseExceptionHandler`; app không dùng `UseForwardedHeaders` nên `RemoteIpAddress` là IP socket). IPv4-mapped IPv6 được map. CIDR sai → lỗi lúc khởi động. Test `Security/AgentActorHeaderMiddlewareTests.cs` 7/7 (ngoài, agent, XFF giả, rỗng, hàng xóm ngoài CIDR, không header, CIDR sai). Route policy: approve/return/reject `department_admin`, submit không (`AdminDepartmentAuthorityInvariantTests`); 2 test policy quét thêm `VoucherLifecycleEndpoints`. **Hệ quả triển khai:** chưa cấu hình CIDR thì nhãn audit `agent` (`VoucherEndpoints.ActorType`) thành `user` — cấu hình mạng/IP agent trên server cần user duyệt riêng (§6.3), chưa đụng.
+- Bước 9: bỏ `journalized` khỏi 2 check `voucher_finalized` và bộ lọc/nhãn trên web (`vouchers/page.tsx`); **giữ** trong `VoucherPostingGuard` + PATCH làm lớp phòng thủ (cột `status` không CHECK; trigger cũng map `journalized` → posted). `CashSettlementIntegrationTests` tự dựng schema → thêm cột 070. Full suite: gateway Release `-warnaserror` serial **1717/1717**; agent ruff sạch, pytest **408** pass / 8 skip; web tsc sạch, vitest 102/102. Đồng bộ `chung-tu-proposed.md` (§4.1 070 ✅, §5, §9 PR3 ✅).
 - Thiết kế: một trigger AFTER ghi `voucher_events` `state_change` cho MỌI thay đổi `lifecycle_state` (đường cũ = `system`; đường v2 đặt `aiq.actor_id/actor_type/reason` bằng `set_config(..., true)` trong transaction) → một nơi ghi duy nhất, luôn cùng transaction.
 - `voucher_events.voucher_id` không FK (lịch sử sống sót khi tenant chưa bật cờ còn xoá cứng); append-only, chỉ cho DELETE khi tenant đã bị xoá (cascade).
 - Trigger 059 chỉ chặn khi đổi cột nội dung → cập nhật cột vòng đời không vướng.
