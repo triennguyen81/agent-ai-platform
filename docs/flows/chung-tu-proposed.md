@@ -157,7 +157,7 @@ sequenceDiagram
 
 ### 3.3 Kiểm tra hợp lệ (validator tất định)
 
-Viết thành class thuần `VoucherValidator` (không I/O) để unit test dễ. Kết quả có dạng `{code, severity: error|warning, field, message}` và lưu vào bảng riêng `voucher_validations` (không ghi vào dòng `vouchers`, để không kích trigger `updated_at` và không đụng chứng từ đã ghi sổ). *Đã làm ở PR2.*
+Viết thành class thuần `VoucherValidator` (không I/O) để unit test dễ. Kết quả có dạng `{code, severity: error|warning, field, message}` và lưu vào bảng riêng `voucher_validations` (không ghi vào dòng `vouchers`, để không kích trigger `updated_at` và không đụng chứng từ đã ghi sổ). `GET /vouchers/{id}/validation` **chỉ tính, không ghi**; kết quả chỉ được lưu khi chứng từ thay đổi (tạo, PATCH, apply-extraction, job trích xuất cho upload/reextract, lưu/duyệt bút toán gợi ý, đổi loại) và khi submit (PR3), kèm snapshot `voucher_updated_at` + `voucher_fingerprint` (SHA-256 của chứng từ + dòng hàng + bút toán, vì hai bảng sau không đổi `updated_at`) để biết kết quả còn khớp chứng từ hay không. *Đã làm ở PR2 / PR2.x.*
 
 | Mã | Quy tắc | Mức | Nguồn quy tắc |
 |---|---|---|---|
@@ -171,11 +171,12 @@ Viết thành class thuần `VoucherValidator` (không I/O) để unit test dễ
 | `VAT_RATE` | Thuế suất tra trong bảng `vat_rates(code, rate, effective_from, effective_to, legal_ref)` **theo ngày hoá đơn**. Không hard-code trong code. Ví dụ dòng seed: `8%` hiệu lực 01/07/2025–31/12/2026 (NĐ 174/2025) | error | **[QĐ 11]**; các dòng còn lại (0, 5, 10, KCT, KKKNT…) kế toán duyệt khi seed |
 | `AMOUNT_IN_WORDS` | Số tiền bằng chữ khớp số (nếu có) | warning | **[GIẢ ĐỊNH]** |
 | `PERIOD_OPEN` | Ngày hạch toán thuộc kỳ (tháng) chưa khoá | error | **[QĐ 12]** |
-| `DATE_FUTURE` | Ngày chứng từ không ở tương lai | error | **[GIẢ ĐỊNH]** |
+| `DATE_FUTURE` | Ngày chứng từ không quá "hôm nay" theo giờ `Asia/Ho_Chi_Minh` + 1 ngày | error | **[User 2026-10-29: cho phép lệch 1 ngày]** |
 | `DUPLICATE` | Trùng khoá ở §3.1 | error | Hiện có, sửa khoá |
 | `JOURNAL_ACCOUNT` | TK Nợ/Có tồn tại và được phép hạch toán trong hệ thống TK áp dụng cho **năm tài chính của ngày hạch toán** (§3.4) | error | **[CHỜ kế toán xác nhận bảng TK, QĐ 14]** |
-| `JOURNAL_BALANCE` | Tổng Nợ = tổng Có (đúng theo cấu trúc cặp hiện tại; vẫn kiểm để chuẩn bị cho bút toán nhiều dòng) | error | |
-| `JOURNAL_TOTAL` | HĐ đầu vào: tổng Có 331/111/112 = `total_amount`; HĐ đầu ra: tổng Nợ 131/111/112 = `total_amount` | error | **[GIẢ ĐỊNH: quy tắc khớp theo loại]** |
+| `JOURNAL_LINE` | Từng dòng bút toán gợi ý: có TK Nợ, TK Có, hai TK khác nhau, số tiền > 0 | error | |
+| `JOURNAL_BALANCE` | Tổng Nợ = tổng Có của bộ bút toán gợi ý (với cấu trúc cặp hiện tại chỉ lệch khi dòng thiếu TK; dùng thật khi có bút toán nhiều dòng) | error | **[User 2026-10-29]** |
+| `JOURNAL_TOTAL` | HĐ đầu vào: tổng Có 331/111/112 = `total_amount`; HĐ đầu ra: tổng Nợ 131/111/112 = `total_amount` | **warning vĩnh viễn** (thanh toán một phần, tạm ứng 141, bù trừ công nợ là hợp lệ) | **[User 2026-10-29]** |
 | `LOW_CONFIDENCE` | Có trường bắt buộc với confidence < ngưỡng của tenant | warning (chỉ tô đỏ, không chặn) | **[QĐ 7]** |
 
 ### 3.4 Định khoản
@@ -228,20 +229,21 @@ Sửa P10 bằng cách gộp các bước trên vào một transaction. **Đảo
 
 ## 4. Thay đổi DB
 
-### 4.1 Migration (số thứ tự nối tiếp `066`)
+### 4.1 Migration (số thứ tự nối tiếp `066`; 068, 069 đã làm ở PR2/PR2.x nên các migration còn lại đánh số từ 070 để thứ tự file luôn tăng)
 
 | # | File | Nội dung | Ghi chú |
 |---|---|---|---|
-| 067 | `067_voucher_lifecycle.sql` | `vouchers`: `lifecycle_state` TEXT + CHECK, `lifecycle_version` INT (cho `If-Match`), `submitted_by/at`, `approved_by/at`, `posted_by/at`, `accounting_date`, `reversed_by/at`, `reversal_reason`, `deleted_at`, `supersedes_id` FK; bảng `voucher_events` + trigger append-only; bảng `tenant_feature_flags(tenant_id, flag, enabled, updated_by/at)` **[QĐ 20]**; trigger đồng bộ `status` → `lifecycle_state` (§4.2); backfill; chuyển dữ liệu `journalized` (§4.2) **[QĐ 24]** | Không đổi giá trị `status` cũ, trừ các dòng `journalized` |
+| 070 | `070_voucher_lifecycle.sql` | `vouchers`: `lifecycle_state` TEXT + CHECK, `lifecycle_version` INT (cho `If-Match`), `submitted_by/at`, `approved_by/at`, `posted_by/at`, `accounting_date`, `reversed_by/at`, `reversal_reason`, `deleted_at`, `supersedes_id` FK; bảng `voucher_events` + trigger append-only; bảng `tenant_feature_flags(tenant_id, flag, enabled, updated_by/at)` **[QĐ 20]**; trigger đồng bộ `status` → `lifecycle_state` (§4.2); backfill; chuyển dữ liệu `journalized` (§4.2) **[QĐ 24]** | Không đổi giá trị `status` cũ, trừ các dòng `journalized` |
 | 068 ✅ | `068_voucher_validation.sql` | Bảng `voucher_validations(voucher_id, validator_version, has_errors, issues, validated_at)`; bảng `vat_rates` + seed **[QĐ 11]**; bảng `tenant_voucher_settings(confidence_threshold DEFAULT 0.80, required_fields JSONB)` **[QĐ 7, 8]** | `field_confidence` dời sang migration của PR9, `extraction_source` (+ backfill) sang PR11 |
-| 069 | `069_accounting_periods.sql` | `accounting_periods(tenant_id, period_start, period_end, status open/closed, closed_by/at, reopened_by/at, reopen_reason)` + unique; hàm `accounting_period_is_open(tenant, date)`; mở lại kỳ bắt buộc `reopen_reason` và ghi `voucher_events` loại `period_reopened` | Không seed kỳ đóng nào: mọi kỳ coi là mở **[QĐ 13]** |
-| 070 | `070_chart_of_accounts.sql` | `chart_of_accounts` (TT200, TT99, TT133) + `chart_account_mappings` (TT200 → TT99) + `tenant_company_profiles.accounting_regime` DEFAULT `'enterprise'` + seed **[QĐ 14]** | Seed cần kế toán duyệt **[CHỜ]** |
-| 071 | `071_voucher_posting_integrity.sql` | `voucher_journal_suggestions`: `posting_batch_id`, `approved_by/at`, `explanation`; trigger chặn UPDATE trường định danh/số tiền của `vouchers` khi `lifecycle_state IN ('pending_approval','approved','posted','reversed')` (mở rộng trigger `059` ra mọi loại); FK `sim_ar_ledger.voucher_id` / `sim_ap_ledger.voucher_id` → `vouchers(id) ON DELETE RESTRICT` (`NOT VALID` rồi `VALIDATE`) | Trước khi `VALIDATE` phải liệt kê dòng mồ côi do P5 |
-| 072 | `072_voucher_dedup_v2.sql` | Cột chuẩn hoá (`*_normalized`, generated, theo quy tắc §3.1 **[QĐ 5]**); `source_sha256`, `source_size` (index thường, không unique, vì trùng file chỉ cảnh báo **[QĐ 4]**); index cho khoá ở §3.1 | Tạo index **không unique** trước + view `voucher_duplicate_candidates`; chỉ chuyển sang unique sau khi xử lý xong trùng cũ **[GIẢ ĐỊNH]**; index cũ `uniq_voucher_document` giữ đến PR dọn dẹp |
+| 069 ✅ | `069_voucher_validation_snapshot.sql` | Thêm `voucher_updated_at`, `voucher_fingerprint` (64 hex) vào `voucher_validations`; NULL = chưa rõ snapshot → coi là cũ | Down chỉ drop 2 cột |
+| 071 | `071_accounting_periods.sql` | `accounting_periods(tenant_id, period_start, period_end, status open/closed, closed_by/at, reopened_by/at, reopen_reason)` + unique; hàm `accounting_period_is_open(tenant, date)`; mở lại kỳ bắt buộc `reopen_reason` và ghi `voucher_events` loại `period_reopened` | Không seed kỳ đóng nào: mọi kỳ coi là mở **[QĐ 13]** |
+| 072 | `072_chart_of_accounts.sql` | `chart_of_accounts` (TT200, TT99, TT133) + `chart_account_mappings` (TT200 → TT99) + `tenant_company_profiles.accounting_regime` DEFAULT `'enterprise'` + seed **[QĐ 14]** | Seed cần kế toán duyệt **[CHỜ]** |
+| 073 | `073_voucher_posting_integrity.sql` | `voucher_journal_suggestions`: `posting_batch_id`, `approved_by/at`, `explanation`; trigger chặn UPDATE trường định danh/số tiền của `vouchers` khi `lifecycle_state IN ('pending_approval','approved','posted','reversed')` (mở rộng trigger `059` ra mọi loại); FK `sim_ar_ledger.voucher_id` / `sim_ap_ledger.voucher_id` → `vouchers(id) ON DELETE RESTRICT` (`NOT VALID` rồi `VALIDATE`) | Trước khi `VALIDATE` phải liệt kê dòng mồ côi do P5 |
+| 074 | `074_voucher_dedup_v2.sql` | Cột chuẩn hoá (`*_normalized`, generated, theo quy tắc §3.1 **[QĐ 5]**); `source_sha256`, `source_size` (index thường, không unique, vì trùng file chỉ cảnh báo **[QĐ 4]**); index cho khoá ở §3.1 | Tạo index **không unique** trước + view `voucher_duplicate_candidates`; chỉ chuyển sang unique sau khi xử lý xong trùng cũ **[GIẢ ĐỊNH]**; index cũ `uniq_voucher_document` giữ đến PR dọn dẹp |
 
 ### 4.2 Chuyển dữ liệu cũ
 - Backfill `lifecycle_state` theo bảng §2.1. Chứng từ `status='extracted'` mà có `cash_transactions` đã `reversed` (đã từng ghi sổ rồi huỷ) thì đặt `extracted` và ghi một `voucher_events` loại `legacy_backfill`, kèm id các giao dịch đã đảo.
-- **Bỏ `journalized` [QĐ 24]:** code hiện không ghi giá trị này (chung-tu-current.md §4). Migration 067 đếm số dòng `status='journalized'` rồi chuyển:
+- **Bỏ `journalized` [QĐ 24]:** code hiện không ghi giá trị này (chung-tu-current.md §4). Migration 070 đếm số dòng `status='journalized'` rồi chuyển:
   - Có bút toán `posting`, có dòng sổ chi tiết, hoặc có `cash_transactions` đã `posted`: thành `verified` / `posted`.
   - Còn lại: thành `extracted` / `needs_fix`.
   - Mỗi dòng ghi `voucher_events` loại `legacy_backfill` lưu giá trị cũ, để script down khôi phục đúng.
@@ -267,7 +269,7 @@ Sửa P10 bằng cách gộp các bước trên vào một transaction. **Đảo
 | `PATCH /vouchers/{id}/apply-extraction` | Sửa | PR1: 409 `voucher_posted` khi đã ghi sổ (bịt P1). v2: thêm 409 `voucher_locked` ở `pending_approval`/`approved` | Có (409 mới) |
 | `POST /vouchers/{id}/reextract` | Sửa | Như trên (bịt P2, kể cả dán text) | Có (409 mới) |
 | `DELETE /vouchers/{id}` | Sửa | PR1: 409 `voucher_posted` khi đã ghi sổ. v2: xoá mềm; 409 nếu đã từng `posted` (kể cả `reversed`) **[QĐ 3]** | Có (409 mới) |
-| `GET /vouchers/{id}/validation` | Mới | Kết quả validator hiện tại | Không |
+| `GET /vouchers/{id}/validation` | Mới | Tính và trả kết quả validator hiện tại (kèm `voucherUpdatedAt`, `voucherFingerprint`); **không ghi DB** | Không |
 | `GET /vouchers/{id}/events` | Mới | Lịch sử (đọc theo phòng ban) | Không |
 | `POST /vouchers/{id}/submit` | Mới | `validated → pending_approval` (người tạo hoặc ADMIN) | Không |
 | `POST /vouchers/{id}/approve` | Mới | `department_admin`; tuỳ chọn `{ post: true }` = duyệt & ghi sổ | Không |
@@ -353,9 +355,9 @@ Cách thực thi:
 | Rủi ro | Giảm thiểu | Rollback |
 |---|---|---|
 | Đổi hành vi làm vỡ flow đang dùng (UI, tool agent, demo) | Cờ `voucher_flow_v2` theo tenant, mặc định tắt; PR1 (guard an toàn) không cần cờ | Tắt cờ (tức thời) |
-| Backfill sai trạng thái | Backfill chỉ cộng thêm, không đổi `status`; test với bản sao dữ liệu demo; view đối soát `status` ↔ `lifecycle_state` | Down 067 (drop cột/bảng) |
+| Backfill sai trạng thái | Backfill chỉ cộng thêm, không đổi `status`; test với bản sao dữ liệu demo; view đối soát `status` ↔ `lifecycle_state` | Down 070 (drop cột/bảng) |
 | Trùng cũ làm tạo unique index thất bại | Index không unique + báo cáo trước; unique ở PR sau | Bỏ qua bước unique |
-| FK sổ chi tiết → voucher thất bại vì dòng mồ côi (P5) | `NOT VALID` + báo cáo dòng mồ côi; kế toán xử lý rồi mới `VALIDATE` | Down 071 |
+| FK sổ chi tiết → voucher thất bại vì dòng mồ côi (P5) | `NOT VALID` + báo cáo dòng mồ côi; kế toán xử lý rồi mới `VALIDATE` | Down 073 |
 | Khoá kỳ chặn bút toán hợp lệ đến muộn | Mở lại kỳ có lý do + audit | Mở kỳ |
 | LLM tự đánh confidence không đáng tin | Chỉ dùng để tô màu, không dùng để chặn; validator tất định mới là gate | — |
 | Định dạng XML khác nhau giữa nhà cung cấp HĐĐT | Parser theo chuẩn chung + test bằng mẫu thật; lỗi parse thì quay về OCR | Tắt nhánh XML bằng cấu hình |
@@ -373,14 +375,14 @@ Mỗi PR: viết test trước; chạy `dotnet test`, `pytest`, `vitest`, `ruff`
 | PR | Tên | Nội dung | Migration | Cờ v2? | Phụ thuộc |
 |---|---|---|---|---|---|
 | 1 ✅ | Guard an toàn | Chặn `apply-extraction`, `reextract` (kể cả dán text), `UpdateOcrResult`, job trích xuất ghi đè khi `status='verified'` hoặc có `cash_transactions` đã `posted`; `POST /vouchers` bỏ ghi đè (409); `DELETE` chặn chứng từ `verified`; giữ `ocr_confidence`; agent `save_voucher` xử lý 409. Test: không sửa/xoá/trích xuất lại được chứng từ đã ghi sổ; upsert không đè chứng từ khác phòng ban. **Đã làm, chờ review** | Không | Không | — |
-| 2 ✅ | Validator | `VoucherValidator` thuần + unit test: cộng tiền (dung sai QĐ 10), MST 10/13/12 số + checksum warning (QĐ 9), thuế suất theo `vat_rates` + ngày HĐ (QĐ 11), trường bắt buộc tạm (QĐ 8), Nợ = Có, tổng bút toán; `GET /validation`; lưu `validation`. Chỉ tham khảo, chưa chặn. **Đã làm, chờ review** | 068 | Không | — |
-| 3 | Vòng đời + audit | `lifecycle_state`, `supersedes_id`, `deleted_at`, `voucher_events`, `tenant_feature_flags`; `VoucherStateMachine` thuần (test toàn bộ ma trận chuyển trạng thái × vai trò, gồm ADMIN tự duyệt chứng từ của mình; `reversed` là trạng thái cuối); endpoint `submit/approve/return/reject`; xoá mềm; chuyển dữ liệu `journalized`; middleware xoá `X-AIQ-Actor` + test (QĐ 23) | 067 | Có | 2 |
-| 4 | Khoá kỳ | `accounting_periods`, API đóng/mở (mở lại bắt buộc lý do → `voucher_events`), kiểm tra ở `post`/`reverse` | 069 | Có | 3 |
-| 5 | Ghi sổ nguyên tử cho HĐ | `InvoiceJournalRouter` tất định (QĐ 15); `post` 1 transaction + bút toán `posting`; gate thuế `unavailable` + `tax-override` + job tra lại (QĐ 16); L2 phạm vi phòng ban làm gate (QĐ 17); alias `apply-*`; FK sổ chi tiết (071); `PATCH` bắt buộc `If-Match` (QĐ 22) | 071 | Có | 3, 4 |
+| 2 ✅ | Validator | `VoucherValidator` thuần + unit test: cộng tiền (dung sai QĐ 10), MST 10/13/12 số + checksum warning (QĐ 9), thuế suất theo `vat_rates` + ngày HĐ (QĐ 11), trường bắt buộc tạm (QĐ 8), Nợ = Có, tổng bút toán (warning); `GET /validation` chỉ đọc; lưu kết quả + snapshot khi chứng từ đổi. Chỉ tham khảo, chưa chặn. **Đã làm (PR2 + PR2.x)** | 068, 069 | Không | — |
+| 3 | Vòng đời + audit | `lifecycle_state`, `supersedes_id`, `deleted_at`, `voucher_events`, `tenant_feature_flags`; `VoucherStateMachine` thuần (test toàn bộ ma trận chuyển trạng thái × vai trò, gồm ADMIN tự duyệt chứng từ của mình; `reversed` là trạng thái cuối); endpoint `submit/approve/return/reject`; xoá mềm; chuyển dữ liệu `journalized`; middleware xoá `X-AIQ-Actor` + test (QĐ 23) | 070 | Có | 2 |
+| 4 | Khoá kỳ | `accounting_periods`, API đóng/mở (mở lại bắt buộc lý do → `voucher_events`), kiểm tra ở `post`/`reverse` | 071 | Có | 3 |
+| 5 | Ghi sổ nguyên tử cho HĐ | `InvoiceJournalRouter` tất định (QĐ 15); `post` 1 transaction + bút toán `posting`; gate thuế `unavailable` + `tax-override` + job tra lại (QĐ 16); L2 phạm vi phòng ban làm gate (QĐ 17); alias `apply-*`; FK sổ chi tiết (073); `PATCH` bắt buộc `If-Match` (QĐ 22) | 073 | Có | 3, 4 |
 | 6 | Đảo HĐ + thay thế | `reverse` cho HĐ (bút toán + dòng đảo sổ chi tiết); nối unapply thu/chi; `supersede` tạo chứng từ thay thế (QĐ 2) | — | Có | 5 |
-| 7 | Chống trùng v2 + hash | Khoá MST + ký hiệu + số với chuẩn hoá QĐ 5, SHA-256 chỉ cảnh báo (QĐ 4), báo cáo trùng | 072 | Không | 1 |
-| 8 | Hệ thống TK theo năm tài chính | `chart_of_accounts` TT200/TT99/TT133 + ánh xạ TT200 → TT99, `accounting_regime`, tool `lookup_account` qua Gateway, cập nhật skill sang TT99 (QĐ 14). **Chỉ bắt đầu sau khi kế toán xác nhận bảng TK** | 070 | Không | — |
-| 9 | Confidence từng trường | Skill/prompt + cột `field_confidence` + API; ngưỡng theo tenant (bảng đã có ở 068) + log hiệu chỉnh (QĐ 7) | mới (sau 072) | Không | 2 |
+| 7 | Chống trùng v2 + hash | Khoá MST + ký hiệu + số với chuẩn hoá QĐ 5, SHA-256 chỉ cảnh báo (QĐ 4), báo cáo trùng | 074 | Không | 1 |
+| 8 | Hệ thống TK theo năm tài chính | `chart_of_accounts` TT200/TT99/TT133 + ánh xạ TT200 → TT99, `accounting_regime`, tool `lookup_account` qua Gateway, cập nhật skill sang TT99 (QĐ 14). **Chỉ bắt đầu sau khi kế toán xác nhận bảng TK** | 072 | Không | — |
+| 9 | Confidence từng trường | Skill/prompt + cột `field_confidence` + API; ngưỡng theo tenant (bảng đã có ở 068) + log hiệu chỉnh (QĐ 7) | mới (sau 074) | Không | 2 |
 | 10 | UI duyệt | Form sửa + tô đỏ, bảng bút toán sửa được, nút theo trạng thái (gồm "Duyệt & ghi sổ"), tab lịch sử, gửi `If-Match` | — | Có | 3, 9 |
 | 11 | XML HĐĐT | Parser theo XML chuẩn TCT + upload `.xml` + lưu XML gốc nguyên vẹn + cột `extraction_source` + test với mẫu thật (QĐ 6) | mới | Không | 2, 7 |
 | 12 | Bật v2 | Bật cờ cho tenant demo, theo dõi, dọn index cũ; bật versioning bucket MinIO (QĐ 19, **cần duyệt riêng vì chạm hạ tầng**) | — | — | tất cả |
@@ -415,8 +417,8 @@ Mỗi PR: viết test trước; chạy `dotnet test`, `pytest`, `vitest`, `ruff`
 | 24 | `journalized` | Bỏ, kèm migration chuyển dữ liệu nếu có bản ghi | §4.2, PR3 |
 
 Còn chờ: **QĐ 8** (danh sách trường bắt buộc theo loại) và **QĐ 14** (bảng TK TT99/TT133 + ánh xạ) cần kế toán xác nhận. Giả định mới phát sinh khi chi tiết hoá, chưa được duyệt:
-- `DATE_FUTURE` là lỗi chặn (§3.3).
-- Chỉ tạo index trùng unique sau khi đã xử lý trùng cũ (§4.1, 072).
+- `DATE_FUTURE` là lỗi chặn (§3.3) — đã chốt kèm dung sai 1 ngày theo giờ VN (2026-10-29).
+- Chỉ tạo index trùng unique sau khi đã xử lý trùng cũ (§4.1, 074).
 - Mạng docker riêng hoặc IP cố định cho agent (§6.3).
 - Mã 428 khi thiếu `If-Match` (§5).
 - Cách chuyển dữ liệu `journalized` theo dấu vết ghi sổ (§4.2).
