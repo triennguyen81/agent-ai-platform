@@ -440,4 +440,5 @@ User 29/10/2026 giao phương án mặc định cho PR4 (QĐ 12, 13 giữ nguyê
 | P9 | Múi giờ | Kỳ là tháng dương lịch của ngày hạch toán (kiểu DATE, không có giờ). Khi đổi một thời điểm ra kỳ ("hôm nay", ngày đảo) thì dùng giờ `Asia/Ho_Chi_Minh` | QĐ 12 |
 | P10 | Khoá/mở lặp lại | Khoá kỳ đã khoá → 409 `period_already_closed`; mở kỳ chưa khoá → 409 `period_not_closed` | Claude |
 | P11 | Validator | Quy tắc `PERIOD_LOCKED` (error), thay cho tên `PERIOD_OPEN` dự kiến ở §3.3 | User |
+| P13 | Kỳ ở tương lai | Không khoá được tháng sau tháng hiện tại (giờ VN) → 409 `period_in_future`. Tháng hiện tại khoá được | Claude |
 | P12 | Giao diện | Kế hoạch PR4 (§9) không có UI: PR4 chỉ làm API. Trang danh sách kỳ + nút khoá/mở có hộp nhập lý do làm ở PR10 | §9 |
