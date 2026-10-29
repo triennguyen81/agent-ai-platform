@@ -87,7 +87,8 @@ public static class VoucherStateMachine
     public static bool IsDeletable(string state, bool everPosted) =>
         !everPosted && (Editable.Contains(state) || state == LifecycleStates.Rejected);
 
-    private static bool MayAct(LifecycleAction action, LifecycleActor actor) => action switch
+    /// <summary>Whether this actor may ever perform the action, regardless of state.</summary>
+    public static bool MayAct(LifecycleAction action, LifecycleActor actor) => action switch
     {
         LifecycleAction.ExtractionCompleted or LifecycleAction.ValidationPassed or LifecycleAction.ValidationFailed
             => actor.Kind == LifecycleActorKind.System,

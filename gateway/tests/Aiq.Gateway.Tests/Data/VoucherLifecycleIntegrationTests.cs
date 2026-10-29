@@ -197,7 +197,225 @@ public sealed class VoucherLifecycleIntegrationTests(TaxVerificationDatabase fx)
         }
     }
 
+    // --------------------------------------------------- transition endpoints
+
+    private enum Step { Submit, Approve, Return, Reject }
+
+    private Task<IResult> Act(Step step, Guid id, string role, Guid user, string? reason = null, Guid? department = null,
+        bool agentHeader = false, bool? post = null)
+    {
+        var ctx = Ctx(role, user, department);
+        if (agentHeader) ctx.Request.Headers["X-AIQ-Actor"] = "agent";
+        var request = new VoucherTransitionRequest(reason, post);
+        var reviews = new Aiq.Gateway.Vouchers.DocumentProcessing.DocumentReviewRepository(Factory);
+        return step switch
+        {
+            Step.Submit => VoucherLifecycleEndpoints.SubmitAsync(id, request, Repo, Lifecycle, Flags, Validation, reviews, ctx, CancellationToken.None),
+            Step.Approve => VoucherLifecycleEndpoints.ApproveAsync(id, request, Repo, Lifecycle, Flags, Validation, reviews, ctx, CancellationToken.None),
+            Step.Return => VoucherLifecycleEndpoints.ReturnAsync(id, request, Repo, Lifecycle, Flags, Validation, reviews, ctx, CancellationToken.None),
+            _ => VoucherLifecycleEndpoints.RejectAsync(id, request, Repo, Lifecycle, Flags, Validation, reviews, ctx, CancellationToken.None),
+        };
+    }
+
+    private async Task WithFlagAsync(Func<Task> body)
+    {
+        await FlagAsync(true);
+        try { await body(); }
+        finally { await FlagAsync(false); }
+    }
+
+    [Fact]
+    public async Task Transitions_need_the_v2_flag()
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync();
+
+        Assert.Equal(VoucherLifecycleEndpoints.FlowDisabled, ErrorOf(await Act(Step.Submit, id, "user", fx.User)));
+        Assert.Equal("extracted", await LifecycleAsync(id));
+    }
+
+    [Fact]
+    public async Task An_admin_submits_and_approves_their_own_voucher() => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync(creator: fx.Admin);
+
+        Assert.Equal(StatusCodes.Status200OK, StatusOf(await Act(Step.Submit, id, "admin", fx.Admin)));
+        Assert.Equal("pending_approval", await LifecycleAsync(id));
+        Assert.Equal(StatusCodes.Status200OK, StatusOf(await Act(Step.Approve, id, "admin", fx.Admin)));
+
+        var row = await PeopleAsync(id);
+        Assert.Equal(("approved", "extracted", (Guid?)fx.Admin, (Guid?)fx.Admin), row);
+        var userEvents = (await Lifecycle.ListEventsAsync(fx.Tenant, id, CancellationToken.None)).Where(e => e.ActorType == "user").ToList();
+        Assert.Equal(2, userEvents.Count);
+        Assert.All(userEvents, e => Assert.Equal(fx.Admin, e.ActorId));
+    });
+
+    [Fact]
+    public async Task A_user_submits_their_own_voucher_but_never_decides() => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync(creator: fx.User);
+
+        Assert.Equal(StatusCodes.Status200OK, StatusOf(await Act(Step.Submit, id, "user", fx.User)));
+        foreach (var step in new[] { Step.Approve, Step.Return, Step.Reject })
+        {
+            var refused = await Act(step, id, "user", fx.User, reason: "tự duyệt");
+            Assert.Equal(StatusCodes.Status403Forbidden, StatusOf(refused));
+            Assert.Equal(LifecycleErrors.ForbiddenActor, ErrorOf(refused));
+        }
+        Assert.Equal("pending_approval", await LifecycleAsync(id));
+    });
+
+    [Fact]
+    public async Task Another_user_cannot_submit_and_nothing_is_written() => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync(creator: fx.Admin2);
+
+        var refused = await Act(Step.Submit, id, "user", fx.User);
+
+        Assert.Equal(LifecycleErrors.ForbiddenActor, ErrorOf(refused));
+        Assert.Equal("extracted", await LifecycleAsync(id));
+        Assert.False(await StoredExistsAsync(id));
+    });
+
+    [Fact]
+    public async Task Submit_stores_the_validation_and_refuses_a_voucher_with_errors() => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var bad = await VoucherAsync(total: 1m);
+
+        Assert.Equal("validation_failed", ErrorOf(await Act(Step.Submit, bad, "user", fx.User)));
+        Assert.Equal("needs_fix", await LifecycleAsync(bad));
+        Assert.True(await StoredMatchesAsync(bad));
+
+        var good = await VoucherAsync();
+        Assert.Equal(StatusCodes.Status200OK, StatusOf(await Act(Step.Submit, good, "user", fx.User)));
+        Assert.True(await StoredExistsAsync(good));
+    });
+
+    [Fact]
+    public async Task Return_needs_a_reason_unlocks_the_voucher_and_clears_the_submission() => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync();
+        await Act(Step.Submit, id, "user", fx.User);
+
+        Assert.Equal(LifecycleErrors.ReasonRequired, ErrorOf(await Act(Step.Return, id, "admin", fx.Admin, reason: " ")));
+        Assert.Equal(StatusCodes.Status200OK, StatusOf(await Act(Step.Return, id, "admin", fx.Admin, reason: "thiếu chữ ký")));
+
+        Assert.Equal(("needs_fix", "extracted", (Guid?)null, (Guid?)null), await PeopleAsync(id));
+        var returned = (await Lifecycle.ListEventsAsync(fx.Tenant, id, CancellationToken.None))[^1];
+        Assert.Equal(("user", (Guid?)fx.Admin, "thiếu chữ ký"), (returned.ActorType, returned.ActorId, returned.Reason));
+        // Editable again.
+        Assert.Equal(StatusCodes.Status200OK, StatusOf(await VoucherEndpoints.UpdateAsync(
+            id, Patch(total: 11_000_000m), Repo, Validation, Flags, Ctx("user", fx.User), CancellationToken.None)));
+    });
+
+    [Fact]
+    public async Task Rejected_is_final() => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync();
+        await Act(Step.Submit, id, "user", fx.User);
+
+        Assert.Equal(StatusCodes.Status200OK, StatusOf(await Act(Step.Reject, id, "admin", fx.Admin, reason: "trùng")));
+        Assert.Equal(("rejected", "rejected"), await StatusAndLifecycleAsync(id));
+        Assert.Equal(LifecycleErrors.InvalidTransition, ErrorOf(await Act(Step.Submit, id, "admin", fx.Admin)));
+    });
+
+    [Theory]
+    [InlineData("tenant_owner")]
+    [InlineData("super_admin")]
+    public async Task Tenant_owner_and_super_admin_cannot_transition(string role) => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync(lifecycle: "pending_approval");
+
+        Assert.IsType<ForbidHttpResult>(await Act(Step.Approve, id, role, fx.Admin));
+        Assert.Equal("pending_approval", await LifecycleAsync(id));
+    });
+
+    [Fact]
+    public async Task Another_department_gets_not_found() => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync(lifecycle: "pending_approval");
+
+        Assert.Equal(StatusCodes.Status404NotFound, StatusOf(await Act(Step.Approve, id, "admin", fx.Admin, department: fx.OtherDept)));
+        Assert.Equal(StatusCodes.Status404NotFound, StatusOf(await VoucherLifecycleEndpoints.EventsAsync(
+            id, Repo, Lifecycle, Ctx("admin", fx.Admin, fx.OtherDept), CancellationToken.None)));
+    });
+
+    [Fact]
+    public async Task The_agent_header_is_refused_even_with_an_admin_token() => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync(creator: fx.Admin);
+
+        var refused = await Act(Step.Submit, id, "admin", fx.Admin, agentHeader: true);
+
+        Assert.Equal(LifecycleErrors.ForbiddenActor, ErrorOf(refused));
+        Assert.Equal("extracted", await LifecycleAsync(id));
+    });
+
+    [Fact]
+    public async Task Approve_checks_type_confirmation_tax_and_post_flag() => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync(lifecycle: "pending_approval");
+
+        Assert.Equal("post_not_available", ErrorOf(await Act(Step.Approve, id, "admin", fx.Admin, post: true)));
+
+        await ExecAsync("UPDATE vouchers SET tax_verification_status='invalid' WHERE id=@id", new { id });
+        Assert.Equal("tax_verification_invalid", ErrorOf(await Act(Step.Approve, id, "admin", fx.Admin)));
+        await ExecAsync("UPDATE vouchers SET tax_verification_status=NULL WHERE id=@id", new { id });
+
+        await ExecAsync("""
+            UPDATE vouchers SET extracted_fields = '{"voucher_type_classification": {"voucher_type": "invoice_vat_in", "status": "needs_confirmation", "requires_confirmation": true}}'
+             WHERE id=@id
+            """, new { id });
+        Assert.Equal("voucher_type_unconfirmed", ErrorOf(await Act(Step.Approve, id, "admin", fx.Admin)));
+        Assert.Equal("pending_approval", await LifecycleAsync(id));
+    });
+
+    [Fact]
+    public async Task Events_are_readable_by_the_department() => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync();
+        await Act(Step.Submit, id, "user", fx.User);
+
+        var result = await VoucherLifecycleEndpoints.EventsAsync(id, Repo, Lifecycle, Ctx("user", fx.User), CancellationToken.None);
+
+        var events = Assert.IsAssignableFrom<IReadOnlyList<VoucherEventRecord>>((result as IValueHttpResult)?.Value);
+        Assert.Contains(events, e => e.After!.Contains("pending_approval"));
+    });
+
     // --------------------------------------------------------------- helpers
+
+    private async Task<(string Lifecycle, string Status, Guid? SubmittedBy, Guid? ApprovedBy)> PeopleAsync(Guid id)
+    {
+        await using var c = new NpgsqlConnection(fx.ConnectionString);
+        await c.OpenAsync();
+        return await c.QuerySingleAsync<(string, string, Guid?, Guid?)>(
+            "SELECT lifecycle_state, status, submitted_by, approved_by FROM vouchers WHERE id=@id", new { id });
+    }
+
+    private async Task<bool> StoredExistsAsync(Guid id)
+    {
+        await using var c = new NpgsqlConnection(fx.ConnectionString);
+        await c.OpenAsync();
+        return await c.ExecuteScalarAsync<bool>("SELECT EXISTS (SELECT 1 FROM voucher_validations WHERE voucher_id=@id)", new { id });
+    }
+
+    private async Task ExecAsync(string sql, object args)
+    {
+        await using var c = new NpgsqlConnection(fx.ConnectionString);
+        await c.OpenAsync();
+        await c.ExecuteAsync(sql, args);
+    }
 
     private async Task<bool> StoredMatchesAsync(Guid id)
     {
@@ -238,7 +456,7 @@ public sealed class VoucherLifecycleIntegrationTests(TaxVerificationDatabase fx)
         ErrorMessage: null, Tags: null);
 
     /// <summary>An invoice that passes the validator, created by fx.User, then moved to <paramref name="lifecycle"/>.</summary>
-    private async Task<Guid> VoucherAsync(string lifecycle = "extracted", Guid? creator = null)
+    private async Task<Guid> VoucherAsync(string lifecycle = "extracted", Guid? creator = null, decimal total = 11_000_000m)
     {
         await using var c = new NpgsqlConnection(fx.ConnectionString);
         await c.OpenAsync();
@@ -250,8 +468,8 @@ public sealed class VoucherLifecycleIntegrationTests(TaxVerificationDatabase fx)
             INSERT INTO vouchers(user_id, tenant_id, department_id, voucher_type, status, document_number, document_series, document_date,
                                  seller_name, seller_mst, buyer_name, buyer_mst, subtotal, vat_rate, vat_amount, total_amount, raw_ocr_text)
             VALUES (@u, @t, @d, 'invoice_vat_in', 'extracted', @n, '1C26TAA', '2026-09-15', 'Công ty NCC', @supplier, 'Công ty Chúng ta', @company,
-                    10000000, 10, 1000000, 11000000, 'RAW') RETURNING id
-            """, new { u = creator ?? fx.User, t = fx.Tenant, d = fx.Dept, n = Unique(), supplier = Supplier, company = Company });
+                    10000000, 10, 1000000, @total, 'RAW') RETURNING id
+            """, new { u = creator ?? fx.User, t = fx.Tenant, d = fx.Dept, n = Unique(), supplier = Supplier, company = Company, total });
         if (lifecycle != "extracted")
             await c.ExecuteAsync("UPDATE vouchers SET lifecycle_state=@lifecycle WHERE id=@id", new { id, lifecycle });
         return id;

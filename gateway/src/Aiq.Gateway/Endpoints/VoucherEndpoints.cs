@@ -184,6 +184,8 @@ public static class VoucherEndpoints
         // unapply-receipt / unapply-payment above are kept as compatibility
         // entry points and delegate to the same service.
         group.MapCashSettlement();
+        // Chứng từ flow v2 PR3: submit / approve / return / reject + history.
+        group.MapVoucherLifecycle();
 
         // Bank statement lines -> Customer identification (no posting).
         group.MapBankStatementLines();
