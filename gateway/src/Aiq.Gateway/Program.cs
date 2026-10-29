@@ -237,6 +237,7 @@ builder.Services.AddSingleton<IBookAccessControl, BookAccessControl>();
 // smoke-test connectivity via /healthz/ready and stage the migration behind
 // a feature flag (see docs/arch/s3-migration-plan.md).
 builder.Services.Configure<S3Options>(builder.Configuration.GetSection(S3Options.SectionName));
+builder.Services.Configure<Aiq.Gateway.Security.AgentActorHeaderOptions>(builder.Configuration.GetSection(Aiq.Gateway.Security.AgentActorHeaderOptions.SectionName));
 builder.Services.Configure<Aiq.Gateway.Jobs.ExpenseRiskOptions>(builder.Configuration.GetSection(Aiq.Gateway.Jobs.ExpenseRiskOptions.SectionName));
 builder.Services.Configure<Aiq.Gateway.Jobs.ArOverdueOptions>(builder.Configuration.GetSection(Aiq.Gateway.Jobs.ArOverdueOptions.SectionName));
 builder.Services.AddSingleton<IObjectStorage, S3ObjectStorage>();
@@ -480,6 +481,8 @@ if (builder.Configuration.GetValue("Database:RunMigrations", true))
         .ApplyAsync(CancellationToken.None);
 }
 
+// First: nothing downstream (audit, endpoints) may see a forged X-AIQ-Actor (QĐ 23).
+app.UseMiddleware<Aiq.Gateway.Security.AgentActorHeaderMiddleware>();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 app.UseResponseCompression();

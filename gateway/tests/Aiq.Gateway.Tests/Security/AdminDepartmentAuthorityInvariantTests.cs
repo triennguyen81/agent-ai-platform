@@ -25,7 +25,7 @@ public sealed class AdminDepartmentAuthorityInvariantTests
         builder.Services.AddAuthorization();
         const System.Reflection.BindingFlags all = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
             | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly;
-        var handlerParams = new[] { typeof(VoucherEndpoints), typeof(CashSettlementEndpoints), typeof(BankingEndpoints) }
+        var handlerParams = new[] { typeof(VoucherEndpoints), typeof(VoucherLifecycleEndpoints), typeof(CashSettlementEndpoints), typeof(BankingEndpoints) }
             .SelectMany(t => t.GetNestedTypes(all).Append(t))
             .SelectMany(t => t.GetMethods(all))
             .SelectMany(m => m.GetParameters()).Select(p => p.ParameterType).Distinct();
@@ -55,11 +55,23 @@ public sealed class AdminDepartmentAuthorityInvariantTests
     [InlineData("/{id:guid}/tax-verification/confirm")]
     [InlineData("/{id:guid}/settlement/post")]
     [InlineData("/{id:guid}/document-review/{taskId:guid}/decision")]
+    [InlineData("/{id:guid}/approve")]
+    [InlineData("/{id:guid}/return")]
+    [InlineData("/{id:guid}/reject")]
     public void Authoritative_decisions_are_department_admin_only(string route)
     {
         var e = MapVoucherRoutes().Single(x => x.RoutePattern.RawText!.EndsWith(route, StringComparison.Ordinal)
             && x.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods.Contains("POST"));
         Assert.Contains("department_admin", Policies(e));
+    }
+
+    /// <summary>Submitting is the creator's step (VoucherStateMachine decides who); it is not an accounting decision.</summary>
+    [Fact]
+    public void Submit_is_open_to_department_members()
+    {
+        var e = MapVoucherRoutes().Single(x => x.RoutePattern.RawText!.EndsWith("/{id:guid}/submit", StringComparison.Ordinal)
+            && x.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods.Contains("POST"));
+        Assert.DoesNotContain("department_admin", Policies(e));
     }
 
     private static PrincipalContext P(string role, Guid? tenant, Guid? dept) =>

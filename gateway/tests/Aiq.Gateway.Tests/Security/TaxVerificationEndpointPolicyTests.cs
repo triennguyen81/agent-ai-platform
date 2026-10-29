@@ -26,7 +26,7 @@ public sealed class TaxVerificationEndpointPolicyTests
         // routes; lambdas live in compiler-generated nested types.
         const System.Reflection.BindingFlags all = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
             | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly;
-        var handlerParams = new[] { typeof(VoucherEndpoints), typeof(CashSettlementEndpoints), typeof(BankingEndpoints) }
+        var handlerParams = new[] { typeof(VoucherEndpoints), typeof(VoucherLifecycleEndpoints), typeof(CashSettlementEndpoints), typeof(BankingEndpoints) }
             .SelectMany(t => t.GetNestedTypes(all).Append(t))
             .SelectMany(t => t.GetMethods(all))
             .SelectMany(m => m.GetParameters()).Select(p => p.ParameterType).Distinct();
