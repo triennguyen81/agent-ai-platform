@@ -65,6 +65,8 @@ public static class VoucherEndpoints
         // quá hạn) cho dashboard KT trưởng.
         group.MapGet("/status-report", StatusReportAsync);
         group.MapGet("/{id:guid}", GetAsync);
+        // Chứng từ flow v2 PR2: deterministic validator result (advisory only).
+        group.MapGet("/{id:guid}/validation", ValidationAsync);
         group.MapPatch("/{id:guid}", UpdateAsync);
 
         // Destructive delete stays admin-only.
@@ -1566,6 +1568,18 @@ public static class VoucherEndpoints
         ctx.Response.ContentType = "application/zip";
         await exportService.WriteZipAsync(tenantId, userId, filter, ctx.Response.Body, ct);
         return Results.Empty;
+    }
+
+    internal static async Task<IResult> ValidationAsync(
+        Guid id,
+        Aiq.Gateway.Vouchers.Validation.VoucherValidationService validation,
+        HttpContext ctx,
+        CancellationToken ct)
+    {
+        // A read for every member of the voucher's department (USER and ADMIN).
+        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
+        var result = await validation.ValidateAsync(tenantId, departmentId, id, ct);
+        return result is null ? Results.NotFound() : Results.Ok(result);
     }
 
     internal static async Task<IResult> CreateAsync(

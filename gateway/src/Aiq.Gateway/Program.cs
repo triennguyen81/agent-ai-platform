@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Text;
 using System.Threading.RateLimiting;
 using Aiq.Gateway.Audit;
@@ -184,6 +185,9 @@ builder.Services.AddScoped<IContractPaymentDiscountRepository, ContractPaymentDi
 builder.Services.AddScoped<IContractDocumentRepository, ContractDocumentRepository>();
 builder.Services.AddScoped<IChecklistRepository, ChecklistRepository>();
 builder.Services.AddScoped<IVoucherRepository, VoucherRepository>();
+builder.Services.AddScoped<Aiq.Gateway.Vouchers.Validation.IVoucherValidationRepository, Aiq.Gateway.Vouchers.Validation.VoucherValidationRepository>();
+builder.Services.AddScoped<Aiq.Gateway.Vouchers.Validation.VoucherValidationService>();
+builder.Services.TryAddSingleton(TimeProvider.System);
 builder.Services.AddScoped<Aiq.Gateway.Vouchers.ITaxVerificationRepository, Aiq.Gateway.Vouchers.TaxVerificationRepository>();
 builder.Services.AddScoped<Aiq.Gateway.Vouchers.VoucherExportService>();
 builder.Services.AddScoped<INotificationRepository, NotificationRepository>();
