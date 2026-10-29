@@ -148,7 +148,11 @@ public sealed class VoucherLifecycleMigrationTests(TaxVerificationDatabase fx) :
         await db.ExecuteAsync("INSERT INTO tenant_feature_flags(tenant_id, flag, enabled) VALUES (@t, 'voucher_flow_v2', true)", new { t = fx.Tenant });
         await db.ExecuteAsync("INSERT INTO schema_migrations(version, checksum) VALUES (@Version, repeat('a', 64)) ON CONFLICT DO NOTHING", new { Version });
 
-        // ---- down ---------------------------------------------------------------
+        // ---- down (071 depends on 070, so it goes first) --------------------------
+        Assert.Contains("071_accounting_periods.down.sql", (await Assert.ThrowsAsync<PostgresException>(async () =>
+            await db.ExecuteAsync(await File.ReadAllTextAsync(TaxVerificationDatabase.DownScript("070_voucher_lifecycle.down.sql"))))).MessageText);
+        await db.ExecuteAsync("ROLLBACK");   // the refused script left its BEGIN open
+        await db.ExecuteAsync(await File.ReadAllTextAsync(TaxVerificationDatabase.DownScript("071_accounting_periods.down.sql")));
         await db.ExecuteAsync(await File.ReadAllTextAsync(TaxVerificationDatabase.DownScript("070_voucher_lifecycle.down.sql")));
 
         Assert.False(await db.ExecuteScalarAsync<bool>("SELECT to_regclass('public.voucher_events') IS NOT NULL"));
@@ -194,6 +198,7 @@ public sealed class VoucherLifecycleMigrationTests(TaxVerificationDatabase fx) :
 
         // ---- up again -----------------------------------------------------------
         await fx.RunFilesAsync(TaxVerificationDatabase.MigrationsDir(), f => f == Version);
+        await fx.RunFilesAsync(TaxVerificationDatabase.MigrationsDir(), f => f == "071_accounting_periods.sql");
 
         var posted = await RowAsync(db, journalizedPosted);
         Assert.Equal(("verified", "posted"), (posted.Status, posted.Lifecycle));
@@ -233,9 +238,11 @@ public sealed class VoucherLifecycleMigrationTests(TaxVerificationDatabase fx) :
 
         // ---- down restores journalized, up again converts it again ---------------
         await db.ExecuteAsync("INSERT INTO schema_migrations(version, checksum) VALUES (@Version, repeat('a', 64)) ON CONFLICT DO NOTHING", new { Version });
+        await db.ExecuteAsync(await File.ReadAllTextAsync(TaxVerificationDatabase.DownScript("071_accounting_periods.down.sql")));
         await db.ExecuteAsync(await File.ReadAllTextAsync(TaxVerificationDatabase.DownScript("070_voucher_lifecycle.down.sql")));
         Assert.Equal("journalized", await db.ExecuteScalarAsync<string>("SELECT status FROM vouchers WHERE id=@journalizedBare", new { journalizedBare }));
         await fx.RunFilesAsync(TaxVerificationDatabase.MigrationsDir(), f => f == Version);
+        await fx.RunFilesAsync(TaxVerificationDatabase.MigrationsDir(), f => f == "071_accounting_periods.sql");
         Assert.Equal("needs_fix", (await RowAsync(db, journalizedBare)).Lifecycle);
     }
 

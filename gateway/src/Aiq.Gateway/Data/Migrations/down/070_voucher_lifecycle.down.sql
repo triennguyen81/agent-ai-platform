@@ -10,6 +10,14 @@
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 070_voucher_lifecycle.down.sql
 BEGIN;
 
+-- 071 (accounting periods) reads tenant_feature_flags from its triggers: undo it first.
+DO $$
+BEGIN
+  IF to_regclass('public.accounting_periods') IS NOT NULL THEN
+    RAISE EXCEPTION 'run down/071_accounting_periods.down.sql before this script';
+  END IF;
+END $$;
+
 DO $$
 DECLARE suffix TEXT := to_char(clock_timestamp(), 'YYYYMMDDHH24MISSUS');
 BEGIN
