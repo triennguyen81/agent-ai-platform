@@ -4,6 +4,7 @@ using Aiq.Gateway.Endpoints;
 using Aiq.Gateway.Governance;
 using Aiq.Gateway.Middleware;
 using Aiq.Gateway.Vouchers;
+using Aiq.Gateway.Vouchers.Lifecycle;
 using Aiq.Gateway.Vouchers.Validation;
 using Dapper;
 using Microsoft.AspNetCore.Http;
@@ -202,7 +203,9 @@ public sealed class VoucherPostingGuardIntegrationTests(TaxVerificationDatabase 
         if (fx.ConnectionString is null) return;
         var id = await VoucherAsync("verified");
 
-        var result = await VoucherEndpoints.DeleteAsync(id, Repo, Ctx("admin", fx.Admin), CancellationToken.None);
+        var result = await VoucherEndpoints.DeleteAsync(id, Repo,
+            new TenantFeatureFlagRepository(new NpgsqlConnectionFactory(fx.ConnectionString!)),
+            new VoucherLifecycleRepository(new NpgsqlConnectionFactory(fx.ConnectionString!)), Ctx("admin", fx.Admin), CancellationToken.None);
 
         AssertPostedConflict(result);
         Assert.True(await ExistsAsync(id));
@@ -214,7 +217,9 @@ public sealed class VoucherPostingGuardIntegrationTests(TaxVerificationDatabase 
         if (fx.ConnectionString is null) return;
         var id = await VoucherAsync("extracted");
 
-        var result = await VoucherEndpoints.DeleteAsync(id, Repo, Ctx("admin", fx.Admin), CancellationToken.None);
+        var result = await VoucherEndpoints.DeleteAsync(id, Repo,
+            new TenantFeatureFlagRepository(new NpgsqlConnectionFactory(fx.ConnectionString!)),
+            new VoucherLifecycleRepository(new NpgsqlConnectionFactory(fx.ConnectionString!)), Ctx("admin", fx.Admin), CancellationToken.None);
 
         Assert.Equal(StatusCodes.Status204NoContent, StatusOf(result));
         Assert.False(await ExistsAsync(id));

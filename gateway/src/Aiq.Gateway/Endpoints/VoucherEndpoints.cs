@@ -1856,6 +1856,8 @@ public static class VoucherEndpoints
     internal static async Task<IResult> DeleteAsync(
         Guid id,
         IVoucherRepository repo,
+        Aiq.Gateway.Vouchers.Lifecycle.ITenantFeatureFlags flags,
+        Aiq.Gateway.Vouchers.Lifecycle.IVoucherLifecycleRepository lifecycle,
         HttpContext ctx,
         CancellationToken ct)
     {
@@ -1864,12 +1866,20 @@ public static class VoucherEndpoints
         // Department first and pass its actual creator's id through, never
         // the deleting admin's own id (that was the bug: an ADMIN could
         // previously only delete vouchers they themselves had created).
-        if (!BusinessModuleAuthorization.TryScope(ctx, out _, out var tenantId, out var departmentId)) return Results.Forbid();
+        if (!BusinessModuleAuthorization.TryScope(ctx, out var principal, out var tenantId, out var departmentId)) return Results.Forbid();
         var existing = await repo.FindInDepartmentAsync(tenantId, departmentId, id, ct);
         if (existing is null) return Results.NotFound();
-        // P5: a posted voucher (invoice AR/AP included) is reversed, never deleted.
-        if (VoucherPostingGuard.IsPostedStatus(existing.Voucher.Status)) return VoucherPostingGuard.Conflict();
+        // P5 / QĐ 3: a voucher posted now or ever (invoice AR/AP included) is reversed, never deleted — not even softly.
+        if (VoucherPostingGuard.IsPostedStatus(existing.Voucher.Status) || existing.Voucher.PostedAt is not null) return VoucherPostingGuard.Conflict();
         if (Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.IsLocked(existing.Voucher)) return Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleGuard.Conflict();
+
+        // v2 (QĐ 3): soft delete — the row, its file and its history stay.
+        if (await flags.IsEnabledAsync(tenantId, Aiq.Gateway.Vouchers.Lifecycle.TenantFeatureFlags.VoucherFlowV2, ct))
+        {
+            return await lifecycle.SoftDeleteAsync(tenantId, departmentId, id, principal.UserId, ctx.TraceIdentifier, ct)
+                ? Results.NoContent()
+                : await EditRefusedAsync(repo, tenantId, departmentId, id, ct);
+        }
 
         // A receipt/payment that ever carried an accounting effect (posted or
         // reversed) is audit history — cash_transactions references it with

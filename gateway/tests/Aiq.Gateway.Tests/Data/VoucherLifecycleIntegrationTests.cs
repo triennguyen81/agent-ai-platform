@@ -60,7 +60,7 @@ public sealed class VoucherLifecycleIntegrationTests(TaxVerificationDatabase fx)
         Assert.Equal(VoucherLifecycleGuard.ErrorCode, ErrorOf(await VoucherEndpoints.DecideJournalAsync(
             id, entry, new AcceptJournalRequest(false, "x"), Repo, Validation, Ctx("admin", fx.Admin), CancellationToken.None)));
         Assert.Equal(VoucherLifecycleGuard.ErrorCode, ErrorOf(await VoucherEndpoints.DeleteAsync(
-            id, Repo, Ctx("admin", fx.Admin), CancellationToken.None)));
+            id, Repo, Flags, Lifecycle, Ctx("admin", fx.Admin), CancellationToken.None)));
         await Assert.ThrowsAsync<VoucherLockedException>(() => Repo.SaveJournalSuggestionsAsync(fx.Tenant, fx.Dept, id,
             new SaveJournalSuggestionsRequest([new SaveJournalSuggestionDto(1, "642", "331", 1m, null, null)], ReplaceExisting: true),
             CancellationToken.None));
@@ -391,6 +391,77 @@ public sealed class VoucherLifecycleIntegrationTests(TaxVerificationDatabase fx)
 
         var events = Assert.IsAssignableFrom<IReadOnlyList<VoucherEventRecord>>((result as IValueHttpResult)?.Value);
         Assert.Contains(events, e => e.After!.Contains("pending_approval"));
+    });
+
+    // ------------------------------------------------------------ soft delete
+
+    private Task<IResult> Delete(Guid id, Guid? department = null) =>
+        VoucherEndpoints.DeleteAsync(id, Repo, Flags, Lifecycle, Ctx("admin", fx.Admin, department), CancellationToken.None);
+
+    [Theory]
+    [InlineData("draft")]
+    [InlineData("extracted")]
+    [InlineData("needs_fix")]
+    [InlineData("validated")]
+    [InlineData("rejected")]
+    public async Task With_the_v2_flag_delete_is_soft_and_hides_the_voucher(string state) => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync(lifecycle: state);
+
+        Assert.Equal(StatusCodes.Status204NoContent, StatusOf(await Delete(id)));
+
+        await using var c = new NpgsqlConnection(fx.ConnectionString);
+        await c.OpenAsync();
+        var row = await c.QuerySingleAsync<(DateTime? DeletedAt, Guid? DeletedBy)>("SELECT deleted_at, deleted_by FROM vouchers WHERE id=@id", new { id });
+        Assert.NotNull(row.DeletedAt);
+        Assert.Equal(fx.Admin, row.DeletedBy);
+        Assert.Equal(1, await c.ExecuteScalarAsync<int>("SELECT COUNT(*)::int FROM voucher_events WHERE voucher_id=@id AND event_type='deleted'", new { id }));
+        // Gone for every read path: detail, list, a second delete.
+        Assert.Null(await Repo.FindInDepartmentAsync(fx.Tenant, fx.Dept, id, CancellationToken.None));
+        Assert.DoesNotContain(await Repo.ListInDepartmentAsync(fx.Tenant, fx.Dept, null, null, null, 500, 0, CancellationToken.None), v => v.Id == id);
+        Assert.Equal(StatusCodes.Status404NotFound, StatusOf(await Delete(id)));
+    });
+
+    [Fact]
+    public async Task A_voucher_posted_once_is_never_deleted_not_even_softly() => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync();
+        // Legacy post then unapply: back to extracted, but posted_at stays.
+        await ExecAsync("UPDATE vouchers SET status='verified' WHERE id=@id; UPDATE vouchers SET status='extracted' WHERE id=@id", new { id });
+
+        Assert.Equal(VoucherPostingGuard.ErrorCode, ErrorOf(await Delete(id)));
+        Assert.False(await Lifecycle.SoftDeleteAsync(fx.Tenant, fx.Dept, id, fx.Admin, null, CancellationToken.None));
+        Assert.NotNull(await Repo.FindInDepartmentAsync(fx.Tenant, fx.Dept, id, CancellationToken.None));
+    });
+
+    [Fact]
+    public async Task Without_the_flag_delete_stays_hard_but_refuses_a_voucher_posted_once()
+    {
+        if (fx.ConnectionString is null) return;
+        var plain = await VoucherAsync();
+        Assert.Equal(StatusCodes.Status204NoContent, StatusOf(await Delete(plain)));
+        await using var c = new NpgsqlConnection(fx.ConnectionString);
+        await c.OpenAsync();
+        Assert.False(await c.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM vouchers WHERE id=@plain)", new { plain }));
+
+        var once = await VoucherAsync();
+        await ExecAsync("UPDATE vouchers SET status='verified' WHERE id=@once; UPDATE vouchers SET status='extracted' WHERE id=@once", new { once });
+        Assert.Equal(VoucherPostingGuard.ErrorCode, ErrorOf(await Delete(once)));
+        Assert.False(await Repo.DeleteAsync(fx.Tenant, fx.User, once, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Soft_deleted_vouchers_cannot_be_transitioned() => await WithFlagAsync(async () =>
+    {
+        if (fx.ConnectionString is null) return;
+        var id = await VoucherAsync();
+        Assert.Equal(StatusCodes.Status204NoContent, StatusOf(await Delete(id)));
+
+        Assert.Equal(StatusCodes.Status404NotFound, StatusOf(await Act(Step.Submit, id, "user", fx.User)));
+        Assert.False(await Lifecycle.TransitionAsync(fx.Tenant, fx.Dept, id,
+            new LifecycleChange("extracted", "validated", "system", null, null, null), CancellationToken.None));
     });
 
     // --------------------------------------------------------------- helpers

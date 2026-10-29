@@ -160,6 +160,7 @@ public sealed class ApprovalRepository : IApprovalRepository
             LEFT JOIN users u ON u.id = q.submitted_by
             WHERE q.tenant_id = @tenantId
               AND q.status = 'pending'
+              AND v.deleted_at IS NULL
             ORDER BY q.created_at DESC
             LIMIT @limit
             """;

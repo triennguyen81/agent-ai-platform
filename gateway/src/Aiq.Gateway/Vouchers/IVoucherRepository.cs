@@ -564,7 +564,8 @@ public sealed class VoucherRepository : IVoucherRepository
             FROM vouchers
             WHERE id = @id
               AND user_id = @userId
-              AND tenant_id = @tenantId;
+              AND tenant_id = @tenantId
+              AND deleted_at IS NULL;
             """;
 
         var lineSql = $"""
@@ -599,7 +600,7 @@ public sealed class VoucherRepository : IVoucherRepository
 
     public async Task<VoucherDetail?> FindInDepartmentAsync(Guid tenantId, Guid departmentId, Guid id, CancellationToken ct)
     {
-        var voucherSql = $"SELECT {VoucherSelectColumns} FROM vouchers WHERE id=@id AND tenant_id=@tenantId AND department_id=@departmentId";
+        var voucherSql = $"SELECT {VoucherSelectColumns} FROM vouchers WHERE id=@id AND tenant_id=@tenantId AND department_id=@departmentId AND deleted_at IS NULL";
         await using var conn = await _factory.OpenAsync(ct);
         var voucher = await conn.QuerySingleOrDefaultAsync<VoucherRecord>(new CommandDefinition(voucherSql, new { id, tenantId, departmentId }, cancellationToken: ct));
         if (voucher is null) return null;
@@ -612,7 +613,7 @@ public sealed class VoucherRepository : IVoucherRepository
     {
         var sql = $"""
             SELECT {VoucherSelectColumns} FROM vouchers
-            WHERE tenant_id=@tenantId AND department_id=@departmentId
+            WHERE tenant_id=@tenantId AND department_id=@departmentId AND deleted_at IS NULL
               AND (@voucherType IS NULL OR voucher_type=@voucherType)
               AND (@statusFilter IS NULL OR status=@statusFilter)
               AND (@search IS NULL OR document_number ILIKE '%'||@search||'%' OR seller_name ILIKE '%'||@search||'%' OR seller_mst ILIKE @search||'%')
@@ -653,6 +654,7 @@ public sealed class VoucherRepository : IVoucherRepository
             FROM vouchers
             WHERE user_id = @userId
               AND tenant_id = @tenantId
+              AND deleted_at IS NULL
               {(hasType ? "AND voucher_type = @voucherType" : "")}
               {(hasStatus ? "AND status = @statusFilter" : "")}
               {(hasSearch ? "AND (document_number ILIKE @searchPattern OR seller_name ILIKE @searchPattern OR seller_mst ILIKE @searchPattern)" : "")}
@@ -1039,7 +1041,7 @@ public sealed class VoucherRepository : IVoucherRepository
               SUM(CASE WHEN status IN ('ocr_unavailable', 'processing') THEN 1 ELSE 0 END)::int AS FailedCount,
               SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END)::int              AS RejectedCount
             FROM vouchers
-            WHERE tenant_id = @tenantId;
+            WHERE tenant_id = @tenantId AND deleted_at IS NULL;
             """;
         await using var conn = await _factory.OpenAsync(ct);
         var row = await conn.QuerySingleAsync<VoucherStatusReport>(

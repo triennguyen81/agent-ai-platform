@@ -19,6 +19,13 @@ public interface IVoucherLifecycleRepository
     Task<bool> TransitionAsync(Guid tenantId, Guid departmentId, Guid voucherId, LifecycleChange change, CancellationToken ct);
 
     Task<IReadOnlyList<VoucherEventRecord>> ListEventsAsync(Guid tenantId, Guid voucherId, CancellationToken ct);
+
+    /// <summary>
+    /// Soft delete (QĐ 3): sets deleted_at and logs a 'deleted' event in one
+    /// transaction. False when the voucher is not deletable (locked, posted now
+    /// or ever, already deleted) or not in this tenant + department.
+    /// </summary>
+    Task<bool> SoftDeleteAsync(Guid tenantId, Guid departmentId, Guid voucherId, Guid actorId, string? requestId, CancellationToken ct);
 }
 
 public sealed class VoucherLifecycleRepository(NpgsqlConnectionFactory factory) : IVoucherLifecycleRepository
@@ -59,6 +66,32 @@ public sealed class VoucherLifecycleRepository(NpgsqlConnectionFactory factory) 
              ORDER BY created_at, id
             """, new { tenantId, voucherId }, cancellationToken: ct));
         return rows.AsList();
+    }
+
+    public async Task<bool> SoftDeleteAsync(Guid tenantId, Guid departmentId, Guid voucherId, Guid actorId, string? requestId, CancellationToken ct)
+    {
+        await using var conn = await factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var state = await conn.ExecuteScalarAsync<string?>(new CommandDefinition($"""
+            UPDATE vouchers SET deleted_at = NOW(), deleted_by = @actorId
+             WHERE id = @voucherId AND tenant_id = @tenantId AND department_id = @departmentId
+               AND deleted_at IS NULL AND posted_at IS NULL
+               AND lifecycle_state IN ('draft', 'extracted', 'needs_fix', 'validated', 'rejected')
+               AND {VoucherPostingGuard.NotPostedSql}
+            RETURNING lifecycle_state
+            """, new { voucherId, tenantId, departmentId, actorId }, tx, cancellationToken: ct));
+        if (state is null)
+        {
+            await tx.RollbackAsync(ct);
+            return false;
+        }
+        await conn.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO voucher_events (tenant_id, voucher_id, event_type, actor_type, actor_id, before, after, request_id)
+            VALUES (@tenantId, @voucherId, 'deleted', 'user', @actorId,
+                    jsonb_build_object('lifecycle_state', @state), jsonb_build_object('deleted', true), NULLIF(@requestId, ''))
+            """, new { tenantId, voucherId, actorId, state, requestId = requestId ?? "" }, tx, cancellationToken: ct));
+        await tx.CommitAsync(ct);
+        return true;
     }
 
     internal static Task SetActorAsync(Npgsql.NpgsqlConnection conn, Npgsql.NpgsqlTransaction tx,
