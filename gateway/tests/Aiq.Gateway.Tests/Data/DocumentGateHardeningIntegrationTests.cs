@@ -83,7 +83,7 @@ public sealed class DocumentGateHardeningIntegrationTests(DocumentProcessingData
             new BankStatementRepository(f, new BankAccountRepository(f)), Docs, Reviews,
             new Aiq.Gateway.Vouchers.Validation.VoucherValidationService(vouchers, new TenantCompanyProfileRepository(f),
                 new Aiq.Gateway.Vouchers.Validation.VoucherValidationRepository(f), new Aiq.Gateway.Vouchers.Lifecycle.TenantFeatureFlagRepository(f),
-                new Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleRepository(f), TimeProvider.System,
+                new Aiq.Gateway.Vouchers.Lifecycle.VoucherLifecycleRepository(f), new Aiq.Gateway.Vouchers.Periods.AccountingPeriodRepository(f), TimeProvider.System,
                 NullLogger<Aiq.Gateway.Vouchers.Validation.VoucherValidationService>.Instance),
             NullLogger<VoucherExtractJobRunner>.Instance);
     }

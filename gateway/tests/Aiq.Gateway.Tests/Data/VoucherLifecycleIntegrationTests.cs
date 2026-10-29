@@ -35,7 +35,7 @@ public sealed class VoucherLifecycleIntegrationTests(TaxVerificationDatabase fx)
     private TenantFeatureFlagRepository Flags => new(Factory);
     private VoucherLifecycleRepository Lifecycle => new(Factory);
     private VoucherValidationService Validation => new(Repo, new TenantCompanyProfileRepository(Factory),
-        new VoucherValidationRepository(Factory), Flags, Lifecycle, TimeProvider.System, NullLogger<VoucherValidationService>.Instance);
+        new VoucherValidationRepository(Factory), Flags, Lifecycle, new Aiq.Gateway.Vouchers.Periods.AccountingPeriodRepository(Factory), TimeProvider.System, NullLogger<VoucherValidationService>.Instance);
 
     // ------------------------------------------------------------ edit lock
 

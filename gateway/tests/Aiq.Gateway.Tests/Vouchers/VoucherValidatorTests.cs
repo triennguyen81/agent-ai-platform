@@ -469,6 +469,43 @@ public sealed class VoucherValidatorTests
 
     // --------------------------------------------------------------- helper
 
+    // ---- PERIOD_LOCKED (PR4, §10.1 P1, P11) ---------------------------------
+
+    private static VoucherValidationContext WithClosed(params string[] periods) => Ctx() with
+    {
+        ClosedPeriods = periods.Select(p => new Aiq.Gateway.Vouchers.Periods.AccountingPeriod(int.Parse(p[..4]), int.Parse(p[5..]))).ToHashSet(),
+    };
+
+    [Fact]
+    public void A_voucher_of_a_closed_period_is_an_error_on_its_accounting_date()
+    {
+        var r = Run(Invoice(), ctx: WithClosed("2026-09"));
+        Assert.Contains(r.Issues, i => i is { Code: "PERIOD_LOCKED", Severity: "error", Field: "document_date" });
+        Assert.True(r.HasErrors);
+
+        var booked = Run(Copy(Invoice(), accountingDate: new DateOnly(2026, 9, 30)), ctx: WithClosed("2026-09"));
+        Assert.Contains(booked.Issues, i => i is { Code: "PERIOD_LOCKED", Field: "accounting_date" });
+    }
+
+    [Fact]
+    public void The_accounting_date_moves_a_late_invoice_out_of_a_closed_period()
+    {
+        // Invoice dated 15/09 (September closed), booked on 01/10.
+        var r = Run(Copy(Invoice(), accountingDate: new DateOnly(2026, 10, 1)), ctx: WithClosed("2026-09"));
+        Assert.DoesNotContain(r.Issues, i => i.Code == "PERIOD_LOCKED");
+    }
+
+    [Fact]
+    public void No_closed_periods_or_no_date_means_no_period_rule()
+    {
+        Assert.DoesNotContain(Run(Invoice()).Issues, i => i.Code == "PERIOD_LOCKED");                 // tenant without v2: null set
+        Assert.DoesNotContain(Run(Invoice(), ctx: WithClosed("2026-08", "2026-10")).Issues, i => i.Code == "PERIOD_LOCKED");
+        Assert.DoesNotContain(Run(Copy(Invoice(), documentDate: null), ctx: WithClosed("2026-09")).Issues, i => i.Code == "PERIOD_LOCKED");
+    }
+
+    [Fact]
+    public void The_validator_version_names_the_period_rule() => Assert.Equal(3, VoucherValidator.Version);
+
     private static VoucherRecord Copy(VoucherRecord x,
         string? voucherType = null,
         Optional<DateOnly?> documentDate = default,
@@ -481,8 +518,10 @@ public sealed class VoucherValidatorTests
         Optional<decimal?> vatRate = default,
         Optional<decimal?> vatAmount = default,
         Optional<decimal?> discountAmount = default,
-        Optional<decimal?> totalAmount = default) => new()
+        Optional<decimal?> totalAmount = default,
+        Optional<DateOnly?> accountingDate = default) => new()
     {
+        AccountingDate = accountingDate.Or(x.AccountingDate),
         VoucherType = voucherType ?? x.VoucherType,
         DocumentNumber = documentNumber.Or(x.DocumentNumber),
         DocumentSeries = x.DocumentSeries,

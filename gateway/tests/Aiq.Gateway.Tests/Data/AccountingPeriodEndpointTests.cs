@@ -43,7 +43,7 @@ public sealed class AccountingPeriodEndpointTests(TaxVerificationDatabase fx) : 
     private TenantFeatureFlagRepository Flags => new(Factory);
     private VoucherRepository Repo => new(Factory);
     private VoucherValidationService Validation => new(Repo, new TenantCompanyProfileRepository(Factory), new VoucherValidationRepository(Factory),
-        Flags, new VoucherLifecycleRepository(Factory), Time, NullLogger<VoucherValidationService>.Instance);
+        Flags, new VoucherLifecycleRepository(Factory), Periods, Time, NullLogger<VoucherValidationService>.Instance);
 
     private Task<IResult> Close(string period, string role = "admin", Guid? user = null, Guid? department = null, bool agent = false) =>
         AccountingPeriodEndpoints.CloseAsync(period, Periods, Flags, Time, Ctx(role, user ?? fx.Admin, department, agent), CancellationToken.None);
@@ -177,6 +177,8 @@ public sealed class AccountingPeriodEndpointTests(TaxVerificationDatabase fx) : 
     {
         var id = await VoucherAsync(new DateOnly(2011, 10, 31));
         await Close("2011-10");
+        Assert.Contains((await Validation.ComputeAsync(fx.Tenant, fx.Dept, id, CancellationToken.None))!.Issues,
+            i => i is { Code: "PERIOD_LOCKED", Severity: "error" });
 
         var ex = await Assert.ThrowsAsync<PostgresException>(() =>
             VoucherEndpoints.UpdateAsync(id, Patch(total: 9m), Repo, Validation, Flags, Ctx("admin", fx.Admin), CancellationToken.None));

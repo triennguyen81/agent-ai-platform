@@ -30,7 +30,9 @@ public sealed record VoucherValidationContext(
     DateOnly Today,
     IReadOnlyDictionary<string, IReadOnlyList<string>>? RequiredFields = null,
     decimal ConfidenceThreshold = 0.80m,
-    IReadOnlyDictionary<string, decimal>? FieldConfidence = null);
+    IReadOnlyDictionary<string, decimal>? FieldConfidence = null,
+    // PR4: closed periods of the voucher's department; null = tenant without v2 (rule off).
+    IReadOnlySet<Aiq.Gateway.Vouchers.Periods.AccountingPeriod>? ClosedPeriods = null);
 
 /// <summary>
 /// Chứng từ flow v2 PR2: deterministic voucher checks (docs/flows/chung-tu-proposed.md
@@ -40,7 +42,7 @@ public sealed record VoucherValidationContext(
 public static class VoucherValidator
 {
     /// <summary>Bumped whenever a rule changes, so stored results can be told apart.</summary>
-    public const int Version = 2;
+    public const int Version = 3;
 
     /// <summary>A document dated tomorrow (Vietnam calendar) is accepted; later is an error.</summary>
     public const int FutureDateToleranceDays = 1;
@@ -172,6 +174,16 @@ public static class VoucherValidator
         if (v.DocumentDate is { } date && date > ctx.Today.AddDays(FutureDateToleranceDays))
             Add("DATE_FUTURE", ValidationSeverity.Error, "document_date",
                 $"Ngày chứng từ {date:dd/MM/yyyy} ở tương lai (hôm nay {ctx.Today:dd/MM/yyyy}, chỉ cho phép lệch {FutureDateToleranceDays} ngày).");
+
+        // ---- PERIOD_LOCKED (PR4, §10.1 P1, P11) ------------------------------
+        if (ctx.ClosedPeriods is { Count: > 0 } closed
+            && Aiq.Gateway.Vouchers.Periods.AccountingPeriod.EffectiveDate(v.AccountingDate, v.DocumentDate) is { } bookedOn
+            && closed.Contains(Aiq.Gateway.Vouchers.Periods.AccountingPeriod.Of(bookedOn)))
+        {
+            var period = Aiq.Gateway.Vouchers.Periods.AccountingPeriod.Of(bookedOn);
+            Add("PERIOD_LOCKED", ValidationSeverity.Error, v.AccountingDate is null ? "document_date" : "accounting_date",
+                $"Ngày hạch toán {bookedOn:dd/MM/yyyy} thuộc kỳ {period} đã khoá — chọn ngày hạch toán trong kỳ đang mở, hoặc nhờ ADMIN mở lại kỳ.");
+        }
 
         // ---- Journal (non-rejected suggestions) ----------------------------
         var journal = detail.JournalSuggestions.Where(j => j.RejectedAt is null).ToList();

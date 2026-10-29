@@ -96,6 +96,7 @@ public sealed class VoucherValidationService(
     IVoucherValidationRepository validations,
     ITenantFeatureFlags flags,
     IVoucherLifecycleRepository lifecycle,
+    Aiq.Gateway.Vouchers.Periods.IAccountingPeriodRepository periods,
     TimeProvider time,
     ILogger<VoucherValidationService> logger)
 {
@@ -111,7 +112,11 @@ public sealed class VoucherValidationService(
             await validations.GetVatRatesAsync(ct),
             TodayInVietnam(time),
             settings?.RequiredFields,
-            settings?.ConfidenceThreshold ?? 0.80m);
+            settings?.ConfidenceThreshold ?? 0.80m,
+            // PR4: PERIOD_LOCKED applies to v2 tenants only; without the flag the rule never runs.
+            ClosedPeriods: await flags.IsEnabledAsync(tenantId, TenantFeatureFlags.VoucherFlowV2, ct)
+                ? await periods.ClosedAsync(tenantId, departmentId, ct)
+                : null);
         var result = VoucherValidator.Validate(detail, ctx);
         return new VoucherValidationReport(voucherId, result.ValidatorVersion, result.HasErrors, result.Issues,
             detail.Voucher.UpdatedAt, Fingerprint(detail), time.GetUtcNow().UtcDateTime);
