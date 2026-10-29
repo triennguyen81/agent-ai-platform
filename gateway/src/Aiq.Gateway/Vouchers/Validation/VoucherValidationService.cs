@@ -97,6 +97,21 @@ public sealed class VoucherValidationService(
         return await validations.SaveAsync(tenantId, voucherId, VoucherValidator.Validate(detail, ctx), ct);
     }
 
-    // Vietnam has no DST: UTC+7 is exact and needs no tz database.
-    internal static DateOnly TodayInVietnam(TimeProvider time) => DateOnly.FromDateTime(time.GetUtcNow().UtcDateTime.AddHours(7));
+    // Asia/Ho_Chi_Minh from the tz database; a fixed UTC+7 zone when the image
+    // has none (Vietnam has had no DST since 1975, so the two agree).
+    private static readonly TimeZoneInfo Vietnam = FindVietnam();
+
+    private static TimeZoneInfo FindVietnam()
+    {
+        foreach (var id in new[] { "Asia/Ho_Chi_Minh", "SE Asia Standard Time" })
+        {
+            try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
+            catch (TimeZoneNotFoundException) { }
+            catch (InvalidTimeZoneException) { }
+        }
+        return TimeZoneInfo.CreateCustomTimeZone("Asia/Ho_Chi_Minh", TimeSpan.FromHours(7), "Asia/Ho_Chi_Minh", "ICT");
+    }
+
+    internal static DateOnly TodayInVietnam(TimeProvider time) =>
+        DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(time.GetUtcNow(), Vietnam).DateTime);
 }

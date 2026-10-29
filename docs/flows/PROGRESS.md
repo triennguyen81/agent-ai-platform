@@ -57,13 +57,14 @@ Phạm vi (§9 + QĐ 8, 9, 10, 11): validator thuần, chỉ tham khảo, chưa 
 
 Yêu cầu user (2026-10-29): (1) GET validation không ghi DB, chỉ lưu khi chứng từ đổi + khi submit (PR3), thêm snapshot phiên bản chứng từ (migration mới + down); (2) `JOURNAL_TOTAL` → warning vĩnh viễn, thêm ERROR tổng Nợ = tổng Có; (3) "hôm nay" theo Asia/Ho_Chi_Minh, cho phép lệch 1 ngày, test 23:30 / 00:30 giờ VN; (4) test VAT_RATE dùng vat_rates riêng, không dựa seed 068; (5) ghi mục chờ người dùng.
 
-- [ ] 1. Validator: `JOURNAL_TOTAL` warning; `JOURNAL_BALANCE` = tổng Nợ = tổng Có (error), kiểm từng dòng đổi tên `JOURNAL_LINE`; `DATE_FUTURE` > hôm nay VN + 1 ngày; `Version` = 2; test unit trước
+- [x] 1. Validator: `JOURNAL_TOTAL` warning; `JOURNAL_BALANCE` = tổng Nợ = tổng Có (error), kiểm từng dòng đổi tên `JOURNAL_LINE`; `DATE_FUTURE` > hôm nay VN + 1 ngày; `Version` = 2; test unit trước
 - [ ] 2. Migration `069_voucher_validation_snapshot.sql` (+ down) thêm `voucher_updated_at`, `voucher_fingerprint` vào `voucher_validations`; test up→down→up
 - [ ] 3. Service tách `ComputeAsync` (GET, không ghi) / `RecordAsync` (lưu); gọi Record sau tạo / PATCH / apply-extraction / job trích xuất (upload + reextract) / bút toán gợi ý / đổi loại; test tích hợp
 - [ ] 4. Test tích hợp VAT_RATE với bảng `vat_rates` của riêng test (các đợt 8% không liên tục)
 - [ ] 5. Chạy đủ test, đồng bộ tài liệu, commit, push, kiểm tra GitHub Actions (`gh run list --branch feat/chung-tu-flow-v2 --limit 3`); đỏ thì sửa
 
 ### Ghi chú PR2.x
+- Bước 1: `VoucherValidator.cs` (Version 2, `FutureDateToleranceDays = 1`), `VoucherValidationService.TodayInVietnam` dùng tz `Asia/Ho_Chi_Minh` (fallback UTC+7 cố định). Mã mới `JOURNAL_LINE` (từng dòng, error); `JOURNAL_BALANCE` giờ là tổng Nợ = tổng Có (error) — với cấu trúc cặp hiện tại chỉ lệch khi dòng thiếu TK; `JOURNAL_TOTAL` warning. Test unit 61/61.
 - "lệch 1 ngày": không tìm thấy trong §10 hay transcript — coi yêu cầu 2026-10-29 là quyết định, ghi vào tài liệu.
 
 ## Đang chờ người dùng / kế toán

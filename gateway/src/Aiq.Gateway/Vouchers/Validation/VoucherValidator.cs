@@ -40,7 +40,10 @@ public sealed record VoucherValidationContext(
 public static class VoucherValidator
 {
     /// <summary>Bumped whenever a rule changes, so stored results can be told apart.</summary>
-    public const int Version = 1;
+    public const int Version = 2;
+
+    /// <summary>A document dated tomorrow (Vietnam calendar) is accepted; later is an error.</summary>
+    public const int FutureDateToleranceDays = 1;
 
     private static readonly string[] InvoiceRequired =
         ["document_date", "document_number", "seller_name", "buyer_name", "seller_mst", "subtotal", "vat_rate", "vat_amount", "total_amount"];
@@ -166,8 +169,9 @@ public static class VoucherValidator
         }
 
         // ---- Dates -----------------------------------------------------------
-        if (v.DocumentDate is { } date && date > ctx.Today)
-            Add("DATE_FUTURE", ValidationSeverity.Error, "document_date", $"Ngày chứng từ {date:dd/MM/yyyy} ở tương lai.");
+        if (v.DocumentDate is { } date && date > ctx.Today.AddDays(FutureDateToleranceDays))
+            Add("DATE_FUTURE", ValidationSeverity.Error, "document_date",
+                $"Ngày chứng từ {date:dd/MM/yyyy} ở tương lai (hôm nay {ctx.Today:dd/MM/yyyy}, chỉ cho phép lệch {FutureDateToleranceDays} ngày).");
 
         // ---- Journal (non-rejected suggestions) ----------------------------
         var journal = detail.JournalSuggestions.Where(j => j.RejectedAt is null).ToList();
@@ -176,10 +180,20 @@ public static class VoucherValidator
             var debit = j.DebitAccount.Trim();
             var credit = j.CreditAccount.Trim();
             if (debit.Length == 0 || credit.Length == 0 || debit == credit || j.Amount <= 0)
-                Add("JOURNAL_BALANCE", ValidationSeverity.Error, $"journal[{i}]",
+                Add("JOURNAL_LINE", ValidationSeverity.Error, $"journal[{i}]",
                     $"Bút toán {i + 1}: cần TK Nợ và TK Có khác nhau và số tiền > 0.");
             foreach (var account in new[] { debit, credit }.Where(a => a.Length > 0 && !AccountCode.IsMatch(a)))
                 Add("JOURNAL_ACCOUNT", ValidationSeverity.Warning, $"journal[{i}]", $"Bút toán {i + 1}: mã TK '{account}' không đúng dạng số.");
+        }
+        if (journal.Count > 0)
+        {
+            // Each suggestion is one Nợ/Có pair, so the sides differ only when a
+            // line lacks an account; kept as the set-level rule for multi-line entries.
+            var totalDebit = journal.Where(j => j.DebitAccount.Trim().Length > 0).Sum(j => j.Amount);
+            var totalCredit = journal.Where(j => j.CreditAccount.Trim().Length > 0).Sum(j => j.Amount);
+            if (totalDebit != totalCredit)
+                Add("JOURNAL_BALANCE", ValidationSeverity.Error, "journal",
+                    $"Tổng Nợ {Money(totalDebit)} ≠ tổng Có {Money(totalCredit)}.");
         }
         if (journal.Count > 0 && v.TotalAmount is { } invoiceTotal)
         {
@@ -190,9 +204,11 @@ public static class VoucherValidator
                 VoucherTypes.InvoiceOut => journal.Where(j => IsSettlementAccount(j.DebitAccount, "131")).Sum(j => j.Amount),
                 _ => null,
             };
+            // Warning only, permanently: partial payment, an advance (141) or an
+            // AR/AP offset legitimately book less than the invoice total.
             if (booked is { } b && Math.Abs(b - invoiceTotal) > 1m)
-                Add("JOURNAL_TOTAL", ValidationSeverity.Error, "journal",
-                    $"Bút toán ghi {Money(b)} vào TK thanh toán ≠ tổng tiền hoá đơn {Money(invoiceTotal)}.");
+                Add("JOURNAL_TOTAL", ValidationSeverity.Warning, "journal",
+                    $"Bút toán ghi {Money(b)} vào TK thanh toán ≠ tổng tiền hoá đơn {Money(invoiceTotal)} — kiểm tra nếu không phải thanh toán một phần / tạm ứng / bù trừ.");
         }
 
         // ---- Confidence (QĐ 7) -----------------------------------------------

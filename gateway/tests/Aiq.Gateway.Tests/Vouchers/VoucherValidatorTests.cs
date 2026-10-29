@@ -348,10 +348,40 @@ public sealed class VoucherValidatorTests
     // --------------------------------------------------------------- dates
 
     [Fact]
-    public void A_future_document_date_is_an_error()
+    public void A_document_date_one_day_ahead_is_tolerated()
     {
-        var r = Run(Invoice(x => Copy(x, documentDate: Today.AddDays(1))));
+        Assert.DoesNotContain(Run(Invoice(x => Copy(x, documentDate: Today.AddDays(1)))).Issues, i => i.Code == "DATE_FUTURE");
+    }
+
+    [Fact]
+    public void A_document_date_more_than_one_day_ahead_is_an_error()
+    {
+        var r = Run(Invoice(x => Copy(x, documentDate: Today.AddDays(2))));
         Assert.Contains(r.Issues, i => i is { Code: "DATE_FUTURE", Severity: "error", Field: "document_date" });
+    }
+
+    // 23:30 on 29/10 in Vietnam is 16:30 UTC the same day; 00:30 on 30/10 is
+    // 17:30 UTC on 29/10 — the UTC date would be one day behind.
+    [Theory]
+    [InlineData(16, 30, "2026-10-29")]
+    [InlineData(17, 30, "2026-10-30")]
+    public void Today_is_the_calendar_date_in_Asia_Ho_Chi_Minh(int utcHour, int utcMinute, string expected)
+    {
+        var time = new FixedTime(new DateTimeOffset(2026, 10, 29, utcHour, utcMinute, 0, TimeSpan.Zero));
+        Assert.Equal(DateOnly.Parse(expected), VoucherValidationService.TodayInVietnam(time));
+    }
+
+    [Theory]
+    [InlineData(16, 30, "2026-10-30", false)] // 23:30 VN 29/10: tomorrow is tolerated
+    [InlineData(16, 30, "2026-10-31", true)]
+    [InlineData(17, 30, "2026-10-31", false)] // 00:30 VN 30/10: 31/10 is tomorrow
+    [InlineData(17, 30, "2026-11-01", true)]
+    public void Future_date_rule_uses_today_in_Vietnam(int utcHour, int utcMinute, string documentDate, bool future)
+    {
+        var today = VoucherValidationService.TodayInVietnam(
+            new FixedTime(new DateTimeOffset(2026, 10, 29, utcHour, utcMinute, 0, TimeSpan.Zero)));
+        var r = Run(Invoice(x => Copy(x, documentDate: DateOnly.Parse(documentDate))), ctx: Ctx() with { Today = today });
+        Assert.Equal(future, r.Issues.Any(i => i.Code == "DATE_FUTURE"));
     }
 
     // -------------------------------------------------------------- journal
@@ -360,14 +390,33 @@ public sealed class VoucherValidatorTests
     public void Journal_lines_need_both_accounts_and_a_positive_amount()
     {
         var r = Run(Invoice(), journal: [Entry("1561", "1561", 10_000_000m), Entry("", "331", 1_000_000m), Entry("1331", "331", 0m)]);
-        Assert.Equal(3, r.Issues.Count(i => i is { Code: "JOURNAL_BALANCE", Severity: "error" }));
+        Assert.Equal(3, r.Issues.Count(i => i is { Code: "JOURNAL_LINE", Severity: "error" }));
     }
 
     [Fact]
-    public void Purchase_journal_must_credit_the_invoice_total_to_payables_or_cash()
+    public void Total_debit_must_equal_total_credit()
     {
-        var r = Run(Invoice(), journal: [Entry("1561", "331", 10_000_000m), Entry("1331", "331", 900_000m)]);
-        Assert.Contains(r.Issues, i => i is { Code: "JOURNAL_TOTAL", Severity: "error" });
+        // A line missing its credit side books 1.000.000 on the debit side only.
+        var r = Run(Invoice(), journal: [Entry("1561", "331", 10_000_000m), Entry("1331", "", 1_000_000m)]);
+        var issue = Assert.Single(r.Issues, i => i.Code == "JOURNAL_BALANCE");
+        Assert.Equal(("error", "journal"), (issue.Severity, issue.Field));
+    }
+
+    [Fact]
+    public void A_balanced_journal_has_no_balance_error()
+    {
+        var r = Run(Invoice(), journal: [Entry("1561", "331", 10_000_000m), Entry("1331", "331", 1_000_000m)]);
+        Assert.DoesNotContain(r.Issues, i => i.Code == "JOURNAL_BALANCE");
+    }
+
+    [Fact]
+    public void Settlement_total_differing_from_the_invoice_total_is_only_a_warning()
+    {
+        // Partial payment, an advance (141) or an AR/AP offset are legitimate.
+        var r = Run(Invoice(), journal: [Entry("1561", "331", 10_000_000m), Entry("1331", "141", 1_000_000m)]);
+        var issue = Assert.Single(r.Issues, i => i.Code == "JOURNAL_TOTAL");
+        Assert.Equal("warning", issue.Severity);
+        Assert.False(r.HasErrors);
     }
 
     [Fact]
@@ -457,5 +506,10 @@ public sealed class VoucherValidatorTests
         private Optional(T value) { _set = true; _value = value; }
         public static implicit operator Optional<T>(T value) => new(value);
         public T Or(T fallback) => _set ? _value : fallback;
+    }
+
+    private sealed class FixedTime(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
     }
 }
