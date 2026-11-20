@@ -1,0 +1,1200 @@
+{
+ "admin": [
+  {
+   "path": "LOGIN",
+   "final": "/chat?agent=1c1c6d03-8ea0-4f48-b6b2-17866418c584"
+  },
+  {
+   "path": "/",
+   "status": 200,
+   "final": "/chat?agent=1c1c6d03-8ea0-4f48-b6b2-17866418c584",
+   "h1": "Chat",
+   "page_errors": [],
+   "console_errors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ],
+   "bad_api": [
+    "404 /api/chat/threads/t-1795052041381-qm7np?agent_id=1c1c6d03-8ea0-4f48-b6b2-17866418c584"
+   ],
+   "text_len": 554,
+   "ms": 4706,
+   "shot": "admin-root.png"
+  },
+  {
+   "path": "/my-agents",
+   "status": 200,
+   "final": "/my-agents",
+   "h1": "Trợ lý AI của tôi",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 305,
+   "ms": 4775,
+   "shot": "admin-my-agents.png"
+  },
+  {
+   "path": "/dashboard",
+   "status": 200,
+   "final": "/dashboard",
+   "h1": "Tổng quan",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 87,
+   "ms": 4805,
+   "shot": "admin-dashboard.png"
+  },
+  {
+   "path": "/department/agents",
+   "status": 200,
+   "final": "/department/agents",
+   "h1": "Agents",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 6873,
+   "ms": 5579,
+   "shot": "admin-department_agents.png"
+  },
+  {
+   "path": "/department/agents/1c1c6d03-8ea0-4f48-b6b2-17866418c584",
+   "status": 200,
+   "final": "/department/agents/1c1c6d03-8ea0-4f48-b6b2-17866418c584",
+   "h1": "Trợ lý kế toán",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 550,
+   "ms": 4773,
+   "shot": "admin-department_agents_id.png"
+  },
+  {
+   "path": "/department/agent-assignments",
+   "status": 200,
+   "final": "/department/agents",
+   "h1": "Agents",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 6873,
+   "ms": 4695,
+   "shot": "admin-department_agent-assignments.png"
+  },
+  {
+   "path": "/department/knowledge",
+   "status": 200,
+   "final": "/department/knowledge",
+   "h1": "Knowledge",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 330,
+   "ms": 4654,
+   "shot": "admin-department_knowledge.png"
+  },
+  {
+   "path": "/department/capabilities",
+   "status": 200,
+   "final": "/department/capabilities",
+   "h1": "Nghiệp vụ",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 3797,
+   "ms": 5151,
+   "shot": "admin-department_capabilities.png"
+  },
+  {
+   "path": "/department/workflows",
+   "status": 200,
+   "final": "/department/workflows",
+   "h1": "Workflows",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 998,
+   "ms": 5104,
+   "shot": "admin-department_workflows.png"
+  },
+  {
+   "path": "/department/skills",
+   "status": 200,
+   "final": "/department/skills",
+   "h1": "Skills",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 3635,
+   "ms": 5349,
+   "shot": "admin-department_skills.png"
+  },
+  {
+   "path": "/department/review",
+   "status": 200,
+   "final": "/department/review",
+   "h1": "Review / HITL",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 92,
+   "ms": 5304,
+   "shot": "admin-department_review.png"
+  },
+  {
+   "path": "/department/members",
+   "status": 200,
+   "final": "/admin/tenant-users",
+   "h1": "Người dùng",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 521,
+   "ms": 4925,
+   "shot": "admin-department_members.png"
+  },
+  {
+   "path": "/vouchers",
+   "status": 200,
+   "final": "/vouchers",
+   "h1": "Chứng từ kế toán",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 6135,
+   "ms": 4726,
+   "shot": "admin-vouchers.png"
+  },
+  {
+   "path": "/vouchers/upload",
+   "status": 200,
+   "final": "/vouchers/upload",
+   "h1": "Thêm chứng từ (ảnh / PDF)",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 553,
+   "ms": 4722,
+   "shot": "admin-vouchers_upload.png"
+  },
+  {
+   "path": "/vouchers/d0768dac-c03a-4fdb-acb9-c3da41a598bc",
+   "status": 200,
+   "final": "/vouchers/d0768dac-c03a-4fdb-acb9-c3da41a598bc",
+   "h1": "Hóa đơn mua · 1C26TDP · 0001041",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 3667,
+   "ms": 4975,
+   "shot": "admin-vouchers_id.png"
+  },
+  {
+   "path": "/vouchers/eb04538e-d115-4551-afbf-f01f01032754",
+   "status": 200,
+   "final": "/vouchers/eb04538e-d115-4551-afbf-f01f01032754",
+   "h1": "Đề nghị hoàn ứng · DNHU-2026-1017",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 2922,
+   "ms": 4645,
+   "shot": "admin-vouchers_id.png"
+  },
+  {
+   "path": "/vouchers/69259d37-d84d-420c-8a62-3b572039c2a3",
+   "status": 200,
+   "final": "/vouchers/69259d37-d84d-420c-8a62-3b572039c2a3",
+   "h1": "Sao kê ngân hàng · (chưa có số)",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 2172,
+   "ms": 4529,
+   "shot": "admin-vouchers_id.png"
+  },
+  {
+   "path": "/customers",
+   "status": 200,
+   "final": "/customers",
+   "h1": "Khách hàng",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1229,
+   "ms": 4339,
+   "shot": "admin-customers.png"
+  },
+  {
+   "path": "/customers/4991303f-b063-4e97-b709-0c03db2d9af6",
+   "status": 200,
+   "final": "/customers/4991303f-b063-4e97-b709-0c03db2d9af6",
+   "h1": "LIVE-TEST Cty Kiểm Thử HĐ",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 834,
+   "ms": 4440,
+   "shot": "admin-customers_id.png"
+  },
+  {
+   "path": "/suppliers",
+   "status": 200,
+   "final": "/suppliers",
+   "h1": "Nhà cung cấp",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 824,
+   "ms": 4246,
+   "shot": "admin-suppliers.png"
+  },
+  {
+   "path": "/suppliers/bcf25ed4-9b62-47f4-be56-3db6fc1fc533",
+   "status": 200,
+   "final": "/suppliers/bcf25ed4-9b62-47f4-be56-3db6fc1fc533",
+   "h1": "Công ty TNHH Cung ứng Đại Phát",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 967,
+   "ms": 4261,
+   "shot": "admin-suppliers_id.png"
+  },
+  {
+   "path": "/contracts",
+   "status": 200,
+   "final": "/contracts",
+   "h1": "Hợp đồng",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1518,
+   "ms": 4308,
+   "shot": "admin-contracts.png"
+  },
+  {
+   "path": "/contracts/3ddf2bf2-fb4e-49db-9ddc-fde4e23d56b8",
+   "status": 200,
+   "final": "/contracts/3ddf2bf2-fb4e-49db-9ddc-fde4e23d56b8",
+   "h1": "Hợp đồng dịch vụ bảo trì Q4/2026 – Đại Phát (DỮ LIỆU MẪU)",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 3349,
+   "ms": 4442,
+   "shot": "admin-contracts_id.png"
+  },
+  {
+   "path": "/contracts/upload",
+   "status": 200,
+   "final": "/contracts/upload",
+   "h1": "Thêm hợp đồng",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 484,
+   "ms": 4231,
+   "shot": "admin-contracts_upload.png"
+  },
+  {
+   "path": "/expenses",
+   "status": 200,
+   "final": "/expenses",
+   "h1": "Chi phí & Công nợ NCC",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1360,
+   "ms": 4286,
+   "shot": "admin-expenses.png"
+  },
+  {
+   "path": "/expenses/claims/new",
+   "status": 200,
+   "final": "/expenses/claims/new",
+   "h1": "Đề nghị hoàn ứng / thanh toán công tác phí",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 523,
+   "ms": 4243,
+   "shot": "admin-expenses_claims_new.png"
+  },
+  {
+   "path": "/accounting",
+   "status": 200,
+   "final": "/accounting",
+   "h1": "Trợ lý kế toán",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1068,
+   "ms": 4271,
+   "shot": "admin-accounting.png"
+  },
+  {
+   "path": "/accounting/tax-calc",
+   "status": 200,
+   "final": "/accounting/tax-calc",
+   "h1": "Calculator thuế",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 339,
+   "ms": 4289,
+   "shot": "admin-accounting_tax-calc.png"
+  },
+  {
+   "path": "/accounting/deadline",
+   "status": 200,
+   "final": "/accounting/deadline",
+   "h1": "Deadline tờ khai",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1046,
+   "ms": 4241,
+   "shot": "admin-accounting_deadline.png"
+  },
+  {
+   "path": "/accounting/reports",
+   "status": 200,
+   "final": "/accounting/reports",
+   "h1": "Báo cáo tài chính",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 598,
+   "ms": 4227,
+   "shot": "admin-accounting_reports.png"
+  },
+  {
+   "path": "/accounting/journal",
+   "status": 200,
+   "final": "/accounting/journal",
+   "h1": "Định khoản",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 500,
+   "ms": 4288,
+   "shot": "admin-accounting_journal.png"
+  },
+  {
+   "path": "/accounting/invoice",
+   "status": 200,
+   "final": "/accounting/invoice",
+   "h1": "Hoá đơn → định khoản",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 497,
+   "ms": 4247,
+   "shot": "admin-accounting_invoice.png"
+  },
+  {
+   "path": "/admin/approval-queue",
+   "status": 200,
+   "final": "/admin/approval-queue",
+   "h1": "Duyệt cấp 2",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 409,
+   "ms": 4219,
+   "shot": "admin-admin_approval-queue.png"
+  },
+  {
+   "path": "/admin/voucher-status",
+   "status": 200,
+   "final": "/admin/voucher-status",
+   "h1": "Báo cáo trạng thái chứng từ",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 443,
+   "ms": 4280,
+   "shot": "admin-admin_voucher-status.png"
+  },
+  {
+   "path": "/admin/hitl-queue",
+   "status": 200,
+   "final": "/admin/hitl-queue",
+   "h1": "HITL Queue",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 128,
+   "ms": 4252,
+   "shot": "admin-admin_hitl-queue.png"
+  },
+  {
+   "path": "/admin/review-queue",
+   "status": 200,
+   "final": "/admin/review-queue",
+   "h1": "Review Queue",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 151,
+   "ms": 4227,
+   "shot": "admin-admin_review-queue.png"
+  },
+  {
+   "path": "/notifications",
+   "status": 200,
+   "final": "/notifications",
+   "h1": "Thông báo",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 2482,
+   "ms": 4211,
+   "shot": "admin-notifications.png"
+  },
+  {
+   "path": "/mau-chung-tu",
+   "status": 200,
+   "final": "/mau-chung-tu",
+   "h1": "Chứng từ mẫu · Training center",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 2185,
+   "ms": 4293,
+   "shot": "admin-mau-chung-tu.png"
+  },
+  {
+   "path": "/department/audit",
+   "status": 200,
+   "final": "/department/audit",
+   "h1": "Audit log",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 14127,
+   "ms": 4482,
+   "shot": "admin-department_audit.png"
+  },
+  {
+   "path": "/department/reports",
+   "status": 200,
+   "final": "/department/reports",
+   "h1": "Audit log",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 14127,
+   "ms": 4374,
+   "shot": "admin-department_reports.png"
+  },
+  {
+   "path": "/admin/health",
+   "status": 200,
+   "final": "/forbidden",
+   "h1": "Không có quyền truy cập",
+   "page_errors": [
+    "Không có quyền"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 95,
+   "ms": 4234,
+   "shot": "admin-admin_health.png"
+  },
+  {
+   "path": "/profile",
+   "status": 200,
+   "final": "/profile",
+   "h1": "Hồ sơ",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 205,
+   "ms": 4190,
+   "shot": "admin-profile.png"
+  }
+ ],
+ "super_admin": [
+  {
+   "path": "LOGIN",
+   "final": "/dashboard"
+  },
+  {
+   "path": "/",
+   "status": 200,
+   "final": "/dashboard",
+   "h1": "Tổng quan",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 80,
+   "ms": 4267,
+   "shot": "super_admin-root.png"
+  },
+  {
+   "path": "/dashboard",
+   "status": 200,
+   "final": "/dashboard",
+   "h1": "Tổng quan",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 80,
+   "ms": 4194,
+   "shot": "super_admin-dashboard.png"
+  },
+  {
+   "path": "/admin/tenants",
+   "status": 200,
+   "final": "/admin/tenants",
+   "h1": "Tenants",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 934,
+   "ms": 4603,
+   "shot": "super_admin-admin_tenants.png"
+  },
+  {
+   "path": "/admin/tenant-status",
+   "status": 200,
+   "final": "/forbidden",
+   "h1": "Không có quyền truy cập",
+   "page_errors": [
+    "Không có quyền"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 95,
+   "ms": 4232,
+   "shot": "super_admin-admin_tenant-status.png"
+  },
+  {
+   "path": "/admin/agent-builder",
+   "status": 200,
+   "final": "/admin/agent-builder",
+   "h1": "Agent Builder",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 7603,
+   "ms": 5088,
+   "shot": "super_admin-admin_agent-builder.png"
+  },
+  {
+   "path": "/system/skills",
+   "status": 200,
+   "final": "/system/skills",
+   "h1": "Global Skills",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 2928,
+   "ms": 4261,
+   "shot": "super_admin-system_skills.png"
+  },
+  {
+   "path": "/system/capabilities",
+   "status": 200,
+   "final": "/system/capabilities",
+   "h1": "Nghiệp vụ — Hệ thống",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1086,
+   "ms": 4229,
+   "shot": "super_admin-system_capabilities.png"
+  },
+  {
+   "path": "/system/knowledge",
+   "status": 200,
+   "final": "/system/knowledge",
+   "h1": "Global Knowledge",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 102,
+   "ms": 4217,
+   "shot": "super_admin-system_knowledge.png"
+  },
+  {
+   "path": "/admin/tools",
+   "status": 200,
+   "final": "/admin/tools",
+   "h1": "Tool Registry",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 3807,
+   "ms": 4274,
+   "shot": "super_admin-admin_tools.png"
+  },
+  {
+   "path": "/system/workflows",
+   "status": 200,
+   "final": "/admin/workflows",
+   "h1": "Workflows — Hệ thống",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 677,
+   "ms": 4586,
+   "shot": "super_admin-system_workflows.png"
+  },
+  {
+   "path": "/system/audit",
+   "status": 200,
+   "final": "/system/audit",
+   "h1": "Audit log",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 14126,
+   "ms": 4921,
+   "shot": "super_admin-system_audit.png"
+  },
+  {
+   "path": "/system/usage",
+   "status": 200,
+   "final": "/system/usage",
+   "h1": "Audit log",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 14126,
+   "ms": 4468,
+   "shot": "super_admin-system_usage.png"
+  },
+  {
+   "path": "/system/models",
+   "status": 200,
+   "final": "/system/models",
+   "h1": "Models / Providers",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 80,
+   "ms": 4676,
+   "shot": "super_admin-system_models.png"
+  },
+  {
+   "path": "/system/settings",
+   "status": 200,
+   "final": "/system/settings",
+   "h1": "Platform Settings",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 65,
+   "ms": 4256,
+   "shot": "super_admin-system_settings.png"
+  },
+  {
+   "path": "/chat",
+   "status": 200,
+   "final": "/forbidden",
+   "h1": "Không có quyền truy cập",
+   "page_errors": [
+    "Không có quyền"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 95,
+   "ms": 4222,
+   "shot": "super_admin-chat.png"
+  },
+  {
+   "path": "/vouchers",
+   "status": 200,
+   "final": "/forbidden",
+   "h1": "Không có quyền truy cập",
+   "page_errors": [
+    "Không có quyền"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 95,
+   "ms": 4217,
+   "shot": "super_admin-vouchers.png"
+  },
+  {
+   "path": "/admin/approval-queue",
+   "status": 200,
+   "final": "/admin/approval-queue",
+   "h1": "Duyệt cấp 2",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 409,
+   "ms": 4232,
+   "shot": "super_admin-admin_approval-queue.png"
+  }
+ ],
+ "tenant_owner": [
+  {
+   "path": "LOGIN",
+   "final": "/dashboard"
+  },
+  {
+   "path": "/",
+   "status": 200,
+   "final": "/dashboard",
+   "h1": "Tổng quan",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 98,
+   "ms": 4592,
+   "shot": "tenant_owner-root.png"
+  },
+  {
+   "path": "/dashboard",
+   "status": 200,
+   "final": "/dashboard",
+   "h1": "Tổng quan",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 98,
+   "ms": 4867,
+   "shot": "tenant_owner-dashboard.png"
+  },
+  {
+   "path": "/admin/tenant-departments",
+   "status": 200,
+   "final": "/admin/tenant-departments",
+   "h1": "Departments",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 262,
+   "ms": 4825,
+   "shot": "tenant_owner-admin_tenant-departments.png"
+  },
+  {
+   "path": "/admin/tenant-users",
+   "status": 200,
+   "final": "/admin/tenant-users",
+   "h1": "Người dùng",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1098,
+   "ms": 5163,
+   "shot": "tenant_owner-admin_tenant-users.png"
+  },
+  {
+   "path": "/tenant/company-profile",
+   "status": 200,
+   "final": "/tenant/company-profile",
+   "h1": "Thông tin công ty",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 315,
+   "ms": 5007,
+   "shot": "tenant_owner-tenant_company-profile.png"
+  },
+  {
+   "path": "/tenant/business-profile",
+   "status": 200,
+   "final": "/tenant/business-profile",
+   "h1": "Hồ sơ doanh nghiệp",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 538,
+   "ms": 4743,
+   "shot": "tenant_owner-tenant_business-profile.png"
+  },
+  {
+   "path": "/admin/dlp",
+   "status": 200,
+   "final": "/admin/dlp",
+   "h1": "DLP — Data Loss Prevention",
+   "page_errors": [],
+   "console_errors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ],
+   "bad_api": [],
+   "text_len": 794,
+   "ms": 4782,
+   "shot": "tenant_owner-admin_dlp.png"
+  },
+  {
+   "path": "/tenant/audit",
+   "status": 200,
+   "final": "/tenant/audit",
+   "h1": "Audit log",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 14126,
+   "ms": 5252,
+   "shot": "tenant_owner-tenant_audit.png"
+  },
+  {
+   "path": "/tenant/reports",
+   "status": 200,
+   "final": "/tenant/reports",
+   "h1": "Audit log",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 14126,
+   "ms": 5053,
+   "shot": "tenant_owner-tenant_reports.png"
+  },
+  {
+   "path": "/tenant/usage",
+   "status": 200,
+   "final": "/tenant/usage",
+   "h1": "Audit log",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 14126,
+   "ms": 5285,
+   "shot": "tenant_owner-tenant_usage.png"
+  },
+  {
+   "path": "/admin/approval-queue",
+   "status": 200,
+   "final": "/admin/approval-queue",
+   "h1": "Duyệt cấp 2",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 409,
+   "ms": 5278,
+   "shot": "tenant_owner-admin_approval-queue.png"
+  },
+  {
+   "path": "/admin/voucher-status",
+   "status": 200,
+   "final": "/admin/voucher-status",
+   "h1": "Báo cáo trạng thái chứng từ",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 348,
+   "ms": 4946,
+   "shot": "tenant_owner-admin_voucher-status.png"
+  },
+  {
+   "path": "/chat",
+   "status": 200,
+   "final": "/forbidden",
+   "h1": "Không có quyền truy cập",
+   "page_errors": [
+    "Không có quyền"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 95,
+   "ms": 4689,
+   "shot": "tenant_owner-chat.png"
+  },
+  {
+   "path": "/vouchers",
+   "status": 200,
+   "final": "/forbidden",
+   "h1": "Không có quyền truy cập",
+   "page_errors": [
+    "Không có quyền"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 95,
+   "ms": 4789,
+   "shot": "tenant_owner-vouchers.png"
+  },
+  {
+   "path": "/notifications",
+   "status": 200,
+   "final": "/notifications",
+   "h1": "Thông báo",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 155,
+   "ms": 4712,
+   "shot": "tenant_owner-notifications.png"
+  }
+ ],
+ "user": [
+  {
+   "path": "LOGIN",
+   "final": "/chat?agent=e67f8ec9-54dc-45dc-8406-a68d6d86371d"
+  },
+  {
+   "path": "/",
+   "status": 200,
+   "final": "/chat?agent=e67f8ec9-54dc-45dc-8406-a68d6d86371d",
+   "h1": "Chat",
+   "page_errors": [],
+   "console_errors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ],
+   "bad_api": [
+    "404 /api/chat/threads/t-1795052041381-z1zao?agent_id=e67f8ec9-54dc-45dc-8406-a68d6d86371d"
+   ],
+   "text_len": 554,
+   "ms": 4707,
+   "shot": "user-root.png"
+  },
+  {
+   "path": "/my-agents",
+   "status": 200,
+   "final": "/my-agents",
+   "h1": "Trợ lý AI của tôi",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 502,
+   "ms": 4776,
+   "shot": "user-my-agents.png"
+  },
+  {
+   "path": "/vouchers",
+   "status": 200,
+   "final": "/vouchers",
+   "h1": "Chứng từ kế toán",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 518,
+   "ms": 4805,
+   "shot": "user-vouchers.png"
+  },
+  {
+   "path": "/vouchers/upload",
+   "status": 200,
+   "final": "/vouchers/upload",
+   "h1": "Thêm chứng từ (ảnh / PDF)",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 553,
+   "ms": 5183,
+   "shot": "user-vouchers_upload.png"
+  },
+  {
+   "path": "/vouchers/792725ad-b8f4-42db-8b34-d66fd8bbd5d4",
+   "status": 200,
+   "final": "/vouchers/792725ad-b8f4-42db-8b34-d66fd8bbd5d4",
+   "h1": "Phiếu chi · PC-E2E-02",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1078,
+   "ms": 5429,
+   "shot": "user-vouchers_id.png"
+  },
+  {
+   "path": "/expenses",
+   "status": 200,
+   "final": "/expenses",
+   "h1": "Chi phí & Công nợ NCC",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1569,
+   "ms": 4465,
+   "shot": "user-expenses.png"
+  },
+  {
+   "path": "/expenses/claims/new",
+   "status": 200,
+   "final": "/expenses/claims/new",
+   "h1": "Đề nghị hoàn ứng / thanh toán công tác phí",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 520,
+   "ms": 4645,
+   "shot": "user-expenses_claims_new.png"
+  },
+  {
+   "path": "/contracts",
+   "status": 200,
+   "final": "/contracts",
+   "h1": "Hợp đồng",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1967,
+   "ms": 5147,
+   "shot": "user-contracts.png"
+  },
+  {
+   "path": "/customers",
+   "status": 200,
+   "final": "/customers",
+   "h1": "Khách hàng",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1611,
+   "ms": 5096,
+   "shot": "user-customers.png"
+  },
+  {
+   "path": "/suppliers",
+   "status": 200,
+   "final": "/suppliers",
+   "h1": "Nhà cung cấp",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1413,
+   "ms": 5343,
+   "shot": "user-suppliers.png"
+  },
+  {
+   "path": "/accounting",
+   "status": 200,
+   "final": "/accounting",
+   "h1": "Trợ lý kế toán",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 1068,
+   "ms": 5308,
+   "shot": "user-accounting.png"
+  },
+  {
+   "path": "/notifications",
+   "status": 200,
+   "final": "/notifications",
+   "h1": "Thông báo",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 155,
+   "ms": 4941,
+   "shot": "user-notifications.png"
+  },
+  {
+   "path": "/dashboard",
+   "status": 200,
+   "final": "/forbidden",
+   "h1": "Không có quyền truy cập",
+   "page_errors": [
+    "Không có quyền"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 95,
+   "ms": 4673,
+   "shot": "user-dashboard.png"
+  },
+  {
+   "path": "/department/agents",
+   "status": 200,
+   "final": "/forbidden",
+   "h1": "Không có quyền truy cập",
+   "page_errors": [
+    "Không có quyền"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 95,
+   "ms": 4787,
+   "shot": "user-department_agents.png"
+  },
+  {
+   "path": "/admin/approval-queue",
+   "status": 200,
+   "final": "/forbidden",
+   "h1": "Không có quyền truy cập",
+   "page_errors": [
+    "Không có quyền"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 95,
+   "ms": 4714,
+   "shot": "user-admin_approval-queue.png"
+  },
+  {
+   "path": "/admin/audit",
+   "status": 200,
+   "final": "/forbidden",
+   "h1": "Không có quyền truy cập",
+   "page_errors": [
+    "Không có quyền"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 95,
+   "ms": 4843,
+   "shot": "user-admin_audit.png"
+  },
+  {
+   "path": "/mau-chung-tu",
+   "status": 200,
+   "final": "/mau-chung-tu",
+   "h1": "Chứng từ mẫu · Training center",
+   "page_errors": [
+    "500"
+   ],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 2185,
+   "ms": 4508,
+   "shot": "user-mau-chung-tu.png"
+  },
+  {
+   "path": "/profile",
+   "status": 200,
+   "final": "/profile",
+   "h1": "Hồ sơ",
+   "page_errors": [],
+   "console_errors": [],
+   "bad_api": [],
+   "text_len": 199,
+   "ms": 4332,
+   "shot": "user-profile.png"
+  }
+ ]
+}

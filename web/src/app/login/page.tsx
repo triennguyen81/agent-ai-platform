@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { gateway, type AuthResponse } from "@/lib/api";
 import { setSession } from "@/lib/auth";
+import { landingPathFor } from "@/lib/default-agent";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 
@@ -17,10 +18,7 @@ async function loginAction(formData: FormData) {
 
   const body = (await res.json()) as AuthResponse;
   await setSession(body.token, new Date(body.expiresAt));
-  const isManager = body.roles.some((role) =>
-    role === "super_admin" || role === "tenant_owner" || role === "admin",
-  );
-  redirect(isManager ? "/dashboard" : "/my-agents");
+  redirect(landingPathFor(body.roles));
 }
 
 export default async function LoginPage({
