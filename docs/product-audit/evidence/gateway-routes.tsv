@@ -1,0 +1,365 @@
+file	line	verb	path	handler	policies	flags
+AccountingEndpoints.cs	28	POST	/accounting/invoice/extract-text	ExtractInvoiceText	department_member	RequireRateLimiting,DisableAntiforgery
+AccountingPeriodEndpoints.cs	30	GET	/accounting-periods/	ListAsync	department_member	
+AccountingPeriodEndpoints.cs	31	GET	/accounting-periods/{period}/events	EventsAsync	department_member	
+AccountingPeriodEndpoints.cs	32	POST	/accounting-periods/{period}/close	CloseAsync	department_member,department_admin	
+AccountingPeriodEndpoints.cs	33	POST	/accounting-periods/{period}/reopen	ReopenAsync	department_member,department_admin	
+AgentEndpoints.cs	17	GET	/agents/	ListAsync	admin	
+AgentEndpoints.cs	18	POST	/agents/	CreateAsync	admin	
+AgentEndpoints.cs	19	GET	/agents/{id:guid}	GetAsync	admin	
+AgentEndpoints.cs	20	PATCH	/agents/{id:guid}	UpdateAsync	admin	
+AgentEndpoints.cs	21	POST	/agents/{id:guid}/transitions	TransitionAsync	admin	
+AgentEndpoints.cs	22	POST	/agents/{id:guid}/disable	DisableAsync	admin	
+AgentEndpoints.cs	23	POST	/agents/{id:guid}/enable	EnableAsync	admin	
+AgentEndpoints.cs	24	GET	/agents/{id:guid}/lifecycle	LifecycleAsync	admin	
+AgentEndpoints.cs	25	GET	/agents/{id:guid}/acl	AclAsync	admin	
+AgentEndpoints.cs	26	POST	/agents/{id:guid}/acl	GrantAclAsync	admin	
+AgentEndpoints.cs	27	DELETE	/agents/{id:guid}/acl/{principalId:guid}	RevokeAclAsync	admin	
+AgentEndpoints.cs	30	GET	/users/{userId:guid}/agents	UserAgentsAsync	admin	RequireRateLimiting
+AgentEndpoints.cs	35	GET	/me/agents	MyAgentsAsync	authenticated	RequireRateLimiting
+AgentEndpoints.cs	39	GET	/runtime/agents/{id:guid}/authorization	AuthorizeExecutionAsync	user	RequireRateLimiting
+AgentKnowledgeEndpoints.cs	19	GET	/agents/{agentId:guid}/knowledge/	ListAsync	department_admin	
+AgentKnowledgeEndpoints.cs	20	GET	/agents/{agentId:guid}/knowledge/attachable	ListAttachableAsync	department_admin	
+AgentKnowledgeEndpoints.cs	21	POST	/agents/{agentId:guid}/knowledge/	AttachAsync	department_admin	
+AgentKnowledgeEndpoints.cs	22	DELETE	/agents/{agentId:guid}/knowledge/{noteId:guid}	DetachAsync	department_admin	
+AgentKnowledgeEndpoints.cs	28	GET	/agents/{agentId:guid}/knowledge/context	ContextAsync	department_member	RequireRateLimiting
+AgentUsageEndpoints.cs	15	POST	/runtime/agents/{agentId:guid}/usage	RecordAsync	resource_or_tool	RequireRateLimiting
+AgentUsageEndpoints.cs	21	POST	/runtime/usage	RecordUnscopedAsync	resource_or_tool	RequireRateLimiting
+ApprovalEndpoints.cs	30	GET	/approval-queue/	ListPendingAsync	admin	
+ApprovalEndpoints.cs	31	GET	/approval-queue/{id:guid}	GetByIdAsync	admin	
+ApprovalEndpoints.cs	32	POST	/approval-queue/{id:guid}/review	ReviewAsync	admin	
+AuthEndpoints.cs	14	POST	/auth/register	RegisterAsync	anonymous (rate limit auth 10/min)	
+AuthEndpoints.cs	15	POST	/auth/login	LoginAsync	anonymous (rate limit auth 10/min)	
+AuthEndpoints.cs	16	POST	/auth/external-link	ExternalLinkAsync	anonymous (rate limit auth 10/min)	
+BankingEndpoints.cs	24	GET	/{customers|suppliers}/{id:guid}/bank-accounts		department_member (inherited)	
+BankingEndpoints.cs	26	POST	/{customers|suppliers}/{id:guid}/bank-accounts		department_admin	
+BankingEndpoints.cs	29	PATCH	/{customers|suppliers}/{id:guid}/bank-accounts/{accountId:guid}		department_admin	
+BankingEndpoints.cs	32	POST	/{customers|suppliers}/{id:guid}/bank-accounts/{accountId:guid}/deactivate		department_admin	
+BankingEndpoints.cs	35	POST	/{customers|suppliers}/{id:guid}/bank-accounts/{accountId:guid}/reactivate		department_admin	
+BankingEndpoints.cs	44	GET	/vouchers/{id:guid}/bank-transactions	async	department_member (inherited)	
+BankingEndpoints.cs	50	POST	/vouchers/{id:guid}/bank-transactions/rematch	async	department_member (inherited)	
+BankingEndpoints.cs	56	POST	/vouchers/{id:guid}/bank-transactions/{transactionId:guid}/match		department_member (inherited)	
+BankingEndpoints.cs	64	GET	/vouchers/company-bank-accounts	async	department_member (inherited)	
+BankingEndpoints.cs	69	POST	/vouchers/{id:guid}/bank-transactions/company-account		department_admin	
+BankingEndpoints.cs	73	GET	/vouchers/{id:guid}/bank-transactions/{txId:guid}/settlement	async	department_member (inherited)	
+BankingEndpoints.cs	79	POST	/vouchers/{id:guid}/bank-transactions/{txId:guid}/settlement/post		department_admin	
+BankingEndpoints.cs	83	POST	/vouchers/{id:guid}/bank-transactions/{txId:guid}/settlement/discount/confirm		department_admin	
+BankingEndpoints.cs	86	POST	/vouchers/{id:guid}/bank-transactions/{txId:guid}/settlement/allocate		department_admin	
+BankingEndpoints.cs	90	POST	/vouchers/{id:guid}/bank-transactions/{txId:guid}/settlement/unapply		department_admin	
+BankingEndpoints.cs	93	POST	/vouchers/{id:guid}/bank-transactions/{txId:guid}/settlement/reverse		department_admin	
+BankingEndpoints.cs	96	POST	/vouchers/{id:guid}/bank-transactions/{txId:guid}/settlement/reconcile		department_admin	
+BookEndpoints.cs	22	POST	/books/	CreateAsync	authenticated,uploader	
+BookEndpoints.cs	25	GET	/books/	ListAsync	authenticated	
+BookEndpoints.cs	26	GET	/books/{id:guid}	GetAsync	authenticated	
+BookEndpoints.cs	28	POST	/books/{id:guid}/pages	UploadPagesAsync	authenticated,uploader	RequireRateLimiting,DisableAntiforgery
+BookEndpoints.cs	33	GET	/books/{id:guid}/jobs/{jobId}	GetJobStatusAsync	authenticated	
+CapabilityEndpoints.cs	28	GET	/system/capabilities	ListCatalogAsync	catalog_reader	RequireRateLimiting
+CapabilityEndpoints.cs	32	POST	/system/capabilities/	CreatePlatformAsync	platform_admin	
+CapabilityEndpoints.cs	33	PATCH	/system/capabilities/{capabilityId:guid}	UpdatePlatformAsync	platform_admin	
+CapabilityEndpoints.cs	34	POST	/system/capabilities/{capabilityId:guid}/enable	EnablePlatformAsync	platform_admin	
+CapabilityEndpoints.cs	35	POST	/system/capabilities/{capabilityId:guid}/disable	DisablePlatformAsync	platform_admin	
+CapabilityEndpoints.cs	37	GET	/me/capabilities	ListMyCapabilitiesAsync	department_member	RequireRateLimiting
+CapabilityEndpoints.cs	39	GET	/me/capabilities/{code}/agent	ResolveCapabilityAsync	department_member	RequireRateLimiting
+CapabilityEndpoints.cs	47	GET	/me/capabilities/{code}/agents	ListEligibleAgentsAsync	department_member	RequireRateLimiting
+CapabilityEndpoints.cs	59	GET	/tenant/departments/{departmentId:guid}/capabilities/	ListDepartmentCapabilitiesAsync	tenant_governance	
+CapabilityEndpoints.cs	67	GET	/department/capabilities/	ListOwnAsync	department_admin	
+CapabilityEndpoints.cs	68	POST	/department/capabilities/	CreateOwnAsync	department_admin	
+CapabilityEndpoints.cs	69	GET	/department/capabilities/bindings	ListOwnBindingsAsync	department_admin	
+CapabilityEndpoints.cs	70	GET	/department/capabilities/{capabilityId:guid}	GetOwnAsync	department_admin	
+CapabilityEndpoints.cs	71	PATCH	/department/capabilities/{capabilityId:guid}	UpdateOwnAsync	department_admin	
+CapabilityEndpoints.cs	72	POST	/department/capabilities/{capabilityId:guid}/enable	EnableOwnAsync	department_admin	
+CapabilityEndpoints.cs	73	POST	/department/capabilities/{capabilityId:guid}/disable	DisableOwnAsync	department_admin	
+CapabilityEndpoints.cs	74	PUT	/department/capabilities/{capabilityId:guid}/binding	SetOwnBindingAsync	department_admin	
+CapabilityEndpoints.cs	75	DELETE	/department/capabilities/{capabilityId:guid}/binding	RevokeOwnBindingAsync	department_admin	
+CashSettlementEndpoints.cs	22	GET	/vouchers/{id:guid}/settlement	GetAsync	department_member (inherited)	
+CashSettlementEndpoints.cs	23	POST	/vouchers/{id:guid}/settlement/post	PostAsync	department_admin	
+CashSettlementEndpoints.cs	24	POST	/vouchers/{id:guid}/settlement/allocate	AllocateAsync	department_admin	
+CashSettlementEndpoints.cs	25	POST	/vouchers/{id:guid}/settlement/discount/confirm	ConfirmDiscountAsync	department_admin	
+CashSettlementEndpoints.cs	26	POST	/vouchers/{id:guid}/settlement/unapply	UnapplyAsync	department_admin	
+CashSettlementEndpoints.cs	27	POST	/vouchers/{id:guid}/settlement/reverse	ReverseAsync	department_admin	
+ChecklistEndpoints.cs	13	GET	/contracts/{contractId:guid}/checklist/	ListAsync	department_member	
+ChecklistEndpoints.cs	13	POST	/contracts/{contractId:guid}/checklist/	BulkCreateAsync	department_member	
+ChecklistEndpoints.cs	15	PATCH	/checklist/{itemId:guid}/	UpdateAsync	department_member	
+ChecklistEndpoints.cs	15	DELETE	/checklist/{itemId:guid}/	DeleteAsync	department_member	
+ContractEndpoints.cs	19	GET	/contracts/	List	department_member	
+ContractEndpoints.cs	19	POST	/contracts/	Create	department_member	
+ContractEndpoints.cs	19	GET	/contracts/{id:guid}	Get	department_member	
+ContractEndpoints.cs	19	PATCH	/contracts/{id:guid}	Update	department_member	
+ContractEndpoints.cs	19	DELETE	/contracts/{id:guid}	Delete	department_member	
+ContractEndpoints.cs	20	POST	/contracts/{id:guid}/process	Process	department_member	
+ContractEndpoints.cs	20	POST	/contracts/{id:guid}/review	Review	department_member	
+ContractEndpoints.cs	20	POST	/contracts/{id:guid}/handoff	Handoff	department_member	
+ContractEndpoints.cs	21	GET	/contracts/{id:guid}/documents	Documents	department_member	
+ContractEndpoints.cs	22	GET	/contracts/{id:guid}/payment-discount	GetPaymentDiscount	department_member	
+ContractEndpoints.cs	23	PUT	/contracts/{id:guid}/payment-discount	SavePaymentDiscount	department_member	
+ContractEndpoints.cs	24	POST	/contracts/{id:guid}/documents	UploadDocument	department_member	DisableAntiforgery
+ContractEndpoints.cs	25	DELETE	/contracts/{id:guid}/documents/{documentId:guid}	DeleteDocument	department_member	
+ContractEndpoints.cs	26	POST	/contracts/extract-text	ExtractText	department_member	DisableAntiforgery
+CustomerEndpoints.cs	25	GET	/customers/	ListAsync	department_member	
+CustomerEndpoints.cs	26	POST	/customers/	CreateAsync	department_member	
+CustomerEndpoints.cs	27	GET	/customers/by-mst/{mst}	GetByMstAsync	department_member	
+CustomerEndpoints.cs	28	GET	/customers/{id:guid}	GetByIdAsync	department_member	
+CustomerEndpoints.cs	31	PATCH	/customers/{id:guid}	UpdateAsync	department_member	
+CustomerEndpoints.cs	32	GET	/customers/{id:guid}/receivables	GetReceivablesAsync	department_member	
+CustomerEndpoints.cs	37	POST	/customers/{id:guid}/deactivate	DeactivateAsync	department_member,department_admin	
+CustomerEndpoints.cs	38	POST	/customers/{id:guid}/reactivate	ReactivateAsync	department_member,department_admin	
+CustomerEndpoints.cs	43	GET	/sales-orders/by-invoice/{documentNumber}	GetSalesOrderMatchAsync	department_member	RequireRateLimiting
+DepartmentAgentEndpoints.cs	32	GET	/department/agents/	ListAsync	department_admin	
+DepartmentAgentEndpoints.cs	33	POST	/department/agents/	CreateAsync	department_admin	
+DepartmentAgentEndpoints.cs	34	GET	/department/agents/{agentId:guid}	GetAsync	department_admin	
+DepartmentAgentEndpoints.cs	35	PATCH	/department/agents/{agentId:guid}	UpdateAsync	department_admin	
+DepartmentAgentEndpoints.cs	36	POST	/department/agents/{agentId:guid}/enable	EnableAsync	department_admin	
+DepartmentAgentEndpoints.cs	37	POST	/department/agents/{agentId:guid}/disable	DisableAsync	department_admin	
+DepartmentAgentEndpoints.cs	38	GET	/department/agents/{agentId:guid}/versions	ListVersionsAsync	department_admin	
+DepartmentAgentEndpoints.cs	39	POST	/department/agents/{agentId:guid}/versions	CreateVersionAsync	department_admin	
+DepartmentAgentEndpoints.cs	40	GET	/department/agents/{agentId:guid}/versions/{versionId:guid}	GetVersionAsync	department_admin	
+DepartmentAgentEndpoints.cs	41	PATCH	/department/agents/{agentId:guid}/versions/{versionId:guid}	UpdateVersionAsync	department_admin	
+DepartmentAgentEndpoints.cs	42	POST	/department/agents/{agentId:guid}/versions/{versionId:guid}/validate	ValidateVersionAsync	department_admin	
+DepartmentAgentEndpoints.cs	43	POST	/department/agents/{agentId:guid}/versions/{versionId:guid}/publish	PublishVersionAsync	department_admin	
+DepartmentAgentEndpoints.cs	44	GET	/department/agents/{agentId:guid}/users	ListUsersAsync	department_admin	
+DepartmentAgentEndpoints.cs	45	PUT	/department/agents/{agentId:guid}/users/{userId:guid}	AssignUserAsync	department_admin	
+DepartmentAgentEndpoints.cs	46	DELETE	/department/agents/{agentId:guid}/users/{userId:guid}	RevokeUserAsync	department_admin	
+DepartmentAgentEndpoints.cs	53	GET	/department/agents/{agentId:guid}/knowledge	ListKnowledgeAsync	department_admin	
+DepartmentAgentEndpoints.cs	54	GET	/department/agents/{agentId:guid}/knowledge/attachable	ListAttachableKnowledgeAsync	department_admin	
+DepartmentAgentEndpoints.cs	55	PUT	/department/agents/{agentId:guid}/knowledge/{noteId:guid}	AttachKnowledgeAsync	department_admin	
+DepartmentAgentEndpoints.cs	56	DELETE	/department/agents/{agentId:guid}/knowledge/{noteId:guid}	DetachKnowledgeAsync	department_admin	
+DepartmentAgentEndpoints.cs	61	GET	/department/agents/{agentId:guid}/versions/{versionId:guid}/document-processing	GetDocumentProcessingAsync	department_admin	
+DepartmentAgentEndpoints.cs	62	PUT	/department/agents/{agentId:guid}/versions/{versionId:guid}/document-processing	ReplaceDocumentProcessingAsync	department_admin	
+DepartmentAgentEndpoints.cs	63	POST	/department/agents/{agentId:guid}/document-processing/test	TestDocumentProcessingAsync	department_admin	
+DepartmentAgentEndpoints.cs	64	GET	/department/document-types	ListDocumentTypesAsync	department_admin	RequireRateLimiting
+DepartmentEndpoints.cs	41	GET	/tenant/departments/{departmentId:guid}	GetDepartmentAsync	admin	RequireRateLimiting
+DepartmentEndpoints.cs	46	POST	/tenant/departments/	CreateDepartmentAsync	tenant_governance	
+DepartmentEndpoints.cs	47	PATCH	/tenant/departments/{departmentId:guid}	UpdateDepartmentAsync	tenant_governance	
+DepartmentEndpoints.cs	48	POST	/tenant/departments/{departmentId:guid}/deactivate	DeactivateDepartmentAsync	tenant_governance	
+DepartmentEndpoints.cs	49	POST	/tenant/departments/{departmentId:guid}/activate	ActivateDepartmentAsync	tenant_governance	
+DepartmentKnowledgeEndpoints.cs	22	GET	/system/knowledge/	ListPlatformAsync	platform_admin	
+DepartmentKnowledgeEndpoints.cs	23	POST	/system/knowledge/	CreatePlatformAsync	platform_admin	
+DepartmentKnowledgeEndpoints.cs	24	PATCH	/system/knowledge/{noteId:guid}	UpdatePlatformAsync	platform_admin	
+DepartmentKnowledgeEndpoints.cs	25	POST	/system/knowledge/{noteId:guid}/archive	ArchivePlatformAsync	platform_admin	
+DepartmentKnowledgeEndpoints.cs	26	POST	/system/knowledge/{noteId:guid}/restore	RestorePlatformAsync	platform_admin	
+DepartmentKnowledgeEndpoints.cs	27	DELETE	/system/knowledge/{noteId:guid}	DeletePlatformAsync	platform_admin	
+DepartmentKnowledgeEndpoints.cs	34	GET	/department/knowledge/	ListOwnAsync	department_admin	
+DepartmentKnowledgeEndpoints.cs	35	POST	/department/knowledge/	CreateOwnAsync	department_admin	
+DepartmentKnowledgeEndpoints.cs	36	GET	/department/knowledge/{noteId:guid}	GetOwnAsync	department_admin	
+DepartmentKnowledgeEndpoints.cs	37	PATCH	/department/knowledge/{noteId:guid}	UpdateOwnAsync	department_admin	
+DepartmentKnowledgeEndpoints.cs	38	POST	/department/knowledge/{noteId:guid}/archive	ArchiveOwnAsync	department_admin	
+DepartmentKnowledgeEndpoints.cs	39	POST	/department/knowledge/{noteId:guid}/restore	RestoreOwnAsync	department_admin	
+DepartmentKnowledgeEndpoints.cs	40	DELETE	/department/knowledge/{noteId:guid}	DeleteOwnAsync	department_admin	
+DlpEndpoints.cs	15	GET	/dlp/summary	GetSummaryAsync	tenant_governance	RequireRateLimiting
+DynamicAgentEndpoints.cs	17	GET	/system/agents/	ListAgentsAsync	platform_admin	
+DynamicAgentEndpoints.cs	18	POST	/system/agents/	CreateAgentAsync	platform_admin	
+DynamicAgentEndpoints.cs	19	GET	/system/agents/{agentId:guid}	GetAgentAsync	platform_admin	
+DynamicAgentEndpoints.cs	20	PATCH	/system/agents/{agentId:guid}	UpdateAgentAsync	platform_admin	
+DynamicAgentEndpoints.cs	21	POST	/system/agents/{agentId:guid}/enable	EnableAgentAsync	platform_admin	
+DynamicAgentEndpoints.cs	22	POST	/system/agents/{agentId:guid}/disable	DisableAgentAsync	platform_admin	
+DynamicAgentEndpoints.cs	23	GET	/system/agents/{agentId:guid}/versions	ListVersionsAsync	platform_admin	
+DynamicAgentEndpoints.cs	24	POST	/system/agents/{agentId:guid}/versions	CreateVersionAsync	platform_admin	
+DynamicAgentEndpoints.cs	25	GET	/system/agents/{agentId:guid}/versions/{versionId:guid}	GetVersionAsync	platform_admin	
+DynamicAgentEndpoints.cs	26	PATCH	/system/agents/{agentId:guid}/versions/{versionId:guid}	UpdateVersionAsync	platform_admin	
+DynamicAgentEndpoints.cs	27	POST	/system/agents/{agentId:guid}/versions/{versionId:guid}/validate	ValidateVersionAsync	platform_admin	
+DynamicAgentEndpoints.cs	28	POST	/system/agents/{agentId:guid}/versions/{versionId:guid}/publish	PublishVersionAsync	platform_admin	
+DynamicAgentEndpoints.cs	29	GET	/system/agents/{agentId:guid}/tenants	ListTenantsAsync	platform_admin	
+DynamicAgentEndpoints.cs	30	PUT	/system/agents/{agentId:guid}/tenants/{tenantId:guid}	AssignTenantAsync	platform_admin	
+DynamicAgentEndpoints.cs	31	DELETE	/system/agents/{agentId:guid}/tenants/{tenantId:guid}	RevokeTenantAsync	platform_admin	
+DynamicAgentEndpoints.cs	37	GET	/system/agents/quarantine	ListQuarantinedAsync	platform_admin	
+DynamicAgentEndpoints.cs	38	POST	/system/agents/{agentId:guid}/clone-to-department	CloneToDepartmentAsync	platform_admin	
+DynamicAgentEndpoints.cs	57	GET	/tenant/agents/	ListTenantAgentsAsync	platform_admin	
+DynamicAgentEndpoints.cs	58	GET	/tenant/agents/{agentId:guid}/users	ListUsersAsync	platform_admin	
+DynamicAgentEndpoints.cs	59	PUT	/tenant/agents/{agentId:guid}/users/{userId:guid}	AssignUserAsync	platform_admin	
+DynamicAgentEndpoints.cs	60	DELETE	/tenant/agents/{agentId:guid}/users/{userId:guid}	RevokeUserAsync	platform_admin	
+DynamicAgentEndpoints.cs	61	GET	/tenant/agents/{agentId:guid}/knowledge	ListTenantKnowledgeAsync	platform_admin	
+DynamicAgentEndpoints.cs	62	GET	/tenant/agents/{agentId:guid}/knowledge/attachable	ListAttachableTenantKnowledgeAsync	platform_admin	
+DynamicAgentEndpoints.cs	63	PUT	/tenant/agents/{agentId:guid}/knowledge/{noteId:guid}	AttachTenantKnowledgeAsync	platform_admin	
+DynamicAgentEndpoints.cs	64	DELETE	/tenant/agents/{agentId:guid}/knowledge/{noteId:guid}	DetachTenantKnowledgeAsync	platform_admin	
+DynamicAgentEndpoints.cs	77	GET	/tenant/departments/{departmentId:guid}/agents/	ListDepartmentAgentsAsync	platform_admin	
+DynamicAgentEndpoints.cs	78	PUT	/tenant/departments/{departmentId:guid}/agents/{agentId:guid}	AssignDepartmentAgentAsync	platform_admin	
+DynamicAgentEndpoints.cs	79	DELETE	/tenant/departments/{departmentId:guid}/agents/{agentId:guid}	RevokeDepartmentAgentAsync	platform_admin	
+DynamicAgentEndpoints.cs	81	GET	/runtime/agents/{agentId:guid}/manifest	ManifestAsync	department_member	RequireRateLimiting
+DynamicAgentEndpoints.cs	83	GET	/runtime/agents/{routerAgentId:guid}/delegate/{specialistAgentId:guid}/manifest	DelegateManifestAsync	department_member	RequireRateLimiting
+ExpenseClaimEndpoints.cs	34	GET	/expense-claims/employees	ListEmployeesAsync	department_member	
+ExpenseClaimEndpoints.cs	35	POST	/expense-claims/	CreateAsync	department_member	DisableAntiforgery
+ExpenseClaimEndpoints.cs	36	GET	/expense-claims/{id:guid}	GetAsync	department_member	
+ExpenseClaimEndpoints.cs	37	POST	/expense-claims/{id:guid}/items	AddItemsAsync	department_member	DisableAntiforgery
+ExpenseClaimEndpoints.cs	38	GET	/expense-claims/{id:guid}/items/{itemId:guid}/file	GetItemFileAsync	department_member	
+ExpenseClaimEndpoints.cs	39	PATCH	/expense-claims/{id:guid}/items/{itemId:guid}	ConfirmItemAsync	department_member,department_admin	
+ExpenseClaimEndpoints.cs	40	POST	/expense-claims/{id:guid}/items/{itemId:guid}/exclude	ExcludeItemAsync	department_member,department_admin	
+ExpenseClaimEndpoints.cs	41	POST	/expense-claims/{id:guid}/items/{itemId:guid}/retry	RetryItemAsync	department_member,department_admin	
+HealthEndpoints.cs	9	GET	/healthz/live		anonymous	AllowAnonymous
+HealthEndpoints.cs	12	GET	/healthz/ready	async	anonymous	
+HitlEndpoints.cs	16	GET	/agents/{agentId:guid}/gates/	ListGatesAsync	department_admin	
+HitlEndpoints.cs	17	POST	/agents/{agentId:guid}/gates/	CreateGateAsync	department_admin	
+HitlEndpoints.cs	24	PATCH	/gates/{gateId:guid}/	UpdateGateAsync	department_admin	
+HitlEndpoints.cs	25	DELETE	/gates/{gateId:guid}/	DeleteGateAsync	department_admin	
+HitlEndpoints.cs	32	POST	/hitl/actions	CreateActionAsync	department_admin	
+HitlEndpoints.cs	33	GET	/hitl/queue	QueueAsync	department_admin	
+HitlEndpoints.cs	34	POST	/hitl/{actionId:guid}/decide	DecideAsync	department_admin	
+HitlEndpoints.cs	40	POST	/runtime/agents/{agentId:guid}/hitl/evaluate	EvaluateAsync	resource_or_tool	RequireRateLimiting
+KnowledgeBaseEndpoints.cs	25	GET	/department/knowledge-bases/	async	department_admin	
+KnowledgeBaseEndpoints.cs	30	POST	/department/knowledge-bases/	async	department_admin	
+KnowledgeBaseEndpoints.cs	37	GET	/department/knowledge-bases/{id:guid}/documents	async	department_admin	
+KnowledgeBaseEndpoints.cs	42	POST	/department/knowledge-bases/{id:guid}/documents	UploadAsync	department_admin	
+KnowledgeBaseEndpoints.cs	43	POST	/department/knowledge-bases/{id:guid}/documents/{documentId:guid}/{action}	async	department_admin	
+KnowledgeBaseEndpoints.cs	49	PATCH	/department/knowledge-bases/{id:guid}	async	department_admin	
+KnowledgeBaseEndpoints.cs	56	GET	/department/knowledge-bases/{id:guid}/agents	async	department_admin	
+KnowledgeBaseEndpoints.cs	61	PUT	/department/knowledge-bases/{id:guid}/agents/{agentId:guid}		department_admin	
+KnowledgeBaseEndpoints.cs	62	DELETE	/department/knowledge-bases/{id:guid}/agents/{agentId:guid}		department_admin	
+MeEndpoints.cs	13	POST	/me/change-password	ChangePasswordAsync	authenticated	RequireRateLimiting
+NoteEndpoints.cs	17	GET	/notes/	ListAsync	authenticated	
+NoteEndpoints.cs	18	POST	/notes/	CreateAsync	authenticated	
+NoteEndpoints.cs	19	GET	/notes/{id:guid}	GetAsync	authenticated	
+NoteEndpoints.cs	20	PATCH	/notes/{id:guid}	UpdateAsync	authenticated	
+NoteEndpoints.cs	21	DELETE	/notes/{id:guid}	DeleteAsync	authenticated	
+NotificationEndpoints.cs	15	GET	/notifications/	ListAsync	user	
+NotificationEndpoints.cs	16	GET	/notifications/unread-count	UnreadCountAsync	user	
+NotificationEndpoints.cs	17	PATCH	/notifications/{id:guid}/read	MarkReadAsync	user	
+NotificationEndpoints.cs	18	POST	/notifications/mark-all-read	MarkAllReadAsync	user	
+ReportsEndpoints.cs	18	GET	/tenant/reports/weekly-summary	GetWeeklySummaryAsync	tenant_governance	RequireRateLimiting
+ReviewEndpoints.cs	16	GET	/review-boards/	ListBoardsAsync	department_admin	
+ReviewEndpoints.cs	17	POST	/review-boards/	CreateBoardAsync	department_admin	
+ReviewEndpoints.cs	18	GET	/review-boards/{id:guid}/members	ListMembersAsync	department_admin	
+ReviewEndpoints.cs	19	POST	/review-boards/{id:guid}/members	AddMemberAsync	department_admin	
+ReviewEndpoints.cs	20	DELETE	/review-boards/{id:guid}/members/{userId:guid}	RemoveMemberAsync	department_admin	
+ReviewEndpoints.cs	27	GET	/agents/{agentId:guid}/review-requests/	ListForAgentAsync	department_admin	
+ReviewEndpoints.cs	28	POST	/agents/{agentId:guid}/review-requests/	SubmitAsync	department_admin	
+ReviewEndpoints.cs	35	GET	/review-requests/{requestId:guid}/	GetAsync	department_admin	
+ReviewEndpoints.cs	36	GET	/review-requests/{requestId:guid}/votes	ListVotesAsync	department_admin	
+ReviewEndpoints.cs	37	POST	/review-requests/{requestId:guid}/votes	CastVoteAsync	department_admin	
+ReviewEndpoints.cs	40	GET	/me/review-queue	MyQueueAsync	authenticated	RequireRateLimiting
+SkillEndpoints.cs	22	GET	/system/skills/	ListPlatformAsync	platform_admin	
+SkillEndpoints.cs	23	POST	/system/skills/	CreatePlatformAsync	platform_admin	
+SkillEndpoints.cs	24	PATCH	/system/skills/{skillId:guid}	UpdatePlatformMetadataAsync	platform_admin	
+SkillEndpoints.cs	25	PATCH	/system/skills/{skillId:guid}/content	UpdatePlatformContentAsync	platform_admin	
+SkillEndpoints.cs	26	POST	/system/skills/{skillId:guid}/enable	EnablePlatformAsync	platform_admin	
+SkillEndpoints.cs	27	POST	/system/skills/{skillId:guid}/disable	DisablePlatformAsync	platform_admin	
+SkillEndpoints.cs	34	GET	/department/skills/	ListOwnAsync	department_admin	
+SkillEndpoints.cs	35	POST	/department/skills/	CreateOwnAsync	department_admin	
+SkillEndpoints.cs	36	GET	/department/skills/{skillId:guid}	GetOwnAsync	department_admin	
+SkillEndpoints.cs	37	PATCH	/department/skills/{skillId:guid}	UpdateOwnMetadataAsync	department_admin	
+SkillEndpoints.cs	38	PATCH	/department/skills/{skillId:guid}/content	UpdateOwnContentAsync	department_admin	
+SkillEndpoints.cs	39	POST	/department/skills/{skillId:guid}/enable	EnableOwnAsync	department_admin	
+SkillEndpoints.cs	40	POST	/department/skills/{skillId:guid}/disable	DisableOwnAsync	department_admin	
+SupplierEndpoints.cs	27	GET	/suppliers/	ListAsync	department_member	
+SupplierEndpoints.cs	28	POST	/suppliers/	CreateAsync	department_member	
+SupplierEndpoints.cs	29	GET	/suppliers/by-mst/{mst}	GetByMstAsync	department_member	
+SupplierEndpoints.cs	30	GET	/suppliers/ap-summary	GetApSummaryAsync	department_member	
+SupplierEndpoints.cs	31	GET	/suppliers/{id:guid}	GetByIdAsync	department_member	
+SupplierEndpoints.cs	34	PATCH	/suppliers/{id:guid}	UpdateAsync	department_member	
+SupplierEndpoints.cs	35	GET	/suppliers/{id:guid}/payables	GetPayablesAsync	department_member	
+SupplierEndpoints.cs	40	POST	/suppliers/{id:guid}/deactivate	DeactivateAsync	department_member,department_admin	
+SupplierEndpoints.cs	41	POST	/suppliers/{id:guid}/reactivate	ReactivateAsync	department_member,department_admin	
+SupplierEndpoints.cs	46	GET	/purchase-orders/by-invoice/{documentNumber}	GetPurchaseOrderMatchAsync	department_member	RequireRateLimiting
+TenantCompanyProfileEndpoints.cs	23	GET	/tenant/business-profile/	GetAsync	tenant_governance	
+TenantCompanyProfileEndpoints.cs	24	PUT	/tenant/business-profile/	UpsertAsync	tenant_governance	
+TenantCompanyProfileEndpoints.cs	35	GET	/runtime/company-profile	GetRuntimeAsync	user	RequireRateLimiting
+TenantEndpoints.cs	25	GET	/tenants/	ListAsync	platform_admin	
+TenantEndpoints.cs	26	POST	/tenants/	CreateAsync	platform_admin	
+TenantEndpoints.cs	27	GET	/tenants/{id:guid}	GetAsync	platform_admin	
+TenantEndpoints.cs	28	GET	/tenants/{id:guid}/members	ListMembersAsync	platform_admin	
+TenantEndpoints.cs	29	POST	/tenants/{id:guid}/members	InviteMemberAsync	platform_admin	
+TenantEndpoints.cs	30	DELETE	/tenants/{id:guid}/members/{userId:guid}	RemoveMemberAsync	platform_admin	
+TenantEndpoints.cs	31	GET	/tenants/{id:guid}/quota	GetQuotaAsync	platform_admin	
+TenantEndpoints.cs	32	PATCH	/tenants/{id:guid}/quota	UpdateQuotaAsync	platform_admin	
+TenantEndpoints.cs	34	GET	/system/tenants/summary	ListSummariesAsync	platform_admin	RequireRateLimiting
+TenantEndpoints.cs	36	GET	/system/tenants/{id:guid}/summary	GetSummaryAsync	platform_admin	RequireRateLimiting
+TenantEndpoints.cs	38	POST	/system/tenants/onboard	OnboardAsync	platform_admin	RequireRateLimiting
+TenantEndpoints.cs	47	GET	/me/tenants/	ListMyMembershipsAsync	authenticated	
+TenantEndpoints.cs	54	GET	/tenant/quota	GetMyQuotaAsync	admin	RequireRateLimiting
+TenantEndpoints.cs	63	GET	/tenant/company-profile	GetCompanyProfileAsync	tenant_governance	RequireRateLimiting
+TenantEndpoints.cs	66	PATCH	/tenant/company-profile	UpdateCompanyProfileAsync	tenant_governance	RequireRateLimiting
+ToolEndpoints.cs	21	GET	/tools	ListAsync	catalog_reader	RequireRateLimiting
+ToolEndpoints.cs	22	POST	/tools/	CreateAsync	platform_admin	
+ToolEndpoints.cs	23	GET	/tools/{id:guid}	GetAsync	platform_admin	
+ToolEndpoints.cs	24	PATCH	/tools/{id:guid}	UpdateAsync	platform_admin	
+ToolEndpoints.cs	25	DELETE	/tools/{id:guid}	DeleteAsync	platform_admin	
+ToolEndpoints.cs	36	GET	/agents/{agentId:guid}/tools/	ListAgentToolsAsync	department_admin	
+ToolEndpoints.cs	37	POST	/agents/{agentId:guid}/tools/	GrantToolAsync	department_admin	
+ToolEndpoints.cs	38	DELETE	/agents/{agentId:guid}/tools/{toolId:guid}	RevokeToolAsync	department_admin	
+ToolEndpoints.cs	39	GET	/agents/{agentId:guid}/tools/allowed	AllowedCodesAsync	department_admin	
+UploadEndpoints.cs	16	POST	/uploads/pdf	ScanPdfAsync	uploader	DisableAntiforgery
+UserEndpoints.cs	71	GET	/users/	ListAsync	platform_admin	
+UserEndpoints.cs	72	POST	/users/{id:guid}/roles	AssignRoleAsync	platform_admin	
+UserEndpoints.cs	73	DELETE	/users/{id:guid}/roles/{role}	RemoveRoleAsync	platform_admin	
+UserEndpoints.cs	85	GET	/system/tenants/{tenantId:guid}/admins/	ListTenantAdminsAsync	platform_admin	
+UserEndpoints.cs	86	POST	/system/tenants/{tenantId:guid}/admins/	CreateTenantAdminAsync	platform_admin	
+UserEndpoints.cs	87	POST	/system/tenants/{tenantId:guid}/admins/{id:guid}/disable	DisableTenantAdminAsync	platform_admin	
+UserEndpoints.cs	88	POST	/system/tenants/{tenantId:guid}/admins/{id:guid}/enable	EnableTenantAdminAsync	platform_admin	
+UserEndpoints.cs	89	POST	/system/tenants/{tenantId:guid}/admins/{id:guid}/reset-password	ResetTenantAdminPasswordAsync	platform_admin	
+UserEndpoints.cs	98	GET	/tenant/admins/	ListOwnTenantAdminsAsync	tenant_governance	
+UserEndpoints.cs	99	POST	/tenant/admins/	CreateOwnTenantAdminAsync	tenant_governance	
+UserEndpoints.cs	100	PATCH	/tenant/admins/{id:guid}	UpdateOwnTenantAdminAsync	tenant_governance	
+UserEndpoints.cs	101	POST	/tenant/admins/{id:guid}/disable	DisableOwnTenantAdminAsync	tenant_governance	
+UserEndpoints.cs	102	POST	/tenant/admins/{id:guid}/enable	EnableOwnTenantAdminAsync	tenant_governance	
+UserEndpoints.cs	103	POST	/tenant/admins/{id:guid}/reset-password	ResetOwnTenantAdminPasswordAsync	tenant_governance	
+UserEndpoints.cs	105	GET	/tenant/departments	ListDepartmentsAsync	tenant_governance	RequireRateLimiting
+UserEndpoints.cs	113	GET	/system/tenants/owners/preflight	OwnershipPreflightAsync	platform_admin	RequireRateLimiting
+UserEndpoints.cs	116	POST	/system/tenants/{tenantId:guid}/owner	AssignTenantOwnerAsync	platform_admin	RequireRateLimiting
+UserEndpoints.cs	119	POST	/system/tenants/{tenantId:guid}/owner/transfer	TransferTenantOwnerAsync	platform_admin	RequireRateLimiting
+UserEndpoints.cs	131	GET	/tenant/users/	ListTenantUsersAsync	admin	
+UserEndpoints.cs	132	GET	/tenant/users/{id:guid}	GetTenantUserAsync	admin	
+UserEndpoints.cs	133	POST	/tenant/users/	CreateTenantUserAsync	admin	
+UserEndpoints.cs	134	PATCH	/tenant/users/{id:guid}	UpdateTenantUserAsync	admin	
+UserEndpoints.cs	135	POST	/tenant/users/{id:guid}/disable	DisableTenantUserAsync	admin	
+UserEndpoints.cs	136	POST	/tenant/users/{id:guid}/enable	EnableTenantUserAsync	admin	
+UserEndpoints.cs	137	POST	/tenant/users/{id:guid}/reset-password	ResetTenantUserPasswordAsync	admin	
+UserEndpoints.cs	144	PATCH	/tenant/users/{id:guid}/role	ChangeTenantUserRoleAsync	tenant_governance	RequireRateLimiting
+UserEndpoints.cs	155	PATCH	/tenant/users/{id:guid}/department	MoveTenantUserDepartmentAsync	tenant_governance	RequireRateLimiting
+VoucherEndpoints.cs	64	GET	/vouchers/	ListAsync	department_member	
+VoucherEndpoints.cs	65	POST	/vouchers/	CreateAsync	department_member	
+VoucherEndpoints.cs	66	POST	/vouchers/upload	UploadAsync	department_member	DisableAntiforgery
+VoucherEndpoints.cs	69	GET	/vouchers/export	ExportAsync	department_member	
+VoucherEndpoints.cs	72	GET	/vouchers/status-report	StatusReportAsync	department_member	
+VoucherEndpoints.cs	73	GET	/vouchers/{id:guid}	GetAsync	department_member	
+VoucherEndpoints.cs	75	GET	/vouchers/{id:guid}/validation	ValidationAsync	department_member	
+VoucherEndpoints.cs	76	PATCH	/vouchers/{id:guid}	UpdateAsync	department_member	
+VoucherEndpoints.cs	79	DELETE	/vouchers/{id:guid}	DeleteAsync	department_member,department_admin	
+VoucherEndpoints.cs	81	POST	/vouchers/{id:guid}/journal-suggestions	SaveJournalAsync	department_member	
+VoucherEndpoints.cs	82	POST	/vouchers/{id:guid}/journal-suggestions/{entryId:guid}/decision	DecideJournalAsync	department_member,department_admin	
+VoucherEndpoints.cs	88	GET	/vouchers/{id:guid}/preview	GetPreviewAsync	department_member	
+VoucherEndpoints.cs	93	PATCH	/vouchers/{id:guid}/apply-extraction	ApplyExtractionAsync	department_member	
+VoucherEndpoints.cs	99	POST	/vouchers/{id:guid}/reextract	ReextractAsync	department_member	
+VoucherEndpoints.cs	105	POST	/vouchers/{id:guid}/apply-receipt	ApplyReceiptAsync	department_member,department_admin	
+VoucherEndpoints.cs	111	POST	/vouchers/{id:guid}/apply-expense	ApplyExpenseAsync	department_member,department_admin	
+VoucherEndpoints.cs	115	POST	/vouchers/{id:guid}/apply-invoice	ApplyInvoiceAsync	department_member,department_admin	
+VoucherEndpoints.cs	119	POST	/vouchers/{id:guid}/unapply-receipt	UnapplyReceiptAsync	department_member,department_admin	
+VoucherEndpoints.cs	123	POST	/vouchers/{id:guid}/unapply-payment	UnapplyPaymentAsync	department_member,department_admin	
+VoucherEndpoints.cs	130	GET	/vouchers/{id:guid}/receipt-match	GetReceiptMatchAsync	department_member	
+VoucherEndpoints.cs	137	POST	/vouchers/{id:guid}/receipt-match/propose	ProposeReceiptMatchAsync	department_member	
+VoucherEndpoints.cs	138	POST	/vouchers/{id:guid}/reject-receipt-match	RejectReceiptMatchAsync	department_member,department_admin	
+VoucherEndpoints.cs	144	GET	/vouchers/{id:guid}/expense-claim-result	GetExpenseClaimResultAsync	department_member	
+VoucherEndpoints.cs	145	POST	/vouchers/{id:guid}/expense-claim-result/propose	ProposeExpenseClaimAsync	department_member	
+VoucherEndpoints.cs	146	POST	/vouchers/{id:guid}/reject-expense-claim	RejectExpenseClaimAsync	department_member,department_admin	
+VoucherEndpoints.cs	147	POST	/vouchers/{id:guid}/grant-expense-exception	GrantExpenseExceptionAsync	department_member,department_admin	
+VoucherEndpoints.cs	153	POST	/vouchers/{id:guid}/expense-claim/department-review	DepartmentReviewExpenseClaimAsync	department_member,department_admin	
+VoucherEndpoints.cs	154	POST	/vouchers/{id:guid}/expense-claim/accounting-review	AccountingReviewExpenseClaimAsync	department_member,department_admin	
+VoucherEndpoints.cs	157	GET	/vouchers/{id:guid}/expense-claim-export	GetExpenseClaimExportAsync	department_member,department_admin	
+VoucherEndpoints.cs	164	GET	/vouchers/{id:guid}/expense-claim/payment	GetExpenseClaimPaymentAsync	department_member	
+VoucherEndpoints.cs	165	POST	/vouchers/{id:guid}/expense-claim/pay	PayExpenseClaimAsync	department_member,department_admin	
+VoucherEndpoints.cs	176	GET	/vouchers/{id:guid}/tax-verification	GetTaxVerificationAsync	department_member	
+VoucherEndpoints.cs	177	POST	/vouchers/{id:guid}/tax-verification/propose	ProposeTaxVerificationAsync	department_member	
+VoucherEndpoints.cs	178	POST	/vouchers/{id:guid}/tax-verification/confirm	ConfirmTaxVerifiedAsync	department_member,department_admin	
+VoucherEndpoints.cs	179	POST	/vouchers/{id:guid}/tax-verification/reject	RejectTaxVerificationAsync	department_member,department_admin	
+VoucherEndpoints.cs	186	PATCH	/vouchers/{id:guid}/link-contract	LinkContractAsync	department_member	
+VoucherEndpoints.cs	202	POST	/vouchers/{id:guid}/voucher-type	SetVoucherTypeAsync	department_member,department_admin	
+VoucherEndpoints.cs	207	GET	/vouchers/{id:guid}/document-review	ListDocumentReviewsAsync	department_member	
+VoucherEndpoints.cs	210	GET	/vouchers/{id:guid}/processing-state	GetProcessingStateAsync	department_member	
+VoucherEndpoints.cs	211	POST	/vouchers/{id:guid}/document-review/{taskId:guid}/decision	DecideDocumentReviewAsync	department_member,department_admin	
+VoucherLifecycleEndpoints.cs	26	GET	/vouchers/{id:guid}/events	EventsAsync	department_member (inherited)	
+VoucherLifecycleEndpoints.cs	27	POST	/vouchers/{id:guid}/submit	SubmitAsync	department_member (inherited)	
+VoucherLifecycleEndpoints.cs	28	POST	/vouchers/{id:guid}/approve	ApproveAsync	department_admin	
+VoucherLifecycleEndpoints.cs	29	POST	/vouchers/{id:guid}/return	ReturnAsync	department_admin	
+VoucherLifecycleEndpoints.cs	30	POST	/vouchers/{id:guid}/reject	RejectAsync	department_admin	
+WorkflowEndpoints.cs	24	GET	/workflows	ListAsync	catalog_reader	RequireRateLimiting
+WorkflowEndpoints.cs	25	POST	/workflows/	CreateAsync	platform_admin	
+WorkflowEndpoints.cs	26	GET	/workflows/{id:guid}	GetAsync	platform_admin	
+WorkflowEndpoints.cs	27	PATCH	/workflows/{id:guid}	UpdateAsync	platform_admin	
+WorkflowEndpoints.cs	39	GET	/department/workflows/	ListOwnAsync	department_admin	
+WorkflowEndpoints.cs	40	POST	/department/workflows/	CreateOwnAsync	department_admin	
+WorkflowEndpoints.cs	41	GET	/department/workflows/{workflowId:guid}	GetOwnAsync	department_admin	
+WorkflowEndpoints.cs	42	PATCH	/department/workflows/{workflowId:guid}	UpdateOwnMetadataAsync	department_admin	
+WorkflowEndpoints.cs	43	POST	/department/workflows/{workflowId:guid}/enable	EnableOwnAsync	department_admin	
+WorkflowEndpoints.cs	44	POST	/department/workflows/{workflowId:guid}/disable	DisableOwnAsync	department_admin	
+WorkflowEndpoints.cs	45	GET	/department/workflows/{workflowId:guid}/versions	ListOwnVersionsAsync	department_admin	
+WorkflowEndpoints.cs	46	POST	/department/workflows/{workflowId:guid}/versions	CreateOwnDraftVersionAsync	department_admin	
+WorkflowEndpoints.cs	47	PATCH	/department/workflows/{workflowId:guid}/versions/{versionId:guid}	UpdateOwnDraftVersionAsync	department_admin	
+WorkflowEndpoints.cs	48	POST	/department/workflows/{workflowId:guid}/versions/{versionId:guid}/publish	PublishOwnVersionAsync	department_admin	
+Program.cs	601	GET	/me	async	authenticated	

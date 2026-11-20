@@ -97,10 +97,10 @@ function extractThinking(raw: string, existing?: string | null): { thinking: str
 }
 
 const SUGGESTIONS = [
-  "Implant Straumann giá bao nhiêu, có những loại nào?",
-  "Quy trình tiệt trùng dụng cụ nha khoa theo WHO?",
-  "5 thời điểm rửa tay (WHO 5 Moments) là gì?",
-  "Bảng giá niềng răng mắc cài kim loại vs sứ?",
+  "Phòng mình có bao nhiêu chứng từ đã xác thực? Liệt kê 5 chứng từ gần nhất.",
+  "Công nợ phải thu của Công ty TNHH Thương mại Minh An hiện là bao nhiêu?",
+  "Tổng hợp công nợ phải trả nhà cung cấp hiện tại.",
+  "Hoá đơn 49.500.000 đã gồm VAT 10% — tách giá chưa thuế và tiền thuế giúp tôi.",
 ];
 
 interface ThreadSummary {

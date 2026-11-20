@@ -1,0 +1,93 @@
+[
+ [
+  "ADMIN (Sáu Trực) đọc chứng từ của Test 123",
+  "ADMIN",
+  "/vouchers/792725ad-b8f4-42db-8b34-d66fd8bbd5d4",
+  "404/403",
+  404
+ ],
+ [
+  "USER (Test 123) đọc chứng từ của Sáu Trực",
+  "USER",
+  "/vouchers/d0768dac-c03a-4fdb-acb9-c3da41a598bc",
+  "404/403",
+  404
+ ],
+ [
+  "USER (Test 123) đọc khách hàng của Sáu Trực",
+  "USER",
+  "/customers/4991303f-b063-4e97-b709-0c03db2d9af6",
+  "404/403",
+  404
+ ],
+ [
+  "USER đọc hợp đồng của Sáu Trực",
+  "USER",
+  "/contracts/3ddf2bf2-fb4e-49db-9ddc-fde4e23d56b8",
+  "404/403",
+  404
+ ],
+ [
+  "USER gọi route department_admin",
+  "USER",
+  "/department/agents",
+  "403",
+  403
+ ],
+ [
+  "USER đọc hàng đợi duyệt L2",
+  "USER",
+  "/approval-queue",
+  "403",
+  403
+ ],
+ [
+  "TENANT_OWNER đọc chứng từ (nghiệp vụ phòng ban)",
+  "TENANT_OWNER",
+  "/vouchers",
+  "403",
+  403
+ ],
+ [
+  "TENANT_OWNER đọc hàng đợi duyệt L2",
+  "TENANT_OWNER",
+  "/approval-queue",
+  "(lỗ hổng nếu 200)",
+  200
+ ],
+ [
+  "SUPER_ADMIN đọc chứng từ tenant",
+  "SUPER_ADMIN",
+  "/vouchers",
+  "403",
+  403
+ ],
+ [
+  "SUPER_ADMIN đọc hàng đợi duyệt L2",
+  "SUPER_ADMIN",
+  "/approval-queue",
+  "400 thiếu tenant",
+  400
+ ],
+ [
+  "ADMIN đọc danh sách tenant (platform)",
+  "ADMIN",
+  "/tenants",
+  "403",
+  403
+ ],
+ [
+  "Không token đọc chứng từ",
+  "NONE",
+  "/vouchers",
+  "401",
+  401
+ ],
+ [
+  "ADMIN đọc manifest agent tenant khác (platform agent của USER)",
+  "ADMIN",
+  "/runtime/agents/ca4aaf6d-3937-4567-a689-9e26c6bf4c86/manifest",
+  "403/404",
+  403
+ ]
+]
