@@ -1,0 +1,19 @@
+# Production override: run the app services from the images CI pushed to GHCR
+# instead of building them on the server.
+#
+#   AIQ_IMAGE_TAG=sha-abc1234 docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#     up -d --no-build gateway agent web
+#
+# Used by scripts/deploy/remote-deploy.sh (see docs/operations/deploy.md).
+# Infrastructure services (postgres, redis, qdrant, minio, caddy, monitoring)
+# keep the definitions from docker-compose.yml.
+
+services:
+  gateway:
+    image: ${AIQ_IMAGE_PREFIX:-ghcr.io/triennguyen81}/aiq-gateway:${AIQ_IMAGE_TAG:-latest}
+
+  agent:
+    image: ${AIQ_IMAGE_PREFIX:-ghcr.io/triennguyen81}/aiq-agent:${AIQ_IMAGE_TAG:-latest}
+
+  web:
+    image: ${AIQ_IMAGE_PREFIX:-ghcr.io/triennguyen81}/aiq-web:${AIQ_IMAGE_TAG:-latest}
