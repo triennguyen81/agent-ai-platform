@@ -219,7 +219,7 @@ export function SideNav({
         <div className="flex items-start justify-between border-b border-[var(--color-border)] p-4">
           <div className="min-w-0 flex-1">
             <Link
-              href={isAdminOrAbove ? "/dashboard" : "/my-agents"}
+              href={isSuperAdmin || isTenantOwner ? "/dashboard" : chatHref}
               className="font-serif text-xl tracking-tight text-[var(--color-fg)]"
             >
               Cát Tường AI
@@ -257,10 +257,7 @@ export function SideNav({
               <SidebarLink href="/dashboard" icon={Home} label="Dashboard" active={pathname === "/dashboard"} />
             )}
             {chatEnabled && (
-              <>
-                <SidebarLink href="/my-agents" icon={Bot} label="Trợ lý AI" active={pathname.startsWith("/my-agents")} />
-                <SidebarLink href={chatHref} icon={MessageSquare} label="Chat" active={pathname.startsWith("/chat")} />
-              </>
+              <SidebarLink href="/my-agents" icon={Bot} label="Trợ lý AI" active={pathname.startsWith("/my-agents")} />
             )}
           </div>
 

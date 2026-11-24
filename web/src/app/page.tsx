@@ -1,12 +1,15 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
+import { requireViewer } from "@/lib/authorization";
+import { landingPathFor } from "@/lib/default-agent";
 import { Button } from "@/components/ui/button";
 
 export default async function HomePage() {
   const session = await getSession();
   if (session) {
-    redirect("/chat");
+    const viewer = await requireViewer();
+    redirect(landingPathFor(viewer.roles));
   }
 
   return (

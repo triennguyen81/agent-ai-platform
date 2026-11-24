@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { setSession } from "@/lib/auth";
+import { landingPathFor } from "@/lib/default-agent";
 import {
   gatewayBaseUrl,
   gatewaySharedSecret,
@@ -23,9 +24,10 @@ function publicUrl(request: NextRequest, path: string): URL {
 // GET /api/auth/sync?to=/chat
 // Called after a successful Clerk sign-in. Reads the Clerk user, exchanges
 // their identity for a Gateway JWT via /auth/external-link, sets the
-// aiq.session cookie, and redirects to ?to (default /chat).
+// aiq.session cookie, and redirects to ?to (default: the role's landing page).
 export async function GET(request: NextRequest) {
-  const to = request.nextUrl.searchParams.get("to") ?? "/chat";
+  const requestedTo = request.nextUrl.searchParams.get("to");
+  const to = requestedTo ?? "/chat";
 
   if (!isClerkConfigured) {
     return NextResponse.redirect(publicUrl(request, to));
@@ -88,8 +90,8 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const body = (await res.json()) as { token: string; expiresAt: string };
+  const body = (await res.json()) as { token: string; expiresAt: string; roles?: string[] };
   await setSession(body.token, new Date(body.expiresAt));
 
-  return NextResponse.redirect(publicUrl(request, to));
+  return NextResponse.redirect(publicUrl(request, requestedTo ?? landingPathFor(body.roles ?? [])));
 }

@@ -148,7 +148,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate docker-compose.yml
+      - name: Validate docker-compose.yml (+ production override)
         env:
           POSTGRES_USER: aiq
           POSTGRES_PASSWORD: aiq-test-password
@@ -156,4 +156,6 @@ jobs:
           QDRANT_API_KEY: test
           REDIS_PASSWORD: aiq-test-redis
           JWT_SIGNING_KEY: test_test_test_test_test_test_test_test_32
-        run: docker compose config -q
+        run: |
+          docker compose config -q
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config -q
